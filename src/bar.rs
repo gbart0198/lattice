@@ -39,6 +39,31 @@ struct State {
     icons_ready: HashSet<String>,
 }
 
+/// Rune's (sans, mono) family lists for a configured font name: the font first, then the
+/// built-in Inter if it's missing. Empty means Inter alone.
+pub fn font_families(font: &str) -> (&'static str, &'static str) {
+    let font = font.trim();
+    if font.is_empty() {
+        return ("Inter", "ui-monospace");
+    }
+    (font_list(font), "ui-monospace")
+}
+
+/// `"Name", Inter` as a `'static` CSS family list. Names are leaked once each (a handful per
+/// process at most), since Rune's family slots take `&'static str`.
+pub fn font_list(font: &str) -> &'static str {
+    static CACHE: Mutex<Option<std::collections::HashMap<String, &'static str>>> = Mutex::new(None);
+    let mut g = CACHE.lock().unwrap();
+    let map = g.get_or_insert_with(Default::default);
+    if let Some(s) = map.get(font) {
+        return s;
+    }
+    let quoted = format!("\"{}\", Inter", font.replace('\\', "\\\\").replace('"', "\\\""));
+    let leaked: &'static str = Box::leak(quoted.into_boxed_str());
+    map.insert(font.to_string(), leaked);
+    leaked
+}
+
 pub fn color(s: &str, fallback: Color) -> Color {
     let Some(h) = s.strip_prefix('#') else { return fallback };
     let byte = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok());
@@ -322,6 +347,7 @@ fn bar_spec(bar_cfg: config::Bar) -> Option<rune::WindowSpec<State>> {
         occupied: color(&bar_cfg.occupied, color(&fallback.occupied, Color::default())),
     });
     let height = bar_cfg.height;
+    let families = font_families(&bar_cfg.font);
     let _ = CFG.set(bar_cfg);
 
     let monitors = win::monitors();
@@ -346,6 +372,7 @@ fn bar_spec(bar_cfg: config::Bar) -> Option<rune::WindowSpec<State>> {
         setup: Some(setup),
         poll: Some(poll),
         min_size: Some((1.0, 1.0)),
+        families,
         ..AppSpec::new("lattice-bar", (work.w as f32 / primary.scale, height), init, view)
     })
     .window_options(options)

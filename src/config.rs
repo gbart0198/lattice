@@ -68,6 +68,8 @@ pub struct Bar {
     pub enabled: bool,
     pub height: f32,
     pub font_size: f32,
+    /// Font family for the bar (any installed font); empty uses the built-in Inter.
+    pub font: String,
     pub clock_format: String,
     pub show_title: bool,
     pub show_cpu: bool,
@@ -89,6 +91,7 @@ impl Default for Bar {
             enabled: true,
             height: 30.0,
             font_size: 13.0,
+            font: String::new(),
             clock_format: "%a %b %d  %H:%M".into(),
             show_title: true,
             show_cpu: true,

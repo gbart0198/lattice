@@ -43,6 +43,9 @@ enabled = true
 # Height in logical pixels (scaled by the display's DPI).
 height = 30
 font_size = 13
+# Font family for the bar: any installed font, e.g. "Segoe UI" or "JetBrains Mono".
+# Empty uses the built-in Inter.
+font = ""
 # strftime-style tokens: %H %M %S %I %p %a %A %b %B %d %m %Y %y
 clock_format = "%a %b %d  %H:%M"
 show_title = true

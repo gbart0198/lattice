@@ -42,6 +42,9 @@ struct S {
     bar_enabled: bool,
     bar_height: f32,
     font_size: f32,
+    /// Bar font family; empty = built-in Inter.
+    font: String,
+    font_picker: rune_kit::ComboboxState,
     clock_format: TextEdit,
     show_title: bool,
     show_cpu: bool,
@@ -108,6 +111,8 @@ fn init() -> S {
         bar_enabled: b.enabled,
         bar_height: b.height,
         font_size: b.font_size,
+        font: b.font.trim().to_string(),
+        font_picker: rune_kit::ComboboxState::default(),
         clock_format: TextEdit::new(b.clock_format.clone()),
         show_title: b.show_title,
         show_cpu: b.show_cpu,
@@ -144,7 +149,8 @@ fn init() -> S {
 /// Everything that only takes effect after a lattice restart (bar + border).
 fn ui_fingerprint(s: &S) -> String {
     format!(
-        "{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}",
+        "{}|{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}",
+        s.font,
         s.bar_enabled, s.bar_height, s.font_size, s.clock_format.text, s.show_title, s.show_cpu, s.show_memory,
         s.show_battery, s.show_empty, s.app_display, s.background.text, s.foreground.text, s.muted.text,
         s.accent.text, s.occupied.text, s.border_enabled, s.border_width, s.border_radius, s.border_color.text,
@@ -223,6 +229,7 @@ fn save(s: &mut S) -> Result<String, String> {
     set(&mut doc, "bar", "enabled", s.bar_enabled);
     set(&mut doc, "bar", "height", s.bar_height.round() as i64);
     set(&mut doc, "bar", "font_size", s.font_size.round() as i64);
+    set(&mut doc, "bar", "font", s.font.as_str());
     set(&mut doc, "bar", "clock_format", s.clock_format.text.as_str());
     set(&mut doc, "bar", "show_title", s.show_title);
     set(&mut doc, "bar", "show_cpu", s.show_cpu);
@@ -453,12 +460,14 @@ fn general_tab(s: &S, p: &P) -> Vec<El> {
     ]
 }
 
-fn bar_tab(s: &S, p: &P) -> Vec<El> {
+fn bar_tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
     vec![
         section(p, "bar-sec", "Top bar", vec![
             toggle(p, "bar-on", "Show the bar", None, s.bar_enabled, |s| &mut s.bar_enabled),
             slider(p, "bar-h", "Height", s.bar_height, 16.0, 60.0, 1.0, px, |s| &mut s.bar_height),
             slider(p, "font", "Font size", s.font_size, 9.0, 20.0, 1.0, px, |s| &mut s.font_size),
+            font_row(s, p, overlays),
+            font_preview(s, p),
             choice(p, "app-display", "Apps on workspaces", None, &APP_DISPLAY, s.app_display, |s| &mut s.app_display),
             text_field(p, "clock", "Clock format", Some("%H %M %S %I %p %a %b %d %m %Y"), &s.clock_format, 200.0, false, |s| &mut s.clock_format),
         ]),
@@ -561,6 +570,58 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
     ]
 }
 
+const DEFAULT_FONT_ID: &str = "__default__";
+
+/// Font dropdown listing every installed family (searchable). Fonts are enumerated only
+/// while the dropdown is open, so opening the settings window stays fast.
+fn font_row(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
+    let k = kit(p);
+    let current_id = if s.font.is_empty() { DEFAULT_FONT_ID } else { s.font.as_str() };
+    let default_label = "Default (Inter)";
+    let options = if s.font_picker.is_open() {
+        let mut opts = vec![rune_kit::ComboboxOption::new(DEFAULT_FONT_ID, default_label)];
+        for fam in rune::text::installed_families() {
+            let mut opt = rune_kit::ComboboxOption::new(fam.name(), fam.name());
+            let n = fam.weights().len();
+            let weights = if n == 1 { "1 weight".to_owned() } else { format!("{n} weights") };
+            opt.detail = if fam.monospace() { format!("Mono · {weights}") } else { weights };
+            opts.push(opt);
+        }
+        opts
+    } else {
+        vec![rune_kit::ComboboxOption::new(current_id, if s.font.is_empty() { default_label } else { s.font.as_str() })]
+    };
+    let picker = rune_kit::Combobox::new("font-picker", &s.font_picker, &options, |s: &mut S| &mut s.font_picker)
+        .label("Font")
+        .current(Some(current_id))
+        .placeholder(default_label)
+        .search_placeholder("Search installed fonts…")
+        .width(240.0)
+        .placement(rune_kit::Placement::BottomEnd)
+        .on_choose(|s: &mut S, chosen: &str, _tx: &mut Tx| {
+            s.font = if chosen == DEFAULT_FONT_ID { String::new() } else { chosen.to_string() };
+            s.font_picker.close();
+        })
+        .build(&k, overlays);
+    setting_row(p, "font-family", "Font", Some("Any font installed on this PC"), picker)
+}
+
+/// A line of bar-like text drawn in the chosen font and size.
+fn font_preview(s: &S, p: &P) -> El {
+    let family = if s.font.is_empty() { rune::Family::Sans } else { rune::Family::Named(crate::bar::font_list(&s.font)) };
+    let size = s.font_size.round().clamp(9.0, 20.0);
+    let sample = text("1  2  3      Tue Nov 24  16:20      CPU 12%  MEM 42%")
+        .font(TextStyle::new(size, 600.0).family(family))
+        .color(p.t.text);
+    setting_row(
+        p,
+        "font-preview",
+        "Preview",
+        None,
+        el().px(space::S3).py(space::S2).radius(radius::MD).fill(crate::bar::color("#1e1e2e", Color::BLACK)).child(sample),
+    )
+}
+
 fn open_config_button(p: &P) -> El {
     Button::new("Open config file").variant(ButtonVariant::Outline).on_press(|_: &mut S| open_config_file()).build(&kit(p))
 }
@@ -589,9 +650,11 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
     let tabs = row().key("tabs").px(space::S6).pb(space::S3).child(
         SegmentedControl::new(&TABS, Some(s.tab)).label("Section").as_tabs().fit().on_pick(|s: &mut S, i, _| s.tab = i).build(&k),
     );
+    // Popups (the font dropdown) draw here, above the scrolling content.
+    let mut overlays: Vec<El> = Vec::new();
     let body = match s.tab {
         0 => general_tab(s, &p),
-        1 => bar_tab(s, &p),
+        1 => bar_tab(s, &p, &mut overlays),
         2 => border_tab(s, &p),
         _ => keybinds_tab(s, &p),
     };
@@ -650,7 +713,7 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
     );
 
     let window = col().key("window").w_full().h_full().fill(p.t.bg).child(header).child(tabs).child(content).child(footer);
-    rune_kit::root(window, Vec::new())
+    rune_kit::root(window, overlays)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -688,7 +751,19 @@ pub fn run() {
     App::new(AppSpec {
         min_size: Some((560.0, 420.0)),
         // For headless previews: `--snap x.png --scene bar`.
-        scenes: &[("bar", |s: &mut S| s.tab = 1), ("border", |s: &mut S| s.tab = 2), ("keybinds", |s: &mut S| s.tab = 3)],
+        scenes: &[
+            ("bar", |s: &mut S| s.tab = 1),
+            ("border", |s: &mut S| s.tab = 2),
+            ("keybinds", |s: &mut S| s.tab = 3),
+            ("fonts", |s: &mut S| {
+                s.tab = 1;
+                s.font_picker.step(rune_kit::ComboboxEvent::Toggle { current: Some(DEFAULT_FONT_ID) });
+            }),
+            ("segoe", |s: &mut S| {
+                s.tab = 1;
+                s.font = "Segoe UI".into();
+            }),
+        ],
         ..AppSpec::new(TITLE, (lw, lh), init, view)
     })
         .window_options(WindowOptions { always_on_top: true, position, ..Default::default() })
@@ -714,6 +789,7 @@ mod tests {
         s.gaps_inner = 20.0;
         s.glow_opacity = 0.7;
         s.layout = 1;
+        s.font = "Segoe UI".into();
         s.binds.push(Bind { id: 999, chord: TextEdit::new("super+shift+t"), command: TextEdit::new("exec wt.exe") });
         save(&mut s).expect("save");
 
@@ -721,6 +797,7 @@ mod tests {
         assert!(text.contains("gaps_inner = 20"));
         assert!(text.contains("glow_opacity = 0.7"));
         assert!(text.contains("layout = \"master\""));
+        assert!(text.contains("font = \"Segoe UI\""));
         assert!(text.contains("# Gap between tiled windows"), "comments survive");
         let cfg: Config = toml::from_str(&text).unwrap();
         assert_eq!(cfg.keybinds.len(), before + 1);
