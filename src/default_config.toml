@@ -1,0 +1,173 @@
+# lattice configuration
+# Location: %APPDATA%\lattice\config.toml  (written on first run; edit freely)
+# Reload most settings with the `reload` command (default: super+shift+r).
+# Bar settings need a restart.
+
+[general]
+# Tiling layout for every workspace at startup. Cycle per workspace with `layout next`.
+#   "dwindle" - Hyprland-style spiral: each new window splits the remaining space in half,
+#               alternating direction along the longer side.
+#   "master"  - one large master window on the left, the rest stacked on the right.
+#   "monocle" - every window fills the whole area (only the focused one is visible).
+layout = "dwindle"
+
+# Number of virtual workspaces (1-10). A workspace spans all monitors: switching changes
+# every screen at once, and each window keeps its monitor within its workspace.
+workspaces = 9
+
+# Gap between tiled windows, and between windows and the screen edge, in pixels.
+gaps_inner = 8
+gaps_outer = 10
+
+# Share of space the first window of a dwindle split gets (0.1 - 0.9).
+split_ratio = 0.5
+# Width share of the master window in the "master" layout (0.1 - 0.9).
+master_ratio = 0.55
+
+# Where a new window goes in the tiling order: "after_focused" (splits the focused window,
+# like Hyprland's dwindle) or "end".
+new_window = "after_focused"
+
+# Float windows that can't be resized (most dialogs, splash screens, pickers).
+float_unresizable = true
+
+# When an app activates a window that lives on a hidden workspace (e.g. you click a
+# notification), switch to that workspace.
+follow_activation = true
+
+# Move the mouse cursor to the centre of a window focused by keyboard.
+mouse_follows_focus = false
+
+[bar]
+enabled = true
+# Height in logical pixels (scaled by the display's DPI).
+height = 30
+font_size = 13
+# strftime-style tokens: %H %M %S %I %p %a %A %b %B %d %m %Y %y
+clock_format = "%a %b %d  %H:%M"
+show_title = true
+show_cpu = true
+show_memory = true
+show_battery = true
+# Show workspaces that have no windows and aren't on screen.
+show_empty_workspaces = false
+# Apps on each workspace: "icons" (app icons), "names" or "both".
+app_display = "icons"
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+muted = "#7f849c"
+accent = "#89b4fa"
+occupied = "#313244"
+
+[border]
+# Glowing frame around the focused window (drawn with Rune on a click-through overlay).
+enabled = true
+# Line width and corner radius in logical pixels (Windows 11 windows have 8px corners).
+width = 2
+radius = 8
+color = "#89b4fa"
+# Glow: blur size in logical pixels (0 = flat line) and strength (0-1).
+glow = 14
+glow_opacity = 0.55
+
+# Window rules. Every field you set must match (exe = process file name, class = window
+# class, title = substring of the title; all case-insensitive). Effects:
+#   float = true      -> managed (follows its workspace) but not tiled
+#   ignore = true     -> never touched by lattice
+#   workspace = N     -> opens on workspace N
+#   repaint = true    -> force a redraw after switching to it (apps that come back black)
+[[rules]]
+exe = "steamwebhelper.exe"   # Steam comes back black after a workspace switch without this
+repaint = true
+
+[[rules]]
+exe = "Calculator.exe"
+float = true
+
+[[rules]]
+class = "#32770"        # standard Win32 dialog class
+float = true
+
+[[rules]]
+exe = "PowerToys.PowerLauncher.exe"
+ignore = true
+
+[[rules]]
+title = "Picture-in-Picture"
+float = true
+
+# Keybinds: "<modifiers>+<key>" = "<command>"
+# Modifiers: super (Windows key), shift, ctrl, alt.
+# Keys: a-z 0-9 f1-f24 return space tab escape backspace delete left right up down
+#       home end pageup pagedown insert comma period minus equal semicolon slash
+#       backslash quote grave bracketleft bracketright
+#
+# Commands:
+#   focus left|right|up|down          move-window left|right|up|down (swap / move to monitor)
+#   workspace N|next|prev             move-to-workspace N|next|prev   (window follows you)
+#   move-to-workspace-silent N        (window goes, you stay)
+#   focus-monitor next|prev           move-to-monitor next|prev
+#   layout dwindle|master|monocle|next
+#   resize grow|shrink                toggle-float   toggle-fullscreen   close
+#   retile   reload   quit   exec <command line>
+#   settings (open the settings window)   open-config (open this file in an editor)
+# Setting a key to "none" disables it. Note: super+L (lock) can't be overridden by any app.
+[keybinds]
+"super+left" = "focus left"
+"super+down" = "focus down"
+"super+up" = "focus up"
+"super+right" = "focus right"
+
+"super+shift+left" = "move-window left"
+"super+shift+down" = "move-window down"
+"super+shift+up" = "move-window up"
+"super+shift+right" = "move-window right"
+
+"super+1" = "workspace 1"
+"super+2" = "workspace 2"
+"super+3" = "workspace 3"
+"super+4" = "workspace 4"
+"super+5" = "workspace 5"
+"super+6" = "workspace 6"
+"super+7" = "workspace 7"
+"super+8" = "workspace 8"
+"super+9" = "workspace 9"
+"super+period" = "workspace next"
+"super+comma" = "workspace prev"
+
+"super+shift+1" = "move-to-workspace 1"
+"super+shift+2" = "move-to-workspace 2"
+"super+shift+3" = "move-to-workspace 3"
+"super+shift+4" = "move-to-workspace 4"
+"super+shift+5" = "move-to-workspace 5"
+"super+shift+6" = "move-to-workspace 6"
+"super+shift+7" = "move-to-workspace 7"
+"super+shift+8" = "move-to-workspace 8"
+"super+shift+9" = "move-to-workspace 9"
+
+"super+ctrl+1" = "move-to-workspace-silent 1"
+"super+ctrl+2" = "move-to-workspace-silent 2"
+"super+ctrl+3" = "move-to-workspace-silent 3"
+"super+ctrl+4" = "move-to-workspace-silent 4"
+"super+ctrl+5" = "move-to-workspace-silent 5"
+"super+ctrl+6" = "move-to-workspace-silent 6"
+"super+ctrl+7" = "move-to-workspace-silent 7"
+"super+ctrl+8" = "move-to-workspace-silent 8"
+"super+ctrl+9" = "move-to-workspace-silent 9"
+
+"super+o" = "focus-monitor next"
+"super+shift+o" = "move-to-monitor next"
+
+"super+space" = "layout next"
+"super+equal" = "resize grow"
+"super+minus" = "resize shrink"
+"super+shift+space" = "toggle-float"
+"super+f" = "toggle-fullscreen"
+"super+q" = "close"
+"super+w" = "close"
+
+"super+return" = "exec wt.exe"
+"super+shift+r" = "reload"
+"super+shift+e" = "quit"
+"super+shift+comma" = "settings"
+"super+ctrl+comma" = "open-config"

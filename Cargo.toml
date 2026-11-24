@@ -1,0 +1,59 @@
+[package]
+name = "lattice"
+version = "0.1.0"
+edition = "2024"
+description = "A tiling window manager for Windows 11 with Hyprland-style workspaces and a Rune top bar"
+license = "MIT"
+
+[[bin]]
+name = "lattice"
+path = "src/main.rs"
+
+[build-dependencies]
+embed-resource = "3"
+
+[dependencies]
+# Rune is pre-release: pinned to a `dev` revision, and every crate in its [patch.crates-io]
+# table is patched below at the same revision (Cargo does not inherit patches).
+rune = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e", default-features = false }
+toml_edit = "0.22"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+log = "0.4"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Console",
+    "Win32_Security",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+]
+
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+naga = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "d37ff4664f4116fa7161daf5202e0c0ecb8c0d1e" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
