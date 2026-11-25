@@ -38,6 +38,10 @@ follow_activation = true
 # Move the mouse cursor to the centre of a window focused by keyboard.
 mouse_follows_focus = false
 
+# Look for a newer lattice on GitHub once a day; the bar shows an "Update" button when there
+# is one. Nothing is downloaded until you click it.
+check_for_updates = true
+
 [bar]
 enabled = true
 # Height in logical pixels (scaled by the display's DPI).

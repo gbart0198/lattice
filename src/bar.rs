@@ -12,6 +12,7 @@ use rune::{Align, App, AppSpec, Color, Cx, El, Image, ImageCache, SurfaceFit, Te
 use crate::config::{self, Command, WsTarget};
 use crate::shared::{self, Anchor, BAR_GEN, BarModel};
 use crate::sysinfo::{Sampler, SysInfo};
+use crate::update;
 use crate::win;
 
 struct Theme {
@@ -40,6 +41,8 @@ struct State {
     /// App icon images by `AppIcon::key`, and the keys whose pixels have arrived.
     icons: HashMap<u64, Image>,
     icons_ready: HashSet<u64>,
+    update: update::Status,
+    update_gen: u64,
 }
 
 /// Rune's (sans, mono) family lists for a configured font name: the font first, then the
@@ -97,11 +100,14 @@ fn init() -> State {
         cache: None,
         icons: HashMap::new(),
         icons_ready: HashSet::new(),
+        update: update::Status::Unknown,
+        update_gen: u64::MAX,
     }
 }
 
 fn setup(s: &mut State, wake: rune::Waker) {
     shared::set_bar_waker(wake.clone());
+    update::set_waker(wake.clone());
     s.cache = Some(ImageCache::new(wake.clone()));
     std::thread::Builder::new()
         .name("lattice-sysinfo".into())
@@ -136,6 +142,12 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
         if img.size().is_some() && s.icons_ready.insert(*key) {
             changed = true;
         }
+    }
+    let g = update::GEN.load(Ordering::SeqCst);
+    if g != s.update_gen {
+        s.update_gen = g;
+        s.update = update::status();
+        changed = true;
     }
     let g = SYS_GEN.load(Ordering::SeqCst);
     if g != s.sys_gen {
@@ -268,6 +280,37 @@ fn layout_button(layout: &str, height: f32) -> El {
         .child(diagram)
 }
 
+/// "Update 0.7.0" when a newer release is out; clicking downloads and installs it. Nothing
+/// shows while lattice is up to date or a check failed (the log has why).
+fn update_button(status: &update::Status, height: f32) -> Option<El> {
+    let t = theme();
+    let size = cfg().font_size;
+    let (label, hint, fill, color, clickable) = match status {
+        update::Status::Available(r) => {
+            (format!("Update {}", r.version_str()), "Install the new lattice", t.accent, t.bg, true)
+        }
+        update::Status::Downloading(r) | update::Status::Installing(r) => {
+            (format!("Updating to {}…", r.version_str()), "Downloading and installing", t.occupied, t.fg, false)
+        }
+        update::Status::InstallFailed(_, _) => ("Update failed".into(), "Click to try again (details in the log)", t.occupied, t.fg, true),
+        _ => return None,
+    };
+    let mut button = row()
+        .key("update")
+        .role("button")
+        .label(format!("{label}: {hint}"))
+        .h(height)
+        .px(10.0)
+        .center_y()
+        .radius(height / 2.0)
+        .fill(fill)
+        .child(text(label).font(TextStyle::new(size - 1.0, 650.0)).color(color));
+    if clickable {
+        button = button.hit().on_press(|_s: &mut State| update::install_async());
+    }
+    Some(button)
+}
+
 fn stat(label: &str, value: String) -> El {
     let t = theme();
     let size = cfg().font_size;
@@ -323,9 +366,11 @@ fn view(s: &State, _cx: &mut Cx<State>) -> El {
         stats = stats.child(stat(if charging { "AC" } else { "BAT" }, format!("{pct}%")));
     }
     stats = stats.child(text(s.sys.clock.clone()).font(TextStyle::new(c.font_size, 650.0).features("'tnum' 1")).color(t.fg));
-    let right = row()
-        .gap(14.0)
-        .center_y()
+    let mut right = row().gap(14.0).center_y();
+    if let Some(b) = update_button(&s.update, pill_h) {
+        right = right.child(b);
+    }
+    let right = right
         .child(anchored(layout_button(&s.model.layout, pill_h), Anchor::Layout))
         .child(anchored(stats.key("stats"), Anchor::Stats));
 

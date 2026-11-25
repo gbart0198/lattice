@@ -45,6 +45,8 @@ pub struct General {
     pub float_unresizable: bool,
     pub follow_activation: bool,
     pub mouse_follows_focus: bool,
+    /// Look for a newer release on GitHub once a day (the installed copy only).
+    pub check_for_updates: bool,
 }
 
 impl Default for General {
@@ -60,6 +62,7 @@ impl Default for General {
             float_unresizable: true,
             follow_activation: true,
             mouse_follows_focus: false,
+            check_for_updates: true,
         }
     }
 }

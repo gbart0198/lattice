@@ -60,6 +60,8 @@ Name: "{userstartup}\lattice"; Filename: "{app}\lattice.exe"; WorkingDir: "{app}
 
 [Run]
 Filename: "{app}\lattice.exe"; WorkingDir: "{app}"; Description: "Start lattice now (quit with Win+Shift+E)"; Flags: postinstall nowait skipifsilent
+; An update started from lattice (src/update.rs passes /UPDATE) runs silently: start the new one.
+Filename: "{app}\lattice.exe"; WorkingDir: "{app}"; Flags: nowait; Check: IsUpdate
 
 [Code]
 const
@@ -67,6 +69,17 @@ const
   { Held by the running window manager for its whole life (src/main.rs). }
   LatticeMutex = 'Local\lattice-window-manager';
   LegacyUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\lattice';
+
+{ lattice's own updater passes /UPDATE; scripted silent installs don't, and get no start. }
+function IsUpdate(): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/UPDATE') = 0 then
+      Result := True;
+end;
 
 { Quit a running lattice the way Win+Shift+E does: closing its control window restores every
   window it hid. Anything still running after 5 s (a hung WM, settings windows) is killed. }
