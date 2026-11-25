@@ -21,6 +21,7 @@ mod files;
 mod index;
 mod rank;
 mod system;
+pub(crate) use system::style_window;
 mod ui;
 
 pub use files::{FileAction, FileActions, FileOptions};
@@ -309,7 +310,7 @@ fn fill_template(template: &str, path: &str) -> String {
 }
 
 /// A linear Rune colour as 8-bit sRGB.
-fn srgb(c: Color) -> [u8; 3] {
+pub(crate) fn srgb(c: Color) -> [u8; 3] {
     let enc = |v: f32| {
         let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
         (s.clamp(0.0, 1.0) * 255.0).round() as u8

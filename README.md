@@ -39,10 +39,12 @@ Silent install for scripts: `lattice-setup-<version>.exe /VERYSILENT /TASKS=auto
 
 ### Updates
 
-Once a day lattice asks GitHub whether a newer release is out. If one is, the bar shows an
-**Update** button. Click it and lattice downloads the new installer, checks it against the
-SHA-256 digest GitHub publishes for it, and runs it silently; lattice restarts on the new
-version a few seconds later. Nothing is downloaded until you click. **Settings > General >
+Once a day lattice asks GitHub whether a newer release is out. If one is, a small notice
+appears at the bottom right of the screen, above your windows. **Ignore** hides it until the
+next release; **Update & restart** downloads the new installer, checks it against the
+SHA-256 digest GitHub publishes for it, and runs it; lattice restarts on the new
+version a few seconds later. Nothing is downloaded until you click. Preview the notice with `lattice --update-preview`.
+**Settings > General >
 Updates** has **Check now** and turns the daily check off (`check_for_updates = false` under
 `[general]`). Only the installed copy updates itself; a build run from source never does.
 
