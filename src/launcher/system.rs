@@ -108,8 +108,17 @@ fn wanted(name: &str, id: &str) -> bool {
 
 /// The app's icon at `size` pixels, as the Start menu draws it.
 pub fn icon(id: &str, size: u32) -> Option<Icon> {
+    shell_icon(&apps_folder_path(id), size)
+}
+
+/// A file's or folder's icon at `size` pixels, as Explorer draws it (never a thumbnail).
+pub fn file_icon(path: &str, size: u32) -> Option<Icon> {
+    shell_icon(path, size)
+}
+
+fn shell_icon(parsing_name: &str, size: u32) -> Option<Icon> {
     unsafe {
-        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(apps_folder_path(id)), None::<&IBindCtx>).ok()?;
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(parsing_name), None::<&IBindCtx>).ok()?;
         let factory: IShellItemImageFactory = item.cast().ok()?;
         let side = size as i32;
         let bitmap = factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_ICONONLY).ok()?;
@@ -191,6 +200,95 @@ pub fn launch(id: &str, clean_env: &[String]) {
     }
     if let Err(e) = cmd.spawn() {
         log::error!("launcher: launch {id}: {e}");
+    }
+}
+
+/// Runs `explorer.exe` with `arg` (quoted by the caller): Explorer opens files with their
+/// default app and folders in a window, and the app gets the shell's environment, not ours.
+fn explorer(arg: String, clean_env: &[String]) {
+    unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    }
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("explorer.exe");
+    cmd.raw_arg(&arg);
+    for var in clean_env {
+        cmd.env_remove(var);
+    }
+    if let Err(e) = cmd.spawn() {
+        log::error!("launcher: explorer {arg}: {e}");
+    }
+}
+
+/// Opens a file with its default app, or a folder in Explorer.
+pub fn open_path(path: &str, clean_env: &[String]) {
+    explorer(format!("\"{path}\""), clean_env);
+}
+
+/// Opens the folder holding `path` in Explorer with it selected.
+pub fn reveal(path: &str, clean_env: &[String]) {
+    explorer(format!("/select,\"{path}\""), clean_env);
+}
+
+/// Runs a command line as the Run dialog would (`start` resolves App Paths such as `code`).
+pub fn exec(line: &str, clean_env: &[String]) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    }
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.raw_arg(format!("/C start \"\" {line}")).creation_flags(CREATE_NO_WINDOW);
+    for var in clean_env {
+        cmd.env_remove(var);
+    }
+    if let Err(e) = cmd.spawn() {
+        log::error!("launcher: exec '{line}': {e}");
+    }
+}
+
+/// Puts `text` on the clipboard as Unicode text.
+pub fn copy_text(text: &str) {
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+    let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    unsafe {
+        // Another app may hold the clipboard for a moment.
+        let mut opened = false;
+        for _ in 0..10 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        if !opened {
+            log::warn!("launcher: clipboard busy; path not copied");
+            return;
+        }
+        let _ = EmptyClipboard();
+        let copied = (|| -> windows::core::Result<()> {
+            let mem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)?;
+            let dst = GlobalLock(mem) as *mut u16;
+            if dst.is_null() {
+                let _ = GlobalFree(Some(mem));
+                return Err(windows::core::Error::from_thread());
+            }
+            std::ptr::copy_nonoverlapping(units.as_ptr(), dst, units.len());
+            let _ = GlobalUnlock(mem);
+            // On success the clipboard owns the memory.
+            if let Err(e) = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(mem.0))) {
+                let _ = GlobalFree(Some(mem));
+                return Err(e);
+            }
+            Ok(())
+        })();
+        let _ = CloseClipboard();
+        if let Err(e) = copied {
+            log::warn!("launcher: copying to the clipboard: {e}");
+        }
     }
 }
 

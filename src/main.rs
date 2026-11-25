@@ -117,7 +117,63 @@ fn launcher_options(cfg: &config::Config) -> launcher::Options {
         max_results: cfg.launcher.max_results,
         data_dir: config::config_dir(),
         clean_env: vec![CPU_FIRST_ENV.to_string()],
+        files: file_options(&cfg.launcher),
     }
+}
+
+/// File search options; a bad action is reported and falls back to its default.
+fn file_options(l: &config::Launcher) -> launcher::FileOptions {
+    let defaults = launcher::FileActions::default();
+    let action = |key: &str, set: &str, default: &launcher::FileAction| {
+        launcher::FileAction::parse(set).unwrap_or_else(|e| {
+            log::error!("config [launcher] {key} = \"{set}\": {e}; using the default");
+            default.clone()
+        })
+    };
+    let roots: Vec<std::path::PathBuf> = if l.index_roots.is_empty() {
+        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).into_iter().collect()
+    } else {
+        l.index_roots.iter().map(|r| std::path::PathBuf::from(expand_env(r))).collect()
+    };
+    launcher::FileOptions {
+        prefix: l.file_prefix.trim().to_string(),
+        actions: launcher::FileActions {
+            file: action("file_enter", &l.file_enter, &defaults.file),
+            file_ctrl: action("file_ctrl_enter", &l.file_ctrl_enter, &defaults.file_ctrl),
+            dir: action("folder_enter", &l.folder_enter, &defaults.dir),
+            dir_ctrl: action("folder_ctrl_enter", &l.folder_ctrl_enter, &defaults.dir_ctrl),
+        },
+        index_roots: roots,
+        index_exclude: l.index_exclude.clone(),
+    }
+}
+
+/// `%NAME%` environment variables in `s` expanded ("%USERPROFILE%\\Documents"); unknown ones kept.
+fn expand_env(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => match std::env::var(&after[..end]) {
+                Ok(v) if end > 0 => {
+                    out.push_str(&v);
+                    rest = &after[end + 1..];
+                }
+                _ => {
+                    out.push('%');
+                    rest = after;
+                }
+            },
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Rune's switch for drawing on the CPU (see `main`).

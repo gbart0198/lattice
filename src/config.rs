@@ -148,12 +148,44 @@ pub struct Launcher {
     pub width: f32,
     /// Result rows shown at once.
     pub max_results: usize,
+    /// Typed before a space to search files and folders instead of apps.
+    pub file_prefix: String,
+    /// What Enter and Ctrl+Enter do with a file, and with a folder: "open", "reveal",
+    /// "copy-path" or "exec <command line>" (with {path}, {dir}, {name}).
+    pub file_enter: String,
+    pub file_ctrl_enter: String,
+    pub folder_enter: String,
+    pub folder_ctrl_enter: String,
+    /// Folders lattice indexes itself when Everything isn't running; empty means your user folder.
+    pub index_roots: Vec<String>,
+    /// Folder names that index skips, anywhere.
+    pub index_exclude: Vec<String>,
 }
 
 impl Default for Launcher {
     fn default() -> Self {
-        Self { enabled: true, width: 680.0, max_results: 8 }
+        Self {
+            enabled: true,
+            width: 680.0,
+            max_results: 8,
+            file_prefix: "f".into(),
+            file_enter: "open".into(),
+            file_ctrl_enter: "reveal".into(),
+            folder_enter: "open".into(),
+            folder_ctrl_enter: "copy-path".into(),
+            index_roots: Vec::new(),
+            index_exclude: default_index_exclude(),
+        }
     }
+}
+
+pub fn default_index_exclude() -> Vec<String> {
+    [
+        "node_modules", ".git", ".svn", ".hg", "target", "__pycache__", ".venv", "venv", ".cache", ".cargo",
+        ".rustup", ".npm", ".nuget", ".gradle", ".m2", "AppData", "$Recycle.Bin",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
