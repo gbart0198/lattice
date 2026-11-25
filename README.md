@@ -203,7 +203,8 @@ and `glow_opacity`.
 The first time lattice starts, it dims the screen and walks you through it with a spotlight on
 the real thing: the bar, the workspace pills, the focused window, the layout button, the stats
 and the launcher. Steps that teach a key wait for you to press it (Win+2, Win+\\, Win+Space)
-and move on when you do; each also has **Next**, **Back** and **Skip tour**. **Escape ends it**
+and tick off when you do, then wait for **Next** so you can read what happened (the launcher
+step moves straight on, to point at the launcher); each also has **Next**, **Back** and **Skip tour**. **Escape ends it**
 whatever has focus (except while the launcher is open, where Escape closes the launcher). The
 overlay never takes the keyboard from your apps, and clicks outside its card go through to the
 desktop.
