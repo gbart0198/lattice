@@ -824,6 +824,7 @@ impl Wm {
                 crate::launcher::toggle(area);
             }
             Command::Settings => open_settings(),
+            Command::Tour => crate::tour::start(),
             Command::OpenConfig => open_config(),
             Command::Quit => self.quit = true,
         }
@@ -1052,7 +1053,9 @@ impl Wm {
             })
             .collect();
         let title = self.focused_window().and_then(|h| self.windows.get(&h)).map(|w| w.title.clone()).unwrap_or_default();
-        shared::publish(BarModel { workspaces, title, layout: self.workspaces[self.active].layout.name().to_string() });
+        let layout = self.workspaces[self.active].layout.name();
+        shared::set_focus_state(self.focused_window(), self.active, layout_code(layout));
+        shared::publish(BarModel { workspaces, title, layout: layout.to_string() });
     }
 
     /// Keeps the focus border wrapped around the focused window (or hidden when no managed
@@ -1082,6 +1085,15 @@ impl Wm {
         for h in self.hidden.keys() {
             win::show(*h);
         }
+    }
+}
+
+/// A layout as the tour's status reports it.
+fn layout_code(name: &str) -> u8 {
+    match name {
+        "master" => 1,
+        "monocle" => 2,
+        _ => 0,
     }
 }
 

@@ -53,6 +53,7 @@ const VK_RWIN: i32 = 0x5C;
 const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12;
+const VK_ESCAPE: u32 = 0x1B;
 /// Unassigned virtual key, sent so that releasing Win after a swallowed Win+key combo
 /// doesn't open the Start menu.
 const VK_MASK: u16 = 0xE8;
@@ -101,6 +102,13 @@ unsafe extern "system" fn keyboard_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LR
         if !injected && !is_modifier(vk) {
             if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
                 let mods = current_mods();
+                // Escape ends the tour wherever the focus is, unless the launcher is up (Escape
+                // is how you close it). Only while a live tour is checking in.
+                if vk == VK_ESCAPE && mods == 0 && shared::tour_active() && !crate::launcher::is_visible() {
+                    shared::tour_escape();
+                    SWALLOWED.with(|s| s.borrow_mut().insert(vk));
+                    return LRESULT(1);
+                }
                 let cmd = KEYMAP.read().ok().and_then(|k| k.as_ref()?.get(&(mods, vk)).cloned());
                 if let Some(cmd) = cmd {
                     SWALLOWED.with(|s| s.borrow_mut().insert(vk));
@@ -202,6 +210,16 @@ unsafe extern "system" fn display_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
     const SPI_SETWORKAREA: usize = 0x002F;
     // Scripts (install/uninstall) ask lattice to quit cleanly by closing this window: same
     // path as Win+Shift+E, so every hidden window is shown again before exit.
+    if msg == shared::WM_TOUR_STATUS {
+        let status = shared::tour_status(wp.0 != 0);
+        if wp.0 != 0 {
+            crate::border::tuck_under_tour();
+        }
+        return LRESULT(status as isize);
+    }
+    if msg == shared::WM_TOUR_RECT {
+        return LRESULT(shared::tour_rect(wp.0) as isize);
+    }
     if msg == WM_APP + 2 {
         // The settings window saved config.toml.
         push(Item::Command(Command::Reload));

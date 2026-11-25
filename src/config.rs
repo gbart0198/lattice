@@ -333,6 +333,8 @@ pub enum Command {
     Settings,
     /// Open config.toml in a text editor.
     OpenConfig,
+    /// Start the product tour, or end the one showing.
+    Tour,
     Quit,
 }
 
@@ -398,6 +400,7 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "reload" => Command::Reload,
         "launcher" | "launch" => Command::Launcher,
         "settings" => Command::Settings,
+        "tour" => Command::Tour,
         "open-config" | "edit-config" => Command::OpenConfig,
         "quit" | "exit" => Command::Quit,
         "exec" => {

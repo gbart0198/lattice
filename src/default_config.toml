@@ -157,6 +157,7 @@ float = true
 #   retile   reload   quit   exec <command line>
 #   launcher (show/hide the app launcher)
 #   settings (open the settings window)   open-config (open this file in an editor)
+#   tour (replay the guided tour of lattice; Escape ends it)
 # Setting a key to "none" disables it. Note: super+L (lock) can't be overridden by any app.
 [keybinds]
 "super+left" = "focus left"
@@ -220,3 +221,4 @@ float = true
 "super+shift+e" = "quit"
 "super+alt+comma" = "settings"
 "super+ctrl+comma" = "open-config"
+"super+shift+slash" = "tour"

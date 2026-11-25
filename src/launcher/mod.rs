@@ -183,6 +183,20 @@ pub fn toggle(on: Option<Area>) {
     }
 }
 
+/// The launcher is on screen. Any thread.
+pub fn is_visible() -> bool {
+    LAUNCHER.get().is_some_and(|l| l.app.is_visible())
+}
+
+/// Where the launcher is on screen while it shows, in physical pixels: (x, y, width, height).
+pub fn screen_rect() -> Option<(i32, i32, i32, i32)> {
+    let hwnd = HWND.load(Ordering::SeqCst);
+    if hwnd == 0 || !is_visible() {
+        return None;
+    }
+    system::window_rect(hwnd)
+}
+
 /// Hides the launcher, forgetting what was typed. Any thread.
 pub fn hide() {
     let Some(l) = LAUNCHER.get() else { return };
