@@ -40,6 +40,7 @@ USAGE: lattice [--list | --bar-preview | --help]
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
   --bar-preview   show only the bar with sample data (no window management)
   --settings      open the settings window (Win+Alt+Comma)
+  --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
 
@@ -195,6 +196,10 @@ fn main() {
     }
     if has("--help") || has("-h") {
         println!("{HELP}");
+        return;
+    }
+    if has("--restore") {
+        shared::recover_hidden_from_last_run();
         return;
     }
     // The bar paints with Rune's CPU renderer and never opens a GPU device unless a frame needs

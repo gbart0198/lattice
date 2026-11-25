@@ -2,3 +2,4 @@ target/
 *.wav
 frames/
 .claude/worktrees/
+dist/

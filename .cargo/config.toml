@@ -1,0 +1,5 @@
+# Link the C runtime into the exe so it runs on a clean Windows install without the
+# Visual C++ Redistributable (no VCRUNTIME140.dll needed). The rest of the CRT (UCRT) ships
+# with Windows 10 and later.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

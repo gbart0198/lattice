@@ -21,7 +21,21 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   running, else lattice's own background index of your user folder.
 - **Settings window** (Win+Alt+Comma) for everything above.
 
-## Getting started
+## Install
+
+Download `lattice-setup-<version>.exe` from the
+[latest release](https://github.com/gbart0198/lattice/releases/latest) and run it. It installs
+for your account only (no admin rights) to `%LOCALAPPDATA%\Programs\lattice`, adds a Start
+menu entry, and can start lattice when you sign in. Run a newer setup to upgrade: it quits the
+running lattice cleanly first. Uninstall from **Settings > Apps > Installed apps**.
+
+The installer isn't code-signed yet, so SmartScreen may warn about it: choose
+**More info > Run anyway**.
+
+Silent install for scripts: `lattice-setup-<version>.exe /VERYSILENT /TASKS=autostart`.
+
+## Building from source
+
 
 ### 1. Prerequisites
 
@@ -87,6 +101,17 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 To uninstall, use **Installed apps > lattice**, or run
 `%LOCALAPPDATA%\Programs\lattice\uninstall.ps1`. Your config is kept unless you pass
 `-RemoveConfig`.
+
+### 5. Build the installer
+
+```powershell
+winget install JRSoftware.InnoSetup   # once
+.\installer\build.ps1                 # builds, then writes dist\lattice-setup-<version>.exe
+```
+
+The setup's version comes from `Cargo.toml`. Pushing a `v*` tag runs
+`.github/workflows/release.yml`, which builds the installer on GitHub and attaches it to that
+release.
 
 **Apps running as administrator**: Windows only lets lattice move them if lattice is elevated
 too. To start it elevated at sign-in, use a scheduled task instead of `-Autostart`:
