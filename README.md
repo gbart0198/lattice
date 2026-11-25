@@ -86,6 +86,7 @@ cargo run --release -- --list          # monitors + windows it would tile/float/
 cargo run --release -- --bar-preview   # just the bar, with sample data
 cargo run --release -- --settings      # just the settings window
 cargo run --release -- --tour --tour-preview   # the guided tour over a sample desktop
+cargo run --release -- --launcher-bench         # time launcher opens and keystrokes (takes the focus)
 ```
 
 If linking fails with `LNK1104: cannot open file`, the folder path is too long for the MSVC
