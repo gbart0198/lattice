@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, HWND_MESSAGE, MSG, MsgWaitForMultipleObjects,
+    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, HWND_MESSAGE, MSG, MSGFLT_ALLOW, MsgWaitForMultipleObjects,
     PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_COPYDATA, WNDCLASSW,
 };
@@ -48,7 +48,10 @@ pub struct Item {
 pub enum Error {
     /// Everything isn't running (or its IPC window isn't up yet).
     NotRunning,
-    /// It's running but didn't answer: still loading its database, hung, or elevated.
+    /// It turned the query down. Everything Lite does this to every query (it has no IPC), and
+    /// the full version does while its database is loading.
+    Refused,
+    /// It took the query but no reply came: hung, or the reply was blocked.
     NoReply,
 }
 
@@ -102,6 +105,8 @@ impl Client {
                 None,
             )
             .ok()?;
+            // If lattice runs elevated and Everything doesn't, Windows would drop its replies.
+            let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, None);
             Some(Client { hwnd, seq: 0 })
         }
     }
@@ -143,8 +148,11 @@ impl Client {
                 Some(&mut accepted),
             )
         };
-        if sent.0 == 0 || accepted == 0 {
+        if sent.0 == 0 {
             return Err(Error::NoReply);
+        }
+        if accepted == 0 {
+            return Err(Error::Refused);
         }
 
         // The reply is a sent message: pumping our queue lets Windows deliver it.
@@ -260,5 +268,21 @@ mod tests {
             buf.extend(v.to_le_bytes());
         }
         assert!(parse_list(&buf).is_none());
+    }
+}
+
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    /// Against a running Everything: `cargo test live_query -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_query() {
+        let mut c = Client::new().expect("client");
+        match c.query("Downloads", 5, SORT_DATE_MODIFIED_DESC) {
+            Ok(items) => items.iter().for_each(|i| println!("{} {}", if i.dir { "d" } else { "f" }, i.path)),
+            Err(e) => println!("{e:?}"),
+        }
     }
 }

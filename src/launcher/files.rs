@@ -186,6 +186,8 @@ pub fn start(
         let mut last: Option<(u64, String, bool)> = None;
         // Whether our index has been loaded and walked this session (Everything may come and go).
         let mut index_started = false;
+        // Why Everything last failed, so each failure is logged once rather than per keystroke.
+        let mut everything_down: Option<everything::Error> = None;
         let warm = |index: &Arc<Index>| {
             let tx = progress_tx.clone();
             index.refresh(move || {
@@ -204,8 +206,8 @@ pub fn start(
                 }
             }
             if wants_warm || matches!(req, Req::Warm) {
-                // Everything keeps itself current; only our index needs walking.
-                if !everything::running() {
+                // Everything keeps itself current; our index only matters when it can't answer.
+                if !everything::running() || everything_down.is_some() {
                     warm(&index);
                     index_started = true;
                 }
@@ -219,14 +221,30 @@ pub fn start(
                 Req::Warm => continue,
             };
             let history = history.lock().unwrap().snapshot();
+            let answer = client.as_mut().map(|c| search_everything(c, &text, &history, want));
             let mut source = Source::Everything;
-            let mut hits = match client.as_mut().map(|c| search_everything(c, &text, &history, want)) {
-                Some(Ok(hits)) => hits,
-                Some(Err(everything::Error::NoReply)) => {
-                    log::warn!("launcher: Everything didn't answer \"{text}\"");
-                    Vec::new()
+            let mut hits = match answer {
+                Some(Ok(hits)) => {
+                    everything_down = None;
+                    hits
                 }
-                Some(Err(everything::Error::NotRunning)) | None => {
+                // Not running, or not answering (Everything Lite has no IPC): use our index.
+                failed => {
+                    let why = match failed {
+                        Some(Err(e)) => e,
+                        _ => everything::Error::NotRunning,
+                    };
+                    if everything_down.as_ref() != Some(&why) {
+                        match why {
+                            everything::Error::NotRunning => log::info!("launcher: Everything isn't running; using lattice's file index"),
+                            everything::Error::Refused => log::warn!(
+                                "launcher: Everything refused the query (Everything Lite has no IPC; the full version \
+                                 refuses while loading); using lattice's file index"
+                            ),
+                            everything::Error::NoReply => log::warn!("launcher: Everything didn't answer; using lattice's file index"),
+                        }
+                        everything_down = Some(why);
+                    }
                     if !index_started {
                         warm(&index);
                         index_started = true;
