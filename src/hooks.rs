@@ -156,7 +156,7 @@ unsafe extern "system" fn win_event_proc(
         EVENT_OBJECT_CLOAKED => Event::Cloaked(h),
         EVENT_OBJECT_UNCLOAKED => Event::Uncloaked(h),
         EVENT_OBJECT_NAMECHANGE => Event::NameChange(h),
-        EVENT_OBJECT_LOCATIONCHANGE => Event::Location,
+        EVENT_OBJECT_LOCATIONCHANGE => Event::Location(h),
         EVENT_SYSTEM_FOREGROUND => Event::Foreground(h),
         EVENT_SYSTEM_MINIMIZESTART => Event::MinimizeStart(h),
         EVENT_SYSTEM_MINIMIZEEND => Event::MinimizeEnd(h),
@@ -299,7 +299,6 @@ pub fn run(cfg: Config) {
                 Item::Event(e) => wm.event(e),
                 Item::Command(c) => wm.command(c),
             }
-            wm.update_border();
             if wm.reload_keymap {
                 wm.reload_keymap = false;
                 install_keymap(wm.config());
@@ -311,6 +310,10 @@ pub fn run(cfg: Config) {
         if wm.quit {
             break;
         }
+        // Once per batch, not per item: a drag queues dozens of location changes, and a
+        // workspace switch hides and shows every window on two workspaces.
+        wm.update_border();
+        shared::flush_hidden();
     }
 
     log::info!("shutting down");

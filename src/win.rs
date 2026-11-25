@@ -143,15 +143,16 @@ pub struct Candidate {
 /// Returns `Some` for real application windows: visible, top-level, uncloaked, unowned (or
 /// app-windowed), not a tool window, not shell UI, not ours.
 pub fn candidate(hwnd: Hwnd) -> Option<Candidate> {
-    if hwnd == 0 || !is_window(hwnd) || !is_visible(hwnd) || !is_top_level(hwnd) || is_cloaked(hwnd) {
-        return None;
-    }
-    if pid(hwnd) == own_pid() {
+    // Cheapest checks first: Show and NameChange events bring every window on the desktop here.
+    if hwnd == 0 || !is_window(hwnd) || !is_visible(hwnd) || !is_top_level(hwnd) {
         return None;
     }
     let st = style(hwnd);
     let ex = ex_style(hwnd);
     if st.contains(WS_CHILD) || ex.contains(WS_EX_TOOLWINDOW) || ex.contains(WS_EX_NOACTIVATE) {
+        return None;
+    }
+    if pid(hwnd) == own_pid() || is_cloaked(hwnd) {
         return None;
     }
     if owner(hwnd).is_some() && !ex.contains(WS_EX_APPWINDOW) {

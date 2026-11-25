@@ -72,9 +72,9 @@ fn bar_preview(bar_cfg: config::Bar) {
     let apps = |a: &[&str]| {
         a.iter()
             .map(|s| shared::AppInfo {
-                name: s.to_string(),
-                icon: icon::for_exe(&format!(r"C:\Windows\{s}.exe"), s.to_string())
-                    .or_else(|| icon::for_exe(&format!(r"C:\Windows\System32\{s}.exe"), s.to_string())),
+                name: (*s).into(),
+                icon: icon::for_exe(&format!(r"C:\Windows\{s}.exe"))
+                    .or_else(|| icon::for_exe(&format!(r"C:\Windows\System32\{s}.exe"))),
             })
             .collect::<Vec<_>>()
     };
@@ -92,8 +92,11 @@ fn bar_preview(bar_cfg: config::Bar) {
             .nth(1)
             .unwrap_or_else(|| "dwindle".into()),
     });
-    bar::run(bar_cfg, config::Border { enabled: false, ..Default::default() });
+    bar::run(bar_cfg);
 }
+
+/// Rune's switch for drawing on the CPU (see `main`).
+pub const CPU_FIRST_ENV: &str = "RUNE_CPU_FIRST";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -113,6 +116,15 @@ fn main() {
         println!("{HELP}");
         return;
     }
+    // The bar paints with Rune's CPU renderer and never opens a GPU device unless a frame needs
+    // one (Rune then starts it on demand). The device alone (driver, shader compiler, heaps) is
+    // ~50 MB of private memory, for a bar that redraws about once a second. Set the variable
+    // yourself (e.g. `RUNE_CPU_FIRST=1`) to draw the bar on the GPU again.
+    if std::env::var_os(CPU_FIRST_ENV).is_none() {
+        // SAFETY: no other thread exists yet. `exec` binds and the settings window remove it
+        // again for the programs they start (wm.rs).
+        unsafe { std::env::set_var(CPU_FIRST_ENV, "only") };
+    }
     logger::init();
     unsafe {
         // Physical pixels everywhere; must happen before any window or monitor call.
@@ -127,9 +139,8 @@ fn main() {
         return;
     }
     if has("--border-preview") {
-        // Only the focus-border window (for headless snapshots: --window border --snap).
-        let cfg = config::load();
-        bar::run(config::Bar { enabled: false, ..cfg.bar }, cfg.border);
+        // Only the focus border, around a sample rectangle (end the process to close it).
+        border::preview(config::load().border);
         return;
     }
     unsafe {
@@ -156,7 +167,6 @@ fn main() {
     let cfg = config::load();
     log::info!("config: {}", config::config_path().display());
     let bar_cfg = cfg.bar.clone();
-    let border_cfg = cfg.border.clone();
 
     let wm_thread = std::thread::Builder::new()
         .name("lattice-wm".into())
@@ -168,8 +178,9 @@ fn main() {
         })
         .expect("spawn WM thread");
 
-    if bar_cfg.enabled || border_cfg.enabled {
-        bar::run(bar_cfg, border_cfg);
+    // The focus border belongs to the WM thread; Rune runs only for the bar.
+    if bar_cfg.enabled {
+        bar::run(bar_cfg);
         // The UI only returns if the bar was closed: shut the WM down too.
         shared::send_command(config::Command::Quit);
     }

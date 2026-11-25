@@ -1,8 +1,8 @@
 //! State shared between the window-manager thread and the bar (Rune) thread.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
@@ -27,8 +27,9 @@ pub struct WsInfo {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppInfo {
-    /// Short app name ("firefox"), shown when there's no icon or labels are on.
-    pub name: String,
+    /// Short app name ("firefox"), shown when there's no icon or labels are on. Shared with
+    /// the WM's window record, so publishing the model doesn't copy it.
+    pub name: Arc<str>,
     pub icon: Option<crate::icon::AppIcon>,
 }
 
@@ -46,6 +47,8 @@ static BAR_WAKER: OnceLock<rune::Waker> = OnceLock::new();
 static COMMANDS: Mutex<Vec<Command>> = Mutex::new(Vec::new());
 /// Every window lattice has hidden, so they can be shown again on exit or crash.
 static HIDDEN: Mutex<Option<HashSet<Hwnd>>> = Mutex::new(None);
+/// The hidden set changed since `hidden.txt` was last written (`flush_hidden`).
+static HIDDEN_DIRTY: AtomicBool = AtomicBool::new(false);
 
 pub fn set_wm_thread(id: u32) {
     WM_THREAD.store(id, Ordering::SeqCst);
@@ -100,6 +103,19 @@ pub fn mark_hidden(hwnd: Hwnd, hidden: bool) {
     let set = g.get_or_insert_with(HashSet::new);
     let changed = if hidden { set.insert(hwnd) } else { set.remove(&hwnd) };
     if changed {
+        HIDDEN_DIRTY.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Writes `hidden.txt` if the set changed. The WM thread calls this once it has worked through
+/// a batch of events, so a workspace switch that hides or shows N windows writes the file
+/// once instead of N times.
+pub fn flush_hidden() {
+    if !HIDDEN_DIRTY.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let g = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(set) = g.as_ref() {
         save_hidden(set);
     }
 }

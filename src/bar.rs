@@ -35,8 +35,8 @@ struct State {
     /// Decodes app icons off-thread and wakes the bar when they're ready.
     cache: Option<ImageCache>,
     /// App icon images by `AppIcon::key`, and the keys whose pixels have arrived.
-    icons: HashMap<String, Image>,
-    icons_ready: HashSet<String>,
+    icons: HashMap<u64, Image>,
+    icons_ready: HashSet<u64>,
 }
 
 /// Rune's (sans, mono) family lists for a configured font name: the font first, then the
@@ -130,7 +130,7 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
     }
     // Icons decode off-thread; rebuild once each one lands.
     for (key, img) in &s.icons {
-        if img.size().is_some() && s.icons_ready.insert(key.clone()) {
+        if img.size().is_some() && s.icons_ready.insert(*key) {
             changed = true;
         }
     }
@@ -151,9 +151,9 @@ fn sync_icons(s: &mut State) {
     let mut live = HashSet::new();
     for app in s.model.workspaces.iter().flat_map(|w| &w.apps) {
         if let Some(icon) = &app.icon {
-            live.insert(icon.key.clone());
+            live.insert(icon.key);
             s.icons
-                .entry(icon.key.clone())
+                .entry(icon.key)
                 .or_insert_with(|| cache.rgba(crate::icon::SIZE, crate::icon::SIZE, icon.rgba.clone()));
         }
     }
@@ -171,11 +171,11 @@ fn app_chip(s: &State, app: &shared::AppInfo, color: Color) -> El {
         .and_then(|i| s.icons.get(&i.key))
         .filter(|img| img.size().is_some())
         .map(|img| el().size(size, size).pixels_fit(img.pixels(), SurfaceFit::Fit));
-    let name = || text(app.name.clone()).max_w(120.0).truncate().font(TextStyle::new(c.font_size - 1.0, 500.0)).color(color);
+    let name = || text(app.name.to_string()).max_w(120.0).truncate().font(TextStyle::new(c.font_size - 1.0, 500.0)).color(color);
     match (c.app_display.as_str(), icon) {
         ("names", _) | (_, None) => name(),
         ("both", Some(icon)) => row().gap(4.0).center_y().child(icon).child(name()),
-        (_, Some(icon)) => icon.label(app.name.clone()),
+        (_, Some(icon)) => icon.label(app.name.to_string()),
     }
 }
 
@@ -318,22 +318,13 @@ fn view(s: &State, _cx: &mut Cx<State>) -> El {
     )
 }
 
-/// Runs the bar on the calling thread until the process exits.
-/// Runs lattice's Rune windows (the bar and/or the focus border) on the calling thread until
-/// the UI quits.
-pub fn run(bar_cfg: config::Bar, border_cfg: config::Border) {
-    let mut windows: Vec<rune::AnyWindowSpec> = Vec::new();
-    if bar_cfg.enabled
-        && let Some(spec) = bar_spec(bar_cfg)
-    {
-        windows.push(spec.boxed());
-    }
-    if border_cfg.enabled {
-        windows.push(crate::border::spec(border_cfg).boxed());
-    }
-    if windows.is_empty() {
+/// Runs the bar on the calling thread until the bar quits.
+pub fn run(bar_cfg: config::Bar) {
+    if !bar_cfg.enabled {
         return;
     }
+    let Some(spec) = bar_spec(bar_cfg) else { return };
+    let windows: Vec<rune::AnyWindowSpec> = vec![spec.boxed()];
     rune::run_windows(move |_displays| windows);
 }
 
@@ -378,9 +369,8 @@ fn bar_spec(bar_cfg: config::Bar) -> Option<rune::WindowSpec<State>> {
     .window_options(options)
     .windows_window(WindowsWindowOptions::default().tool_window(true).no_activate(true))
     .open_inactive()
-    // Closing the bar quits lattice (the border window alone would keep Rune running), and
-    // Rune may end the process right after, or on logoff/shutdown: put every window lattice
-    // hid back on screen first.
+    // Closing the bar quits lattice, and Rune may end the process right after, or on
+    // logoff/shutdown: put every window lattice hid back on screen first.
     .on_close(|_, tx| {
         shared::restore_hidden();
         tx.quit();

@@ -7,6 +7,7 @@
 //! Windows virtual desktops, so there's no animation and no delay.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::{self, Command, Config, Dir, NewWindow, WsTarget};
@@ -26,8 +27,9 @@ pub enum Event {
     MinimizeEnd(Hwnd),
     MoveSizeEnd(Hwnd),
     NameChange(Hwnd),
-    /// A window moved or resized (keeps the focus border on it).
-    Location,
+    /// A window (any window, system-wide) moved or resized; only the focused one matters, for
+    /// the focus border.
+    Location(Hwnd),
 }
 
 struct Window {
@@ -39,6 +41,8 @@ struct Window {
     /// Nudge the window to redraw after showing it (rule `repaint = true`).
     repaint: bool,
     exe: String,
+    /// The bar's short name for it (`app_name`), kept so publishing doesn't rebuild it.
+    name: Arc<str>,
     icon: Option<crate::icon::AppIcon>,
     title: String,
 }
@@ -76,9 +80,13 @@ pub struct Wm {
     hidden: HashMap<Hwnd, Instant>,
     pub quit: bool,
     pub reload_keymap: bool,
-    /// The focus-border overlay window (found lazily) and where it was last put.
-    border_hwnd: Hwnd,
-    border_rect: Option<Rect>,
+    /// The focus border (None when turned off).
+    border: Option<crate::border::Border>,
+    /// The managed window that had focus at the last border update: its moves are the only
+    /// location changes that matter.
+    border_watch: Option<Hwnd>,
+    /// Something happened that may move the border; `update_border` looks once per batch.
+    border_dirty: bool,
 }
 
 /// What a directional search can land on: a window, or an empty monitor.
@@ -101,8 +109,9 @@ impl Wm {
             hidden: HashMap::new(),
             quit: false,
             reload_keymap: false,
-            border_hwnd: 0,
-            border_rect: None,
+            border: crate::border::Border::new(cfg.border.clone()),
+            border_watch: None,
+            border_dirty: true,
             cfg,
         };
         wm.build_workspaces();
@@ -244,7 +253,9 @@ impl Wm {
             "manage {hwnd:#x} '{}' ({}, {}) -> ws {} monitor {}{}",
             c.title, c.exe, c.class, ws + 1, mon, if floating { " floating" } else { "" }
         );
-        self.windows.insert(hwnd, Window { ws, mon, floating, minimized, repaint, icon: crate::icon::for_window(hwnd, format!("{hwnd:x}")), exe: c.exe, title: c.title });
+        let name = app_name(&c.exe, &c.title).into();
+        let icon = crate::icon::for_window(hwnd);
+        self.windows.insert(hwnd, Window { ws, mon, floating, minimized, repaint, name, icon, exe: c.exe, title: c.title });
 
         let w = &mut self.workspaces[ws];
         let pos = match (self.cfg.general.new_window, w.last_focus) {
@@ -659,6 +670,7 @@ impl Wm {
 
     pub fn command(&mut self, cmd: Command) {
         log::debug!("command {cmd:?}");
+        self.border_dirty = true;
         match cmd {
             Command::Focus(d) => self.focus_dir(d),
             Command::MoveWindow(d) => self.move_dir(d),
@@ -746,6 +758,9 @@ impl Wm {
                     ws.master_ratio = cfg.general.master_ratio;
                 }
                 self.cfg = cfg;
+                // The border is ours (not the bar's), so its settings can apply right away.
+                self.border = None;
+                self.border = crate::border::Border::new(self.cfg.border.clone());
                 self.build_workspaces();
                 self.reload_keymap = true;
                 self.refresh_monitors();
@@ -776,6 +791,11 @@ impl Wm {
     // Events
 
     pub fn event(&mut self, ev: Event) {
+        // Location changes arrive for every window on the desktop (and their child windows);
+        // only the focused window's own moves can move the border.
+        if !matches!(ev, Event::Location(h) if Some(h) != self.border_watch) {
+            self.border_dirty = true;
+        }
         match ev {
             Event::Show(h) => {
                 if self.windows.contains_key(&h) {
@@ -854,14 +874,28 @@ impl Wm {
             Event::MoveSizeEnd(h) => self.drag_ended(h),
             Event::NameChange(h) => {
                 if let Some(w) = self.windows.get_mut(&h) {
-                    w.title = win::title(h);
-                    self.publish();
+                    // Titles change constantly (terminals animate them, browsers put the page
+                    // in them). The bar only shows the focused window's title, plus a name
+                    // that, for UWP apps, comes from the title: republish only for those.
+                    let title = win::title(h);
+                    if title == w.title {
+                        return;
+                    }
+                    let name = app_name(&w.exe, &title);
+                    let renamed = *w.name != *name;
+                    if renamed {
+                        w.name = name.into();
+                    }
+                    w.title = title;
+                    if renamed || self.focused_window() == Some(h) {
+                        self.publish();
+                    }
                 } else if win::is_visible(h) {
                     self.try_manage(h, None, true);
                 }
             }
-            // Handled by `update_border`, which runs after every event.
-            Event::Location => {}
+            // Handled by `update_border`, which runs after each batch of events.
+            Event::Location(_) => {}
         }
     }
 
@@ -932,45 +966,32 @@ impl Wm {
                 number: i + 1,
                 visible: i == self.active,
                 focused: i == self.active,
-                apps: ws.windows.iter().filter_map(|h| self.windows.get(h)).map(|w| shared::AppInfo { name: app_name(&w.exe, &w.title), icon: w.icon.clone() }).collect(),
+                apps: ws.windows.iter().filter_map(|h| self.windows.get(h)).map(|w| shared::AppInfo { name: w.name.clone(), icon: w.icon.clone() }).collect(),
             })
             .collect();
         let title = self.focused_window().and_then(|h| self.windows.get(&h)).map(|w| w.title.clone()).unwrap_or_default();
         shared::publish(BarModel { workspaces, title, layout: self.workspaces[self.active].layout.name().to_string() });
     }
 
-    /// Keeps the focus-border overlay wrapped around the focused window (or hidden when no
-    /// managed window on screen has focus). Runs after every event and command; it only
-    /// touches the overlay when the target rectangle actually changed.
+    /// Keeps the focus border wrapped around the focused window (or hidden when no managed
+    /// window on screen has focus). Runs once per batch of events, and only does anything when
+    /// one of them could have moved it; the border itself repaints only on a size change.
     pub fn update_border(&mut self) {
-        let b = &self.cfg.border;
-        if !b.enabled {
+        if !std::mem::take(&mut self.border_dirty) || self.border.is_none() {
             return;
         }
-        if self.border_hwnd == 0 || !win::is_window(self.border_hwnd) {
-            self.border_hwnd = win::find_own_window(crate::border::TITLE);
-            self.border_rect = None;
-            if self.border_hwnd == 0 {
-                return; // Rune hasn't created it yet
-            }
-        }
-        let target = self.focused_window().filter(|h| {
+        let focused = self.focused_window();
+        self.border_watch = focused;
+        let target = focused.filter(|h| {
             let w = &self.windows[h];
             w.ws == self.active && !w.minimized && !self.hidden.contains_key(h) && win::is_visible(*h) && !win::is_maximized(*h)
         });
-        let rect = target.and_then(|h| {
-            let r = win::frame_rect(h)?;
+        let placed = target.and_then(|h| {
             let scale = self.monitors.get(self.windows[&h].mon).map(|m| m.info.scale).unwrap_or(1.0);
-            let m = (b.margin() * scale).round() as i32;
-            Some(Rect::new(r.x - m, r.y - m, r.w + 2 * m, r.h + 2 * m))
+            Some((win::frame_rect(h)?, scale))
         });
-        if rect == self.border_rect {
-            return;
-        }
-        self.border_rect = rect;
-        match rect {
-            Some(r) => win::place_overlay(self.border_hwnd, r),
-            None => win::hide(self.border_hwnd),
+        if let Some(b) = self.border.as_mut() {
+            b.set(placed);
         }
     }
 
@@ -1024,6 +1045,7 @@ fn spawn(line: &str) {
     let result = std::process::Command::new("cmd")
         .raw_arg(format!("/C start \"\" {line}"))
         .creation_flags(CREATE_NO_WINDOW)
+        .env_remove(crate::CPU_FIRST_ENV)
         .spawn();
     if let Err(e) = result {
         log::error!("exec '{line}': {e}");
@@ -1042,7 +1064,7 @@ fn open_settings() {
     }
     match std::env::current_exe() {
         Ok(exe) => {
-            if let Err(e) = std::process::Command::new(exe).arg("--settings").spawn() {
+            if let Err(e) = std::process::Command::new(exe).arg("--settings").env_remove(crate::CPU_FIRST_ENV).spawn() {
                 log::error!("open settings: {e}");
             }
         }

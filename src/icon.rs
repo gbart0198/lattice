@@ -24,7 +24,9 @@ pub const SIZE: u32 = 32;
 /// An app icon, compared by `key` so the bar model stays cheap to diff.
 #[derive(Clone, Debug)]
 pub struct AppIcon {
-    pub key: String,
+    /// A hash of the pixels: windows with the same icon (ten terminals) share one key, so the
+    /// bar keeps one image for all of them, and copying the key allocates nothing.
+    pub key: u64,
     pub rgba: Arc<[u8]>,
 }
 
@@ -34,17 +36,26 @@ impl PartialEq for AppIcon {
     }
 }
 
+impl AppIcon {
+    fn new(rgba: Arc<[u8]>) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        rgba.hash(&mut h);
+        AppIcon { key: h.finish(), rgba }
+    }
+}
+
 /// The icon for a window, or None if neither the window nor its exe has one.
-pub fn for_window(hwnd: Hwnd, key: String) -> Option<AppIcon> {
+pub fn for_window(hwnd: Hwnd) -> Option<AppIcon> {
     // The window's icon matches what the taskbar shows (PWAs, per-document icons).
     if let Some(rgba) = window_icon(hwnd).and_then(render) {
-        return Some(AppIcon { key, rgba });
+        return Some(AppIcon::new(rgba));
     }
-    for_exe(&win::exe_path(hwnd), key)
+    for_exe(&win::exe_path(hwnd))
 }
 
 /// The first icon embedded in an executable.
-pub fn for_exe(path: &str, key: String) -> Option<AppIcon> {
+pub fn for_exe(path: &str) -> Option<AppIcon> {
     if path.is_empty() {
         return None;
     }
@@ -55,7 +66,7 @@ pub fn for_exe(path: &str, key: String) -> Option<AppIcon> {
         }
         let rgba = render(large);
         let _ = DestroyIcon(large);
-        rgba.map(|rgba| AppIcon { key, rgba })
+        rgba.map(AppIcon::new)
     }
 }
 
