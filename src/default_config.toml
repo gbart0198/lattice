@@ -85,8 +85,11 @@ max_results = 8
 # class, title = substring of the title; all case-insensitive). Effects:
 #   float = true      -> managed (follows its workspace) but not tiled
 #   ignore = true     -> never touched by lattice
-#   workspace = N     -> opens on workspace N
+#   workspace = N     -> opens on workspace N (the first matching rule with a workspace wins)
 #   repaint = true    -> force a redraw after switching to it (apps that come back black)
+# A workspace rule applies when a window opens and to windows already open when lattice
+# starts. After a reload, open windows move only if their app's workspace rule changed.
+# Rules with just exe/title + workspace are also editable on the settings window's Apps tab.
 [[rules]]
 exe = "steamwebhelper.exe"   # Steam comes back black after a workspace switch without this
 repaint = true
@@ -107,6 +110,11 @@ ignore = true
 title = "Picture-in-Picture"
 float = true
 
+# Always open Discord on workspace 3:
+# [[rules]]
+# exe = "Discord.exe"
+# workspace = 3
+
 # Keybinds: "<modifiers>+<key>" = "<command>"
 # Modifiers: super (Windows key), shift, ctrl, alt.
 # Keys: a-z 0-9 f1-f24 return space tab escape backspace delete left right up down
@@ -119,7 +127,12 @@ float = true
 #   move-to-workspace-silent N        (window goes, you stay)
 #   focus-monitor next|prev           move-to-monitor next|prev
 #   layout dwindle|master|monocle|next
-#   resize grow|shrink                toggle-float   toggle-fullscreen   close
+#   resize left|right|up|down [amount]  expand the focused window that way (amount: share of
+#                                     the split, default 0.05). At the screen edge on that
+#                                     side, its opposite edge moves that way instead (shrinks).
+#                                     dwindle: the nearest split on that side; master:
+#                                     left/right move the master edge, up/down do nothing.
+#   toggle-float   toggle-fullscreen   close
 #   retile   reload   quit   exec <command line>
 #   launcher (show/hide the app launcher)
 #   settings (open the settings window)   open-config (open this file in an editor)
@@ -172,8 +185,10 @@ float = true
 
 "super+space" = "launcher"
 "super+backslash" = "layout next"
-"super+equal" = "resize grow"
-"super+minus" = "resize shrink"
+"super+shift+period" = "resize right"
+"super+shift+comma" = "resize left"
+"super+shift+semicolon" = "resize up"
+"super+shift+quote" = "resize down"
 "super+shift+space" = "toggle-float"
 "super+f" = "toggle-fullscreen"
 "super+q" = "close"
@@ -182,5 +197,5 @@ float = true
 "super+return" = "exec wt.exe"
 "super+shift+r" = "reload"
 "super+shift+e" = "quit"
-"super+shift+comma" = "settings"
+"super+alt+comma" = "settings"
 "super+ctrl+comma" = "open-config"

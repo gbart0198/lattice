@@ -185,6 +185,11 @@ impl Rule {
     }
 }
 
+/// The workspace (1-based, as written) the first matching rule with `workspace` pins a window to.
+pub fn rule_workspace(rules: &[Rule], exe: &str, class: &str, title: &str) -> Option<usize> {
+    rules.iter().filter(|r| r.workspace.is_some()).find(|r| r.matches(exe, class, title)).and_then(|r| r.workspace)
+}
+
 fn default_keybinds() -> BTreeMap<String, String> {
     #[derive(Deserialize)]
     struct OnlyKeys {
@@ -282,7 +287,8 @@ pub enum Command {
     FocusMonitor(i32),
     MoveToMonitor(i32),
     Layout(Option<LayoutKind>),
-    Resize(f32),
+    /// Expand the focused window toward a side by a ratio step (see `layout::resize_target`).
+    ResizeDir(Dir, f32),
     ToggleFloat,
     ToggleFullscreen,
     Close,
@@ -345,11 +351,14 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
             "next" | "" => None,
             other => Some(LayoutKind::parse(other).ok_or_else(|| format!("unknown layout '{other}'"))?),
         }),
-        "resize" => Command::Resize(match arg.as_str() {
-            "grow" | "+" => 0.05,
-            "shrink" | "-" => -0.05,
-            other => other.parse::<f32>().map_err(|_| format!("resize takes grow|shrink|<delta>, got '{other}'"))?,
-        }),
+        "resize" => {
+            let (first, amount) = arg.split_once(char::is_whitespace).unwrap_or((&arg, ""));
+            let dir = parse_dir(first).map_err(|_| format!("resize takes left|right|up|down [amount], got '{arg}'"))?;
+            Command::ResizeDir(dir, match amount.trim() {
+                "" => 0.05,
+                a => a.parse::<f32>().ok().filter(|a| *a > 0.0).ok_or_else(|| format!("bad resize amount '{a}'"))?,
+            })
+        }
         "toggle-float" | "togglefloating" => Command::ToggleFloat,
         "toggle-fullscreen" | "fullscreen" => Command::ToggleFullscreen,
         "close" | "kill" => Command::Close,
@@ -487,9 +496,42 @@ mod tests {
     }
 
     #[test]
+    fn resize_commands() {
+        assert_eq!(parse_command("resize right"), Ok(Some(Command::ResizeDir(Dir::Right, 0.05))));
+        assert_eq!(parse_command("resize up 0.1"), Ok(Some(Command::ResizeDir(Dir::Up, 0.1))));
+        assert!(parse_command("resize grow").is_err());
+        assert!(parse_command("resize -0.1").is_err());
+        assert!(parse_command("resize left -1").is_err());
+        assert!(parse_command("resize sideways").is_err());
+    }
+
+    #[test]
     fn rules() {
         let r = Rule { exe: Some("calc.exe".into()), ..Default::default() };
         assert!(r.matches("Calc.exe", "x", "y"));
         assert!(!r.matches("notepad.exe", "x", "y"));
+    }
+
+    #[test]
+    fn first_workspace_rule_wins() {
+        let rules = toml::from_str::<Config>(
+            r#"
+            [[rules]]
+            exe = "Discord.exe"
+            float = true
+            [[rules]]
+            exe = "discord.exe"
+            title = "updater"
+            workspace = 5
+            [[rules]]
+            exe = "Discord.exe"
+            workspace = 3
+            "#,
+        )
+        .unwrap()
+        .rules;
+        assert_eq!(rule_workspace(&rules, "Discord.exe", "Chrome_WidgetWin_1", "#general - Discord"), Some(3));
+        assert_eq!(rule_workspace(&rules, "Discord.exe", "x", "Discord Updater"), Some(5));
+        assert_eq!(rule_workspace(&rules, "notepad.exe", "x", "y"), None);
     }
 }

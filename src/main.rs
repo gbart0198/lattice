@@ -39,7 +39,7 @@ USAGE: lattice [--list | --bar-preview | --help]
   (no args)       start the window manager and bar
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
   --bar-preview   show only the bar with sample data (no window management)
-  --settings      open the settings window (Win+Shift+Comma)
+  --settings      open the settings window (Win+Alt+Comma)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
 
@@ -64,7 +64,11 @@ fn list() {
             float |= r.float;
         }
         let mode = if ignore { "ignored" } else if float { "floating" } else { "tiled" };
-        println!("  {hwnd:#010x}  {mode:<8}  {:<28} {:<32} {}", c.exe, c.class, c.title);
+        let ws = match config::rule_workspace(&cfg.rules, &c.exe, &c.class, &c.title) {
+            Some(n) if !ignore => format!("ws {n}"),
+            _ => String::new(),
+        };
+        println!("  {hwnd:#010x}  {mode:<8}  {ws:<5} {:<28} {:<32} {}", c.exe, c.class, c.title);
     }
 }
 

@@ -16,7 +16,7 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
 - **Focus border**: a soft glowing frame around the focused window.
 - **App launcher** (Win+Space): a Raycast-style search over every app in the Start menu,
   Store apps included. Type a few letters, press Enter.
-- **Settings window** (Win+Shift+Comma) for everything above.
+- **Settings window** (Win+Alt+Comma) for everything above.
 
 ## Getting started
 
@@ -94,7 +94,7 @@ schtasks /Create /TN lattice /TR "\"$env:LOCALAPPDATA\Programs\lattice\lattice.e
 
 ## Configuration
 
-Press **Win+Shift+Comma** to open the settings window. It floats above everything and is never
+Press **Win+Alt+Comma** to open the settings window. It floats above everything and is never
 tiled, with these tabs:
 
 - **General**: layouts, gaps, workspaces and behavior.
@@ -120,6 +120,12 @@ The log is at `%APPDATA%\lattice\lattice.log`. Set `LATTICE_LOG=debug` for more 
 | `master` | One master window on the left (`master_ratio` of the width). All other windows stack evenly on the right. |
 | `monocle` | Every window fills the area. Only the focused one is visible, and focus left/right cycles through them. |
 
+`resize left|right|up|down` (Win+Shift+`,` `.` `;` `'`) expands the focused window that way
+by moving the split on that side. A window already at the screen edge on that side shrinks
+instead, as its opposite edge moves the same way. In `master`, left/right move the master
+column's edge and up/down do nothing; `monocle` has nothing to resize. Each dwindle split
+remembers its own size until the window count changes it or you reload.
+
 Settings shared by all layouts:
 
 - `gaps_inner`: gap between windows.
@@ -128,6 +134,23 @@ Settings shared by all layouts:
 - `[[rules]]`: float, ignore or pin windows to a workspace, matched by exe, window class or
   title. Run `lattice --list` to find these values. `repaint = true` fixes apps that come back
   black after a workspace switch; Steam has it by default.
+
+### App workspaces
+
+Send an app to a workspace every time it opens, e.g. Discord to workspace 3:
+
+```toml
+[[rules]]
+exe = "Discord.exe"
+workspace = 3
+```
+
+Or add it on the **Apps** tab of the settings window (Win+Shift+Comma), which edits these rules
+for you (the program's file name, optionally text in its title, and a workspace) and leaves
+your other rules alone. The window opens on that workspace without switching you to it. Rules
+apply to new windows and to windows already open when lattice starts; when you save or reload,
+open windows move only if their app's rule is new or changed, so a window you moved by hand
+stays put.
 
 ### The bar
 
@@ -166,12 +189,13 @@ launch counts live in `%APPDATA%\lattice\launcher-history.tsv`.
 | Win + O / Win + Shift + O | Focus the next monitor / move the window there |
 | Win + Space | Open / close the app launcher |
 | Win + \\ | Cycle layout (dwindle → master → monocle) |
-| Win + = / Win + − | Grow / shrink the master or first split |
+| Win + Shift + . / , | Expand the window right / left |
+| Win + Shift + ; / ' | Expand the window up / down |
 | Win + Shift + Space | Toggle floating |
 | Win + F | Toggle fullscreen (fills the tiling area) |
 | Win + Q / Win + W | Close the window |
 | Win + Enter | Open Windows Terminal (`exec wt.exe`) |
-| Win + Shift + , | Open the settings window |
+| Win + Alt + , | Open the settings window |
 | Win + Ctrl + , | Open config.toml in your editor |
 | Win + Shift + R / Win + Shift + E | Reload config / quit |
 
