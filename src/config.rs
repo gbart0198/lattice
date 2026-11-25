@@ -166,6 +166,11 @@ impl Rule {
     }
 }
 
+/// The workspace (1-based, as written) the first matching rule with `workspace` pins a window to.
+pub fn rule_workspace(rules: &[Rule], exe: &str, class: &str, title: &str) -> Option<usize> {
+    rules.iter().filter(|r| r.workspace.is_some()).find(|r| r.matches(exe, class, title)).and_then(|r| r.workspace)
+}
+
 fn default_keybinds() -> BTreeMap<String, String> {
     #[derive(Deserialize)]
     struct OnlyKeys {
@@ -480,5 +485,28 @@ mod tests {
         let r = Rule { exe: Some("calc.exe".into()), ..Default::default() };
         assert!(r.matches("Calc.exe", "x", "y"));
         assert!(!r.matches("notepad.exe", "x", "y"));
+    }
+
+    #[test]
+    fn first_workspace_rule_wins() {
+        let rules = toml::from_str::<Config>(
+            r#"
+            [[rules]]
+            exe = "Discord.exe"
+            float = true
+            [[rules]]
+            exe = "discord.exe"
+            title = "updater"
+            workspace = 5
+            [[rules]]
+            exe = "Discord.exe"
+            workspace = 3
+            "#,
+        )
+        .unwrap()
+        .rules;
+        assert_eq!(rule_workspace(&rules, "Discord.exe", "Chrome_WidgetWin_1", "#general - Discord"), Some(3));
+        assert_eq!(rule_workspace(&rules, "Discord.exe", "x", "Discord Updater"), Some(5));
+        assert_eq!(rule_workspace(&rules, "notepad.exe", "x", "y"), None);
     }
 }

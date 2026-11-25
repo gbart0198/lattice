@@ -77,8 +77,11 @@ glow_opacity = 0.55
 # class, title = substring of the title; all case-insensitive). Effects:
 #   float = true      -> managed (follows its workspace) but not tiled
 #   ignore = true     -> never touched by lattice
-#   workspace = N     -> opens on workspace N
+#   workspace = N     -> opens on workspace N (the first matching rule with a workspace wins)
 #   repaint = true    -> force a redraw after switching to it (apps that come back black)
+# A workspace rule applies when a window opens and to windows already open when lattice
+# starts. After a reload, open windows move only if their app's workspace rule changed.
+# Rules with just exe/title + workspace are also editable on the settings window's Apps tab.
 [[rules]]
 exe = "steamwebhelper.exe"   # Steam comes back black after a workspace switch without this
 repaint = true
@@ -98,6 +101,11 @@ ignore = true
 [[rules]]
 title = "Picture-in-Picture"
 float = true
+
+# Always open Discord on workspace 3:
+# [[rules]]
+# exe = "Discord.exe"
+# workspace = 3
 
 # Keybinds: "<modifiers>+<key>" = "<command>"
 # Modifiers: super (Windows key), shift, ctrl, alt.

@@ -41,6 +41,7 @@ struct Window {
     /// Nudge the window to redraw after showing it (rule `repaint = true`).
     repaint: bool,
     exe: String,
+    class: String,
     /// The bar's short name for it (`app_name`), kept so publishing doesn't rebuild it.
     name: Arc<str>,
     icon: Option<crate::icon::AppIcon>,
@@ -213,6 +214,11 @@ impl Wm {
         self.windows.contains_key(&fg).then_some(fg)
     }
 
+    /// A rule's 1-based workspace number as an index, clamped to the workspaces there are.
+    fn ws_index(&self, n: usize) -> usize {
+        n.saturating_sub(1).min(self.workspaces.len() - 1)
+    }
+
     fn resolve(&self, t: WsTarget) -> usize {
         let n = self.workspaces.len();
         match t {
@@ -237,21 +243,19 @@ impl Wm {
         }
         let Some(c) = win::candidate(hwnd) else { return false };
         let mut floating = self.cfg.general.float_unresizable && !c.resizable;
-        let mut rule_ws = None;
         let mut repaint = false;
-        for r in &self.cfg.rules {
-            if r.matches(&c.exe, &c.class, &c.title) {
-                if r.ignore {
-                    return false;
-                }
-                floating |= r.float;
-                repaint |= r.repaint;
-                if rule_ws.is_none() {
-                    rule_ws = r.workspace.map(|w| w.saturating_sub(1).min(self.workspaces.len() - 1));
-                }
+        for r in self.cfg.rules.iter().filter(|r| r.matches(&c.exe, &c.class, &c.title)) {
+            if r.ignore {
+                return false;
             }
+            floating |= r.float;
+            repaint |= r.repaint;
         }
-        let ws = rule_ws.unwrap_or(self.active);
+        // Every window of a pinned app goes there, splash screens and updaters included (they
+        // open hidden on that workspace); you stay where you are.
+        let ws = config::rule_workspace(&self.cfg.rules, &c.exe, &c.class, &c.title)
+            .map(|n| self.ws_index(n))
+            .unwrap_or(self.active);
         let mon = mon.unwrap_or(self.focused_monitor);
         let minimized = win::is_minimized(hwnd);
         log::info!(
@@ -260,7 +264,7 @@ impl Wm {
         );
         let name = app_name(&c.exe, &c.title).into();
         let icon = crate::icon::for_window(hwnd);
-        self.windows.insert(hwnd, Window { ws, mon, floating, minimized, repaint, name, icon, exe: c.exe, title: c.title });
+        self.windows.insert(hwnd, Window { ws, mon, floating, minimized, repaint, name, icon, exe: c.exe, class: c.class, title: c.title });
 
         let w = &mut self.workspaces[ws];
         let pos = match (self.cfg.general.new_window, w.last_focus) {
@@ -796,13 +800,14 @@ impl Wm {
                     ws.master_ratio = cfg.general.master_ratio;
                     ws.splits.clear();
                 }
-                self.cfg = cfg;
+                let old_rules = std::mem::replace(&mut self.cfg, cfg).rules;
                 // The border is ours (not the bar's), so its settings can apply right away.
                 self.border = None;
                 self.border = crate::border::Border::new(self.cfg.border.clone());
                 self.build_workspaces();
                 self.reload_keymap = true;
                 self.refresh_monitors();
+                self.apply_changed_assignments(&old_rules);
                 self.retile(self.active);
                 self.publish();
                 log::info!("config reloaded");
@@ -811,6 +816,34 @@ impl Wm {
             Command::Settings => open_settings(),
             Command::OpenConfig => open_config(),
             Command::Quit => self.quit = true,
+        }
+    }
+
+    /// After a reload, moves open windows whose app->workspace rule changed (added, or pointed
+    /// elsewhere) to their new workspace. Windows whose rule didn't change stay put, so a window
+    /// you moved by hand isn't yanked back on every reload.
+    fn apply_changed_assignments(&mut self, old_rules: &[config::Rule]) {
+        let rules = &self.cfg.rules;
+        let moves: Vec<(Hwnd, usize)> = self
+            .windows
+            .iter()
+            .filter_map(|(h, w)| {
+                let new = config::rule_workspace(rules, &w.exe, &w.class, &w.title)?;
+                (config::rule_workspace(old_rules, &w.exe, &w.class, &w.title) != Some(new)).then_some((*h, new))
+            })
+            .collect();
+        let focused = self.focused_window();
+        let mut lost_focus = false;
+        for (h, n) in moves {
+            let to = self.ws_index(n);
+            if self.windows[&h].ws != to {
+                log::info!("{h:#x} '{}' -> ws {} (its rule changed)", self.windows[&h].title, to + 1);
+                lost_focus |= focused == Some(h) && to != self.active;
+                self.move_window_to_ws(h, to, false);
+            }
+        }
+        if lost_focus {
+            self.focus_monitor_window(self.focused_monitor);
         }
     }
 
