@@ -17,6 +17,7 @@ mod logger;
 mod shared;
 mod settings;
 mod sysinfo;
+mod tour;
 mod win;
 mod wm;
 
@@ -34,12 +35,15 @@ unsafe extern "system" fn on_console_ctrl(_: u32) -> BOOL {
 
 const HELP: &str = "lattice - tiling window manager for Windows 11
 
-USAGE: lattice [--list | --bar-preview | --help]
+USAGE: lattice [--list | --bar-preview | --settings | --tour | --help]
 
   (no args)       start the window manager and bar
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
   --bar-preview   show only the bar with sample data (no window management)
   --settings      open the settings window (Win+Alt+Comma)
+  --tour          show the guided tour over your desktop (Win+Shift+/); again to end it.
+                  lattice shows it by itself once, on its first start. Add --tour-preview to
+                  see it over a sample desktop in a window, without lattice running
   --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
@@ -194,6 +198,11 @@ fn main() {
         settings::run();
         return;
     }
+    if has("--tour") {
+        // Like settings: its own process, which asks the running lattice what's where.
+        tour::run(&args);
+        return;
+    }
     if has("--help") || has("-h") {
         println!("{HELP}");
         return;
@@ -271,6 +280,8 @@ fn main() {
     if let Some(opts) = launcher_opts {
         windows.push(launcher::window(opts));
     }
+    // The first time lattice runs (or the first time since the tour arrived), show it around.
+    tour::start_if_new();
     if !windows.is_empty() {
         rune::run_windows(move |_displays| windows);
         // The UI only returns if the bar was closed: shut the WM down too.

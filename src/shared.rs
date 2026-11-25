@@ -1,7 +1,7 @@
 //! State shared between the window-manager thread and the bar (Rune) thread.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -165,4 +165,144 @@ pub fn recover_hidden_from_last_run() {
         log::warn!("restored {restored} window(s) a previous lattice run left hidden");
     }
     let _ = std::fs::remove_file(path);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The product tour (`lattice --tour`) runs as its own process and asks this one, through the
+// "lattice-control" window, where things are on screen and what the user just did. These are
+// the answers, kept current by the bar (anchors), the WM thread (workspace, layout, focus) and
+// the keyboard hook (Escape).
+
+/// Tour -> lattice: "what's going on?" `wParam` 1 while the tour runs, 0 as it ends. Returns
+/// [`TourStatus::pack`].
+pub const WM_TOUR_STATUS: u32 = WM_APP + 4;
+/// Tour -> lattice: "where is this?" `wParam` an [`Anchor`]. Returns [`pack_rect`], 0 for
+/// nowhere.
+pub const WM_TOUR_RECT: u32 = WM_APP + 5;
+
+/// Things the tour points at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    Bar = 0,
+    Workspaces = 1,
+    Layout = 2,
+    Stats = 3,
+    Launcher = 4,
+    Focused = 5,
+}
+
+impl Anchor {
+    pub fn from_index(i: usize) -> Option<Anchor> {
+        [Anchor::Bar, Anchor::Workspaces, Anchor::Layout, Anchor::Stats, Anchor::Launcher, Anchor::Focused].get(i).copied()
+    }
+}
+
+/// Screen rects (physical pixels, packed) of the bar's parts, published by the bar as it lays
+/// out: bar, workspaces, layout button, stats.
+static BAR_ANCHORS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+/// The focused managed window (0: none), for the tour's spotlight.
+static FOCUSED: AtomicIsize = AtomicIsize::new(0);
+/// Active workspace index (low byte) and layout (next byte), from the WM's last publish.
+static WS_LAYOUT: AtomicU32 = AtomicU32::new(0);
+/// When the tour last checked in (`GetTickCount64` ms), and how often Escape was pressed for it.
+static TOUR_SEEN: AtomicU64 = AtomicU64::new(0);
+static TOUR_ESC: AtomicU32 = AtomicU32::new(0);
+
+/// A rect as 4 x 16 bits (x, y signed; w, h unsigned); 0 means none.
+pub fn pack_rect(r: crate::layout::Rect) -> u64 {
+    if r.w <= 0 || r.h <= 0 {
+        return 0;
+    }
+    let c = |v: i32| (v.clamp(i16::MIN as i32, i16::MAX as i32) as i16 as u16) as u64;
+    let u = |v: i32| v.clamp(1, u16::MAX as i32) as u64;
+    c(r.x) | c(r.y) << 16 | u(r.w) << 32 | u(r.h) << 48
+}
+
+pub fn unpack_rect(v: u64) -> Option<crate::layout::Rect> {
+    if v == 0 {
+        return None;
+    }
+    let s = |shift: u32| (v >> shift) as u16 as i16 as i32;
+    let u = |shift: u32| (v >> shift) as u16 as i32;
+    Some(crate::layout::Rect::new(s(0), s(16), u(32), u(48)))
+}
+
+pub fn set_bar_anchor(a: Anchor, r: crate::layout::Rect) {
+    if let Some(slot) = BAR_ANCHORS.get(a as usize) {
+        slot.store(pack_rect(r), Ordering::Relaxed);
+    }
+}
+
+pub fn set_focus_state(focused: Option<Hwnd>, workspace: usize, layout: u8) {
+    // Keep the last managed window while focus is elsewhere (the tour's card, the launcher):
+    // it's still the one with the border. One that has gone or been hidden reads as none.
+    if let Some(h) = focused {
+        FOCUSED.store(h, Ordering::Relaxed);
+    }
+    WS_LAYOUT.store((workspace.min(255) as u32) | (layout as u32) << 8, Ordering::Relaxed);
+}
+
+/// What the tour learns from one status call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TourStatus {
+    pub workspace: u8,
+    pub layout: u8,
+    pub launcher: bool,
+    /// Escape presses so far (wraps).
+    pub escapes: u16,
+}
+
+impl TourStatus {
+    pub fn pack(self) -> u64 {
+        self.workspace as u64 | (self.layout as u64) << 8 | (self.launcher as u64) << 16 | (self.escapes as u64) << 32
+    }
+
+    pub fn unpack(v: u64) -> Self {
+        TourStatus { workspace: v as u8, layout: (v >> 8) as u8, launcher: (v >> 16) & 1 == 1, escapes: (v >> 32) as u16 }
+    }
+}
+
+fn now_ms() -> u64 {
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
+}
+
+/// The control window's answer to [`WM_TOUR_STATUS`] (on the WM thread).
+pub fn tour_status(running: bool) -> u64 {
+    TOUR_SEEN.store(if running { now_ms() } else { 0 }, Ordering::Relaxed);
+    let wl = WS_LAYOUT.load(Ordering::Relaxed);
+    TourStatus {
+        workspace: wl as u8,
+        layout: (wl >> 8) as u8,
+        launcher: crate::launcher::is_visible(),
+        escapes: TOUR_ESC.load(Ordering::Relaxed) as u16,
+    }
+    .pack()
+}
+
+/// The control window's answer to [`WM_TOUR_RECT`] (on the WM thread).
+pub fn tour_rect(anchor: usize) -> u64 {
+    match Anchor::from_index(anchor) {
+        Some(Anchor::Launcher) => crate::launcher::screen_rect().map_or(0, |(x, y, w, h)| pack_rect(crate::layout::Rect::new(x, y, w, h))),
+        Some(Anchor::Focused) => {
+            let h = FOCUSED.load(Ordering::Relaxed);
+            if h == 0 || !win::is_visible(h) {
+                return 0;
+            }
+            win::frame_rect(h).map_or(0, pack_rect)
+        }
+        Some(a) => BAR_ANCHORS[a as usize].load(Ordering::Relaxed),
+        None => 0,
+    }
+}
+
+/// The tour checked in within the last moment and hasn't said it ended. A tour process that
+/// died stops counting after a second and a half, so Escape is never kept from other apps.
+pub fn tour_active() -> bool {
+    let seen = TOUR_SEEN.load(Ordering::Relaxed);
+    seen != 0 && now_ms().saturating_sub(seen) < 1500
+}
+
+/// The keyboard hook saw Escape while the tour ran.
+pub fn tour_escape() {
+    TOUR_ESC.fetch_add(1, Ordering::Relaxed);
 }

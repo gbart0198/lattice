@@ -319,6 +319,23 @@ pub fn bring_to_front(hwnd: isize) {
     }
 }
 
+/// A window's rect on screen as DWM draws it (no invisible resize borders), in physical pixels.
+pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
+    let mut r = RECT::default();
+    unsafe {
+        DwmGetWindowAttribute(
+            HWND(hwnd as *mut c_void),
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut r as *mut RECT as *mut c_void,
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .ok()?;
+    }
+    Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
+}
+
 /// Whether `hwnd` is the foreground window.
 pub fn is_foreground(hwnd: isize) -> bool {
     unsafe { GetForegroundWindow().0 as isize == hwnd }

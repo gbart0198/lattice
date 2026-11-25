@@ -20,6 +20,9 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   folder's path (both configurable). It uses [Everything](https://www.voidtools.com) when it's
   running, else lattice's own background index of your user folder.
 - **Settings window** (Win+Alt+Comma) for everything above.
+- **Guided tour**: on the first start, a spotlight walks you over your real desktop (the bar,
+  workspaces, layouts, the launcher) and waits for you to try each key. Replay it with
+  Win+Shift+/.
 
 ## Install
 
@@ -71,6 +74,7 @@ To look around before letting it manage anything:
 cargo run --release -- --list          # monitors + windows it would tile/float/ignore; changes nothing
 cargo run --release -- --bar-preview   # just the bar, with sample data
 cargo run --release -- --settings      # just the settings window
+cargo run --release -- --tour --tour-preview   # the guided tour over a sample desktop
 ```
 
 If linking fails with `LNK1104: cannot open file`, the folder path is too long for the MSVC
@@ -194,6 +198,30 @@ overlay that lattice keeps wrapped around the window. Set it up in `[border]`: `
 `width`, `radius` (Windows 11 windows use 8), `glow` (blur size in pixels, 0 for a flat line)
 and `glow_opacity`.
 
+### Guided tour
+
+The first time lattice starts, it dims the screen and walks you through it with a spotlight on
+the real thing: the bar, the workspace pills, the focused window, the layout button, the stats
+and the launcher. Steps that teach a key wait for you to press it (Win+2, Win+\\, Win+Space)
+and move on when you do; each also has **Next**, **Back** and **Skip tour**. **Escape ends it**
+whatever has focus (except while the launcher is open, where Escape closes the launcher). The
+overlay never takes the keyboard from your apps, and clicks outside its card go through to the
+desktop.
+
+- Replay it with **Win+Shift+/** (the `tour` command), or run `lattice --tour`. Running either
+  while the tour shows ends it.
+- It shows once, then writes `%APPDATA%\lattice\tour-seen`. That includes upgrades from a
+  version before the tour, so existing users see it once too. Delete the file to see it again on
+  the next start.
+- Configs written before 0.6 don't have the Win+Shift+/ bind. Add
+  `"super+shift+slash" = "tour"` under `[keybinds]`, or run `lattice --tour`.
+- `lattice --tour --tour-preview` shows it in a window over a drawn sample desktop, without
+  lattice running.
+
+The tour runs as its own short-lived process: its translucent overlay needs a GPU device (tens
+of MB), which goes away with it instead of staying in lattice. It asks the running lattice
+where things are and what you did through lattice's hidden control window.
+
 ### Launcher
 
 Win+Space opens a search box in the middle of the focused monitor. It lists every app in the
@@ -224,6 +252,7 @@ launch counts live in `%APPDATA%\lattice\launcher-history.tsv`.
 | Win + Q / Win + W | Close the window |
 | Win + Enter | Open Windows Terminal (`exec wt.exe`) |
 | Win + Alt + , | Open the settings window |
+| Win + Shift + / | Replay the guided tour (Escape ends it) |
 | Win + Ctrl + , | Open config.toml in your editor |
 | Win + Shift + R / Win + Shift + E | Reload config / quit |
 
@@ -273,6 +302,7 @@ soundtrack.
 | `src/bar.rs` | Rune top bar |
 | `src/border.rs` | Rune focus-border overlay |
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
+| `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |
 | `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), Rune UI (`ui.rs`) |
 | `src/sysinfo.rs` | CPU, memory, battery and clock |

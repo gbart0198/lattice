@@ -10,7 +10,7 @@ use std::time::Duration;
 use rune::{Align, App, AppSpec, Color, Cx, El, Image, ImageCache, SurfaceFit, TextStyle, Tx, WindowOptions, WindowsWindowOptions, col, el, row, text};
 
 use crate::config::{self, Command, WsTarget};
-use crate::shared::{self, BAR_GEN, BarModel};
+use crate::shared::{self, Anchor, BAR_GEN, BarModel};
 use crate::sysinfo::{Sampler, SysInfo};
 use crate::win;
 
@@ -26,6 +26,9 @@ static CFG: OnceLock<config::Bar> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
 static SYS: Mutex<Option<SysInfo>> = Mutex::new(None);
 static SYS_GEN: AtomicU64 = AtomicU64::new(0);
+/// The bar window's top-left on screen (physical pixels) and its scale, to report where its
+/// parts are to the tour.
+static ORIGIN: OnceLock<(i32, i32, f32)> = OnceLock::new();
 
 struct State {
     model: BarModel,
@@ -275,6 +278,15 @@ fn stat(label: &str, value: String) -> El {
         .child(text(value).font(TextStyle::new(size, 600.0).features("'tnum' 1")).color(t.fg))
 }
 
+/// Reports where `el` is on screen to the tour as it lays out.
+fn anchored(el: El, anchor: Anchor) -> El {
+    el.on_layout(move |_s: &mut State, [x, y, w, h]: [f32; 4]| {
+        let Some(&(ox, oy, scale)) = ORIGIN.get() else { return };
+        let px = |v: f32| (v * scale).round() as i32;
+        shared::set_bar_anchor(anchor, crate::layout::Rect::new(ox + px(x), oy + px(y), px(w), px(h)));
+    })
+}
+
 fn view(s: &State, _cx: &mut Cx<State>) -> El {
     let t = theme();
     let c = cfg();
@@ -298,24 +310,30 @@ fn view(s: &State, _cx: &mut Cx<State>) -> El {
     };
     let middle = row().grow(1.0).shrink().center_y().px(12.0).child(title);
 
-    let mut right = row().gap(14.0).center_y().child(layout_button(&s.model.layout, pill_h));
+    let mut stats = row().gap(14.0).center_y();
     if c.show_cpu {
-        right = right.child(stat("CPU", format!("{:>2}%", s.sys.cpu)));
+        stats = stats.child(stat("CPU", format!("{:>2}%", s.sys.cpu)));
     }
     if c.show_memory {
-        right = right.child(stat("MEM", format!("{:>2}%", s.sys.mem)));
+        stats = stats.child(stat("MEM", format!("{:>2}%", s.sys.mem)));
     }
     if c.show_battery
         && let Some((pct, charging)) = s.sys.battery
     {
-        right = right.child(stat(if charging { "AC" } else { "BAT" }, format!("{pct}%")));
+        stats = stats.child(stat(if charging { "AC" } else { "BAT" }, format!("{pct}%")));
     }
-    right = right.child(text(s.sys.clock.clone()).font(TextStyle::new(c.font_size, 650.0).features("'tnum' 1")).color(t.fg));
+    stats = stats.child(text(s.sys.clock.clone()).font(TextStyle::new(c.font_size, 650.0).features("'tnum' 1")).color(t.fg));
+    let right = row()
+        .gap(14.0)
+        .center_y()
+        .child(anchored(layout_button(&s.model.layout, pill_h), Anchor::Layout))
+        .child(anchored(stats.key("stats"), Anchor::Stats));
 
-    let left = row().gap(10.0).center_y().child(spaces);
-    col().w_full().h_full().fill(t.bg).child(
-        row().w_full().h_full().px(8.0).gap(8.0).center_y().child(left).child(middle).child(right),
-    )
+    let left = row().gap(10.0).center_y().child(anchored(spaces.key("spaces"), Anchor::Workspaces));
+    col().w_full().h_full().fill(t.bg).child(anchored(
+        row().key("bar").w_full().h_full().px(8.0).gap(8.0).center_y().child(left).child(middle).child(right),
+        Anchor::Bar,
+    ))
 }
 
 /// Runs the bar on the calling thread until the bar quits.
@@ -353,6 +371,7 @@ fn bar_spec(bar_cfg: config::Bar) -> Option<rune::WindowSpec<State>> {
         return None;
     };
     let work = primary.work;
+    let _ = ORIGIN.set((work.x, work.y, primary.scale));
     let phys_h = (height * primary.scale).round() as u32;
     log::info!("bar at ({}, {}) {}x{} (scale {})", work.x, work.y, work.w, phys_h, primary.scale);
 
