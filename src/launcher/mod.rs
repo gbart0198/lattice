@@ -1,5 +1,6 @@
 //! A Raycast-style app launcher: a search box over every app in the Start menu, ranked by fuzzy
-//! match and by how often you launch each one, opened and dismissed with a hotkey.
+//! match and by how often you launch each one, opened and dismissed with a hotkey. Typing the
+//! file prefix ("f") and a space switches it to searching files and folders (see `files`).
 //!
 //! Self-contained on purpose: nothing in here imports from the rest of lattice. A host
 //!
@@ -10,12 +11,19 @@
 //! global hotkey of its own.
 //!
 //! - `rank`: fuzzy matching and launch history (pure Rust);
-//! - `system`: the Windows parts (app catalog, icons, launching, focus);
+//! - `system`: the Windows parts (app catalog, icons, launching, file actions, focus);
+//! - `files`: file search on its own thread, through `everything` (voidtools Everything's IPC)
+//!   or, when that isn't running, lattice's own `index`;
 //! - `ui`: the Rune state and view.
 
+mod everything;
+mod files;
+mod index;
 mod rank;
 mod system;
 mod ui;
+
+pub use files::{FileAction, FileActions, FileOptions};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -51,6 +59,7 @@ pub struct Options {
     pub data_dir: PathBuf,
     /// Environment variables the host set for itself that launched apps shouldn't inherit.
     pub clean_env: Vec<String>,
+    pub files: FileOptions,
 }
 
 /// A monitor's work area in physical pixels, to centre the launcher on.
@@ -68,6 +77,9 @@ enum Job {
     Scan,
     Icon(Arc<str>),
     Launch(Arc<str>),
+    FileIcon(Arc<str>),
+    /// Do this with the file or folder at that path.
+    File(FileAction, Arc<str>),
 }
 
 /// Icon pixels fetched per app: sharp at 2x for the 30-point icons rows show.
@@ -93,6 +105,8 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
     let height = ui::height(opts.max_results);
     ui::set_style(opts.style, opts.max_results);
     let history = rank::History::load(opts.data_dir.join("launcher-history.tsv"));
+    let file_history = Arc::new(Mutex::new(rank::History::load(opts.data_dir.join("launcher-file-history.tsv"))));
+    let (searcher, search_rx) = files::searcher();
 
     let spec = AppSpec::<ui::State> {
         setup: Some(ui::setup),
@@ -103,9 +117,15 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
         ..AppSpec::new("lattice launcher", (opts.width, height), || unreachable!(), ui::view)
     };
     let state_jobs = jobs.clone();
+    let ui_files = ui::Files {
+        searcher: searcher.clone(),
+        history: file_history.clone(),
+        prefix: opts.files.prefix.clone(),
+        actions: opts.files.actions.clone(),
+    };
     let app = App::new(spec)
         .windowless()
-        .init(move || ui::State::new(history, state_jobs))
+        .init(move || ui::State::new(history, state_jobs, ui_files))
         .on_focus(ui::on_focus)
         .on_window(|w| {
             use rune::raw_window_handle::RawWindowHandle;
@@ -129,6 +149,7 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
         .spawn(move || work(rx, worker_app, clean_env))
         .expect("spawn launcher thread");
     let _ = jobs.send(Job::Scan);
+    files::start(&searcher, search_rx, handle.clone(), &opts.files, opts.data_dir.clone(), file_history, ui::max_results());
 
     let _ = LAUNCHER.set(Launcher {
         app: handle,
@@ -233,8 +254,31 @@ fn work(rx: Receiver<Job>, app: AppHandle<ui::State>, clean_env: Vec<String>) {
                 app.update(move |s, _| s.icon_loaded(id, icon));
             }
             Job::Launch(id) => system::launch(&id, &clean_env),
+            Job::FileIcon(path) => {
+                let icon = system::file_icon(&path, ICON_PX);
+                app.update(move |s, _| s.icon_loaded(path, icon));
+            }
+            Job::File(action, path) => run_file_action(&action, &path, &clean_env),
         }
     }
+}
+
+fn run_file_action(action: &FileAction, path: &str, clean_env: &[String]) {
+    match action {
+        FileAction::Open => system::open_path(path, clean_env),
+        FileAction::Reveal => system::reveal(path, clean_env),
+        FileAction::CopyPath => system::copy_text(path),
+        FileAction::Exec(template) => system::exec(&fill_template(template, path), clean_env),
+    }
+}
+
+/// `{path}`, `{dir}` and `{name}` in an exec action, filled in for the item at `path`. `{dir}`
+/// is the folder holding a file, or a folder itself.
+fn fill_template(template: &str, path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let name = p.file_name().map_or(path.into(), |n| n.to_string_lossy());
+    let dir = if p.is_dir() { path.into() } else { p.parent().map_or(path.into(), |d| d.to_string_lossy()) };
+    template.replace("{path}", path).replace("{dir}", &dir).replace("{name}", &name)
 }
 
 /// A linear Rune colour as 8-bit sRGB.

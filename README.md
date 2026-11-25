@@ -15,7 +15,10 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   layout button, CPU, memory, battery and the clock, in any installed font.
 - **Focus border**: a soft glowing frame around the focused window.
 - **App launcher** (Win+Space): a Raycast-style search over every app in the Start menu,
-  Store apps included. Type a few letters, press Enter.
+  Store apps included. Type a few letters, press Enter. Type `f` and a space to fuzzy-search
+  files and folders instead: Enter opens, Ctrl+Enter shows a file in its folder or copies a
+  folder's path (both configurable). It uses [Everything](https://www.voidtools.com) when it's
+  running, else lattice's own background index of your user folder.
 - **Settings window** (Win+Alt+Comma) for everything above.
 
 ## Getting started

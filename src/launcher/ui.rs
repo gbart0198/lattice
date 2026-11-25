@@ -1,15 +1,20 @@
 //! The launcher's Rune state and view: a search field, the best matches with their icons, and
 //! a footer of key hints. Keyboard first: type, arrows (or Ctrl+N / Ctrl+P), Enter, Escape.
+//!
+//! Two modes: apps, and files (entered by typing the file prefix and a space, shown by a chip
+//! beside the field, left with Backspace on an empty field). In file mode Ctrl+Enter runs the
+//! item's second action.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rune::{
     Color, Cx, El, Image, ImageCache, Key, KeyEvent, Span, SurfaceFit, TextEdit, TextStyle, Tx, col, el, row, spacer, text,
     text_input,
 };
 
+use super::files::{FileActions, FileHit, Results, Searcher, Source};
 use super::rank::{self, History};
 use super::system::{App, Icon};
 use super::{Job, Style};
@@ -33,7 +38,7 @@ pub fn style() -> &'static Style {
     &STYLE.get().expect("launcher style set").0
 }
 
-fn max_results() -> usize {
+pub(super) fn max_results() -> usize {
     STYLE.get().map_or(8, |s| s.1)
 }
 
@@ -48,8 +53,31 @@ struct Hit {
     positions: Vec<usize>,
 }
 
+/// What the launcher searches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Apps,
+    Files,
+}
+
+/// File mode's parts, from the launcher's options.
+pub struct Files {
+    pub searcher: Searcher,
+    /// Shared with the search thread, which ranks with a snapshot of it.
+    pub history: Arc<Mutex<History>>,
+    pub prefix: String,
+    pub actions: FileActions,
+}
+
 pub struct State {
     query: TextEdit,
+    mode: Mode,
+    files: Files,
+    file_hits: Vec<FileHit>,
+    file_source: Source,
+    /// The newest file query sent, and the one `file_hits` answers.
+    file_gen: u64,
+    file_shown: u64,
     /// The catalog, sorted by name.
     apps: Vec<App>,
     /// The first scan has come back.
@@ -69,9 +97,15 @@ pub struct State {
 }
 
 impl State {
-    pub(super) fn new(history: History, jobs: Sender<Job>) -> Self {
+    pub(super) fn new(history: History, jobs: Sender<Job>, files: Files) -> Self {
         State {
             query: focused_edit(),
+            mode: Mode::Apps,
+            files,
+            file_hits: Vec::new(),
+            file_source: Source::Idle,
+            file_gen: 0,
+            file_shown: 0,
             apps: Vec::new(),
             scanned: false,
             hits: Vec::new(),
@@ -89,7 +123,52 @@ impl State {
     /// Back to an empty search with the field focused, as each open starts.
     pub fn reset(&mut self) {
         self.query = focused_edit();
+        self.mode = Mode::Apps;
+        self.file_hits.clear();
         self.refresh();
+    }
+
+    /// The field changed: enter file mode on the prefix, then search.
+    fn edited(&mut self) {
+        if self.mode == Mode::Apps
+            && let Some(rest) = strip_mode_prefix(&self.query.text, &self.files.prefix)
+        {
+            let rest = rest.to_string();
+            self.mode = Mode::Files;
+            self.file_hits.clear();
+            self.file_source = Source::Idle;
+            self.query.replace_text(rest.clone());
+            self.query.set_caret(rest.len());
+            self.files.searcher.warm();
+        }
+        self.refresh();
+    }
+
+    /// Back to app search, the field holding the prefix as if only the space were deleted.
+    fn leave_files(&mut self) {
+        self.mode = Mode::Apps;
+        self.file_hits.clear();
+        let prefix = self.files.prefix.clone();
+        self.query.replace_text(prefix.clone());
+        self.query.set_caret(prefix.len());
+        self.refresh();
+    }
+
+    pub fn files_loaded(&mut self, r: Results) {
+        if self.mode != Mode::Files || r.generation != self.file_gen {
+            return; // an answer to something no longer asked
+        }
+        // A refresh of the same query (the index grew) keeps the highlighted item.
+        let keep = (r.generation == self.file_shown).then(|| self.file_hits.get(self.selected).map(|h| h.path.clone()));
+        self.file_hits = r.hits;
+        self.file_source = r.source;
+        self.file_shown = r.generation;
+        self.selected = keep.flatten().and_then(|p| self.file_hits.iter().position(|h| h.path == p)).unwrap_or(0);
+        self.request_icons();
+    }
+
+    fn searching(&self) -> bool {
+        self.mode == Mode::Files && self.file_gen != self.file_shown
     }
 
     pub fn set_apps(&mut self, apps: Vec<App>) {
@@ -118,8 +197,29 @@ impl State {
         }
     }
 
-    /// Re-ranks for the current query and asks for the icons the new results need.
+    /// Re-ranks (apps) or re-asks (files) for the current query.
     fn refresh(&mut self) {
+        match self.mode {
+            Mode::Apps => self.refresh_apps(),
+            Mode::Files => self.refresh_files(),
+        }
+    }
+
+    fn refresh_files(&mut self) {
+        self.file_gen += 1;
+        let text = self.query.text.trim().to_string();
+        if text.is_empty() {
+            self.file_hits.clear();
+            self.file_shown = self.file_gen;
+            self.selected = 0;
+            return;
+        }
+        // The old results stay up until the new ones land, so typing doesn't flicker.
+        self.files.searcher.query(self.file_gen, text);
+    }
+
+    /// Re-ranks apps for the current query and asks for the icons the new results need.
+    fn refresh_apps(&mut self) {
         let query = self.query.text.trim();
         let mut scored: Vec<(i32, usize, Vec<usize>)> = self
             .apps
@@ -139,10 +239,17 @@ impl State {
     }
 
     fn request_icons(&mut self) {
-        let on_screen: HashSet<Arc<str>> = self.hits.iter().map(|h| self.apps[h.app].id.clone()).collect();
+        let on_screen: HashSet<Arc<str>> = match self.mode {
+            Mode::Apps => self.hits.iter().map(|h| self.apps[h.app].id.clone()).collect(),
+            Mode::Files => self.file_hits.iter().map(|h| h.path.clone()).collect(),
+        };
         for id in &on_screen {
             if self.requested.insert(id.clone()) {
-                let _ = self.jobs.send(Job::Icon(id.clone()));
+                let job = match self.mode {
+                    Mode::Apps => Job::Icon(id.clone()),
+                    Mode::Files => Job::FileIcon(id.clone()),
+                };
+                let _ = self.jobs.send(job);
             }
         }
         if self.icons.len() > ICON_CACHE {
@@ -154,10 +261,33 @@ impl State {
         }
     }
 
+    fn rows(&self) -> usize {
+        match self.mode {
+            Mode::Apps => self.hits.len(),
+            Mode::Files => self.file_hits.len(),
+        }
+    }
+
     fn step(&mut self, by: isize) {
-        let n = self.hits.len() as isize;
+        let n = self.rows() as isize;
         if n > 0 {
             self.selected = (self.selected as isize + by).rem_euclid(n) as usize;
+        }
+    }
+
+    /// Enter (or Ctrl+Enter, `second`) on row `index`.
+    fn activate(&mut self, index: usize, second: bool, tx: &mut Tx) {
+        match self.mode {
+            Mode::Apps => self.launch(index, tx),
+            Mode::Files => {
+                let Some(hit) = self.file_hits.get(index) else { return };
+                let action = self.files.actions.pick(hit.dir, second).clone();
+                let path = hit.path.clone();
+                self.files.history.lock().unwrap().record(&path);
+                let _ = self.jobs.send(Job::File(action, path));
+                self.reset();
+                tx.close_window();
+            }
         }
     }
 
@@ -169,6 +299,16 @@ impl State {
         self.reset();
         tx.close_window();
     }
+}
+
+/// The text after "<prefix> " if `text` starts with it (prefix case-insensitive).
+fn strip_mode_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let head = text.get(..prefix.len())?;
+    let rest = text[prefix.len()..].strip_prefix(' ')?;
+    head.eq_ignore_ascii_case(prefix).then_some(rest)
 }
 
 fn focused_edit() -> TextEdit {
@@ -209,7 +349,12 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Tab => s.step(if ev.mods.shift { -1 } else { 1 }),
         _ if ev.is_command('n') => s.step(1),
         _ if ev.is_command('p') => s.step(-1),
-        Key::Escape if !s.query.text.is_empty() => s.reset(),
+        Key::Enter if ev.mods.ctrl => {
+            let i = s.selected;
+            s.activate(i, true, tx);
+        }
+        Key::Backspace if s.mode == Mode::Files && s.query.text.is_empty() => s.leave_files(),
+        Key::Escape if !s.query.text.is_empty() || s.mode == Mode::Files => s.reset(),
         Key::Escape => {
             s.reset();
             tx.close_window();
@@ -224,24 +369,33 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 
 pub fn view(s: &State, _cx: &mut Cx<State>) -> El {
     let t = style();
+    let files = s.mode == Mode::Files;
+    let (label, placeholder) =
+        if files { ("Search files and folders", "Search files and folders…") } else { ("Search apps", "Search apps…") };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0))
         .key("query")
-        .label("Search apps")
+        .label(label)
         .single_line()
         .grow(1.0)
         .color(t.foreground)
-        .placeholder("Search apps…", t.muted)
+        .placeholder(placeholder, t.muted)
         .caret(t.accent, t.accent.alpha(0.35))
         .on_edit(|s: &mut State| &mut s.query)
         .on_input_key(on_key)
-        .on_input_change(|s: &mut State, _| s.refresh())
+        .on_input_change(|s: &mut State, _| s.edited())
         .on_submit(|s: &mut State, tx| {
             let i = s.selected;
-            s.launch(i, tx);
+            s.activate(i, false, tx);
         });
-    let header = row().w_full().h(HEADER).px(20.0).gap(14.0).center_y().child(search_glyph(t.muted)).child(field);
+    let mut header = row().w_full().h(HEADER).px(20.0).gap(14.0).center_y().child(search_glyph(t.muted));
+    if files {
+        header = header.child(mode_chip("Files", t));
+    }
+    let header = header.child(field);
 
-    let body = if !s.scanned {
+    let body = if files {
+        file_body(s, t)
+    } else if !s.scanned {
         message("Finding your apps…", t)
     } else if s.hits.is_empty() {
         message(&format!("No apps match \u{201c}{}\u{201d}", s.query.text.trim()), t)
@@ -276,6 +430,125 @@ fn results(s: &State, t: &Style) -> El {
     col().w_full().grow(1.0).pt(LIST_PAD).child(section).child(list)
 }
 
+/// The file mode indicator beside the field.
+fn mode_chip(label: &str, t: &Style) -> El {
+    row()
+        .key("mode-chip")
+        .label(format!("{label} mode"))
+        .h(26.0)
+        .px(10.0)
+        .gap(6.0)
+        .radius(7.0)
+        .center_y()
+        .fill(t.accent.alpha(0.18))
+        .child(folder_glyph(t.accent))
+        .child(text(label.to_string()).font(TextStyle::new(12.5, 650.0)).color(t.accent))
+}
+
+fn file_body(s: &State, t: &Style) -> El {
+    let query = s.query.text.trim();
+    if query.is_empty() {
+        return message("Type to search files and folders  ·  Backspace for apps", t);
+    }
+    if s.file_hits.is_empty() {
+        let msg = if s.searching() || is_walking(s.file_source) {
+            "Searching…".to_string()
+        } else {
+            format!("No files match \u{201c}{query}\u{201d}")
+        };
+        return message(&msg, t);
+    }
+    let section = row()
+        .w_full()
+        .h(SECTION)
+        .px(20.0)
+        .center_y()
+        .child(text("Files & Folders").font(TextStyle::new(12.0, 600.0)).color(t.muted))
+        .child(spacer())
+        .child(text(source_label(s.file_source)).font(TextStyle::new(11.5, 500.0)).color(t.muted.alpha(0.8)));
+    let list = s
+        .file_hits
+        .iter()
+        .enumerate()
+        .fold(col().w_full().px(LIST_PAD).gap(0.0), |list, (i, hit)| list.child(file_row(s, i, hit, t)));
+    col().w_full().grow(1.0).pt(LIST_PAD).child(section).child(list)
+}
+
+fn is_walking(source: Source) -> bool {
+    matches!(source, Source::Index(st) if st.walking)
+}
+
+/// Where results come from, for the section header.
+fn source_label(source: Source) -> String {
+    match source {
+        Source::Idle => String::new(),
+        Source::Everything => "Everything".into(),
+        Source::Index(st) if st.walking => format!("Indexing… {}", thousands(st.found.max(st.entries))),
+        Source::Index(st) => format!("{} indexed", thousands(st.entries)),
+    }
+}
+
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn file_row(s: &State, i: usize, hit: &FileHit, t: &Style) -> El {
+    let on = i == s.selected;
+    let name = hit.name();
+    let title = text(name.to_string())
+        .spans(highlight(name, &hit.positions, t.accent))
+        .font(TextStyle::new(14.0, if on { 550.0 } else { 450.0 }))
+        .color(t.foreground)
+        .truncate();
+    let folder = text(display_dir(&hit.path[..hit.name_at]))
+        .font(TextStyle::new(11.5, 400.0))
+        .color(t.muted)
+        .truncate();
+    let kind = if on { s.files.actions.pick(hit.dir, false).label() } else if hit.dir { "Folder" } else { "File" };
+    let kind = text(kind).font(TextStyle::new(12.5, 500.0)).color(if on { t.foreground.alpha(0.7) } else { t.muted });
+    let initial = if hit.dir { "▸".to_string() } else { name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default() };
+    row()
+        .key(format!("file-{}", hit.path))
+        .role("button")
+        .label(name.to_string())
+        .hit()
+        .w_full()
+        .h(ROW)
+        .px(12.0)
+        .gap(14.0)
+        .radius(10.0)
+        .center_y()
+        .fill(if on { t.surface } else { Color::TRANSPARENT })
+        .on_hover(move |s: &mut State| s.selected = i)
+        .on_press_tx(move |s: &mut State, tx| s.activate(i, false, tx))
+        .child(icon_or_tile(s, &hit.path, initial, t))
+        .child(col().gap(1.0).grow(1.0).shrink().child(title).child(folder))
+        .child(kind)
+}
+
+/// A folder path for display: your user folder as "~", no trailing separator.
+fn display_dir(dir: &str) -> String {
+    static HOME: OnceLock<Option<String>> = OnceLock::new();
+    let dir = dir.strip_suffix('\\').filter(|d| !d.ends_with(':')).unwrap_or(dir);
+    let home = HOME.get_or_init(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()));
+    if let Some(home) = home
+        && dir.len() >= home.len()
+        && dir[..home.len()].eq_ignore_ascii_case(home)
+        && (dir.len() == home.len() || dir[home.len()..].starts_with('\\'))
+    {
+        return format!("~{}", &dir[home.len()..]);
+    }
+    dir.to_string()
+}
+
 fn result_row(s: &State, i: usize, hit: &Hit, t: &Style) -> El {
     let app = &s.apps[hit.app];
     let on = i == s.selected;
@@ -303,17 +576,16 @@ fn result_row(s: &State, i: usize, hit: &Hit, t: &Style) -> El {
         .fill(if on { t.surface } else { Color::TRANSPARENT })
         .on_hover(move |s: &mut State| s.selected = i)
         .on_press_tx(move |s: &mut State, tx| s.launch(i, tx))
-        .child(app_icon(s, app, t))
+        .child(icon_or_tile(s, &app.id, app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(), t))
         .child(name)
         .child(kind)
 }
 
-/// The app's icon, or its initial on a tile while there's none (yet).
-fn app_icon(s: &State, app: &App, t: &Style) -> El {
-    if let Some(img) = s.icons.get(&app.id).filter(|img| img.size().is_some()) {
+/// The icon for `id` (an app id or a path), or `initial` on a tile while there's none (yet).
+fn icon_or_tile(s: &State, id: &str, initial: String, t: &Style) -> El {
+    if let Some(img) = s.icons.get(id).filter(|img| img.size().is_some()) {
         return el().size(ICON, ICON).pixels_fit(img.pixels(), SurfaceFit::Fit);
     }
-    let initial = app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
     el().size(ICON, ICON)
         .radius(8.0)
         .fill(t.accent.alpha(0.18))
@@ -349,7 +621,14 @@ fn footer(s: &State, t: &Style) -> El {
         .child(el().size(8.0, 8.0).radius(4.0).fill(t.accent))
         .child(text("lattice").font(TextStyle::new(12.5, 600.0)).color(t.muted));
     let mut hints = row().gap(16.0).center_y();
-    if !s.hits.is_empty() {
+    if s.mode == Mode::Files {
+        if let Some(hit) = s.file_hits.get(s.selected) {
+            let a = &s.files.actions;
+            hints = hints
+                .child(hint(a.pick(hit.dir, false).label(), &["↵"], t))
+                .child(hint(a.pick(hit.dir, true).label(), &["ctrl", "↵"], t));
+        }
+    } else if !s.hits.is_empty() {
         hints = hints.child(hint("Open", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
     }
     hints = hints.child(hint("Close", &["esc"], t));
@@ -385,6 +664,13 @@ fn hint(label: &str, keys: &[&str], t: &Style) -> El {
         .child(caps)
 }
 
+/// A folder: a tab over a body.
+fn folder_glyph(c: Color) -> El {
+    el().size(14.0, 12.0)
+        .child(el().absolute(0.0, 0.0).size(6.0, 4.0).radius(1.5).fill(c))
+        .child(el().absolute(0.0, 2.0).size(14.0, 10.0).radius(2.0).fill(c))
+}
+
 fn hairline(t: &Style) -> El {
     el().w_full().h(1.0).fill(t.surface.alpha(0.8))
 }
@@ -411,6 +697,24 @@ mod tests {
         let spans = highlight("Visual Studio Code", &[0, 7, 8, 14], Color::default());
         let ranges: Vec<(u32, u32)> = spans.iter().map(|s| (s.start, s.end)).collect();
         assert_eq!(ranges, vec![(0, 1), (7, 9), (14, 15)]);
+    }
+
+    #[test]
+    fn mode_prefix() {
+        assert_eq!(strip_mode_prefix("f ", "f"), Some(""));
+        assert_eq!(strip_mode_prefix("F report", "f"), Some("report"));
+        assert_eq!(strip_mode_prefix("firefox", "f"), None);
+        assert_eq!(strip_mode_prefix("f", "f"), None);
+        assert_eq!(strip_mode_prefix("file x", "file"), Some("x"));
+        assert_eq!(strip_mode_prefix("f x", ""), None);
+    }
+
+    #[test]
+    fn display_dirs() {
+        assert_eq!(display_dir("D:\\"), "D:\\");
+        assert_eq!(display_dir("D:\\Projects\\"), "D:\\Projects");
+        assert_eq!(thousands(1234567), "1,234,567");
+        assert_eq!(thousands(12), "12");
     }
 
     #[test]

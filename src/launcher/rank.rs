@@ -136,6 +136,13 @@ fn lower(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
 }
 
+/// Whether every character of `q` (already lowercased) appears in `hay` in order, ignoring
+/// case: the cheap test that rules out most names before [`fuzzy`] scores the rest.
+pub fn in_order(q: &[char], hay: &str) -> bool {
+    let mut it = hay.chars().flat_map(char::to_lowercase);
+    q.iter().all(|c| it.any(|h| h == *c))
+}
+
 fn is_subsequence(q: &[char], n: &[(usize, char, bool)]) -> bool {
     let mut it = n.iter();
     q.iter().all(|c| it.any(|(_, nc, _)| nc == c))
@@ -176,6 +183,11 @@ impl History {
         if let Some(path) = &self.path {
             save(path, &self.used);
         }
+    }
+
+    /// A copy for another thread to rank with; recording into it saves nothing.
+    pub fn snapshot(&self) -> History {
+        History { path: None, used: self.used.clone() }
     }
 
     /// Score added to an app's match: grows with use (slowly), plus a lift for recent use.
@@ -261,6 +273,12 @@ mod tests {
         assert_eq!(m.positions, vec![0, 1, 2, 3]);
         let m = fuzzy("menu", "Café Menu").unwrap();
         assert_eq!(m.positions, vec![6, 7, 8, 9], "é is two bytes");
+    }
+
+    #[test]
+    fn in_order_ignores_case() {
+        assert!(in_order(&['r', 'p', 't'], "RePorT.pdf"));
+        assert!(!in_order(&['t', 'r'], "rt"));
     }
 
     #[test]

@@ -81,6 +81,27 @@ enabled = true
 width = 680
 max_results = 8
 
+# File search: type the prefix and a space ("f report") to search files and folders instead
+# of apps; Backspace on an empty field goes back. It uses voidtools Everything when it's
+# running (https://www.voidtools.com: instant, whole-disk), else lattice's own index.
+file_prefix = "f"
+# Enter and Ctrl+Enter on a file, and on a folder. Actions:
+#   "open"       open with the default app (a folder: in Explorer)
+#   "reveal"     open the containing folder with the item selected
+#   "copy-path"  copy the full path to the clipboard
+#   "exec <command line>"  run it, with {path}, {dir} (the folder) and {name} filled in,
+#                          e.g. "exec code \"{dir}\""
+file_enter = "open"
+file_ctrl_enter = "reveal"
+folder_enter = "open"
+folder_ctrl_enter = "copy-path"
+# lattice's own index (only used without Everything): the folders it walks in the background,
+# empty meaning your user folder, and folder names it never walks into.
+index_roots = []
+index_exclude = ["node_modules", ".git", ".svn", ".hg", "target", "__pycache__", ".venv", "venv",
+                 ".cache", ".cargo", ".rustup", ".npm", ".nuget", ".gradle", ".m2", "AppData",
+                 "$Recycle.Bin"]
+
 # Window rules. Every field you set must match (exe = process file name, class = window
 # class, title = substring of the title; all case-insensitive). Effects:
 #   float = true      -> managed (follows its workspace) but not tiled
