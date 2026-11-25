@@ -16,6 +16,7 @@
 //!   or, when that isn't running, lattice's own `index`;
 //! - `ui`: the Rune state and view.
 
+mod bench;
 mod everything;
 mod files;
 mod index;
@@ -24,6 +25,7 @@ mod system;
 pub(crate) use system::style_window;
 mod ui;
 
+pub use bench::run as bench;
 pub use files::{FileAction, FileActions, FileOptions};
 
 use std::path::PathBuf;
@@ -98,6 +100,8 @@ struct Launcher {
 static LAUNCHER: OnceLock<Launcher> = OnceLock::new();
 /// The launcher's native window, once Rune has made it (0 before).
 static HWND: AtomicIsize = AtomicIsize::new(0);
+/// A reopen is waiting for its first drawn frame to come out of DWM's cloak (see `reveal`).
+static REVEALING: AtomicBool = AtomicBool::new(false);
 
 /// The launcher's window, hidden until [`toggle`] shows it. Call once; starts the background
 /// thread, which reads the app list straight away so the first open is instant.
@@ -128,6 +132,7 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
         .windowless()
         .init(move || ui::State::new(history, state_jobs, ui_files))
         .on_focus(ui::on_focus)
+        .on_frame_drawn(|_| reveal())
         .on_window(|w| {
             use rune::raw_window_handle::RawWindowHandle;
             let hwnd = w.with_raw_handle(|h| match h.as_raw() {
@@ -237,6 +242,7 @@ fn show(l: &Launcher, on: Option<Area>) {
             OverlayPlacement::Edge { edge: ScreenEdge::Top, margin: 160.0, align: Align::Center, inset: 0.0 },
         ),
     }
+    REVEALING.store(true, Ordering::SeqCst);
     l.app.open();
     // Rune activates the window as it shows it, but Windows' foreground lock can refuse a
     // background process. Give it a moment, then insist.
@@ -258,6 +264,23 @@ fn show(l: &Launcher, on: Option<Area>) {
             }
         }
     });
+}
+
+/// After a frame drawn since `show`, takes the window out of DWM's cloak.
+///
+/// Rune (on Windows) cloaks a window it shows again "until it draws", with a 1 s fallback, but
+/// its CPU renderer, which the launcher paints with, only lifts the cloak for a window's very
+/// first frame. Each later open painted in a few ms and then stayed invisible for the full
+/// second. The frame is in the window by the time this hook runs, so lifting it here shows the
+/// new frame, never a blank one. Rune's own fallback later finds it already uncloaked.
+fn reveal() {
+    if !REVEALING.load(Ordering::Relaxed) {
+        return;
+    }
+    let hwnd = HWND.load(Ordering::SeqCst);
+    if hwnd != 0 && is_visible() && REVEALING.swap(false, Ordering::SeqCst) {
+        system::uncloak(hwnd);
+    }
 }
 
 impl Launcher {

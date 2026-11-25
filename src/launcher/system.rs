@@ -319,6 +319,20 @@ pub fn bring_to_front(hwnd: isize) {
     }
 }
 
+/// Takes `hwnd` out of DWM's cloak if it's in it: on screen with what it last presented.
+pub fn uncloak(hwnd: isize) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAK, DWMWA_CLOAKED, DwmGetWindowAttribute, DwmSetWindowAttribute};
+    let h = HWND(hwnd as *mut c_void);
+    unsafe {
+        let mut cloaked = 0u32;
+        let read = DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut c_void, 4);
+        if read.is_ok() && cloaked != 0 {
+            let off = 0i32; // a BOOL
+            let _ = DwmSetWindowAttribute(h, DWMWA_CLOAK, &off as *const i32 as *const c_void, 4);
+        }
+    }
+}
+
 /// A window's rect on screen as DWM draws it (no invisible resize borders), in physical pixels.
 pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
     use windows::Win32::Foundation::RECT;

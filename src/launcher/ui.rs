@@ -176,6 +176,7 @@ impl State {
         let keep = self.hits.get(self.selected).map(|h| self.apps[h.app].id.clone());
         self.apps = apps;
         self.scanned = true;
+        super::bench::SCANNED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.refresh();
         if let Some(id) = keep {
             self.selected = self.hits.iter().position(|h| self.apps[h.app].id == id).unwrap_or(0);
@@ -367,7 +368,16 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 // ---------------------------------------------------------------------------------------------
 // View
 
-pub fn view(s: &State, _cx: &mut Cx<State>) -> El {
+pub fn view(s: &State, cx: &mut Cx<State>) -> El {
+    use std::sync::atomic::Ordering;
+    let started = std::time::Instant::now();
+    let el = build(s, cx);
+    super::bench::VIEW_NANOS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    super::bench::VIEWS.fetch_add(1, Ordering::Relaxed);
+    el
+}
+
+fn build(s: &State, _cx: &mut Cx<State>) -> El {
     let t = style();
     let files = s.mode == Mode::Files;
     let (label, placeholder) =

@@ -47,6 +47,9 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --help]
                   lattice shows it by itself once, on its first start. Add --tour-preview to
                   see it over a sample desktop in a window, without lattice running
   --update-preview  show the update notice with a made-up release (changes nothing)
+  --launcher-bench  open and dismiss the launcher on its own and print how long each open and
+                  keystroke takes (takes the focus while it runs). --cycles N (8), --gap MS
+                  between opens (1000), --settle MS before typing (250)
   --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
@@ -240,6 +243,17 @@ fn main() {
         // The update toast with a made-up release (end the process to close it).
         let opts = launcher_options(&config::load());
         update_toast::preview(opts.style, opts.families);
+        return;
+    }
+    if has("--launcher-bench") {
+        // The launcher alone, opened and dismissed `cycles` times (`gap` ms apart), typing `settle` ms
+        // after each open; prints timings.
+        let num = |flag: &str, default: u64| {
+            args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(default)
+        };
+        let opts = launcher_options(&config::load());
+        let ms = std::time::Duration::from_millis;
+        launcher::bench(opts, num("--cycles", 8) as usize, ms(num("--gap", 1000)), ms(num("--settle", 250)));
         return;
     }
     if has("--border-preview") {
