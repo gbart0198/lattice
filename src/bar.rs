@@ -320,12 +320,18 @@ fn view(s: &State, _cx: &mut Cx<State>) -> El {
 
 /// Runs the bar on the calling thread until the bar quits.
 pub fn run(bar_cfg: config::Bar) {
-    if !bar_cfg.enabled {
-        return;
-    }
-    let Some(spec) = bar_spec(bar_cfg) else { return };
-    let windows: Vec<rune::AnyWindowSpec> = vec![spec.boxed()];
+    let Some(spec) = window(bar_cfg) else { return };
+    let windows: Vec<rune::AnyWindowSpec> = vec![spec];
     rune::run_windows(move |_displays| windows);
+}
+
+/// The bar's window, for a Rune event loop shared with other windows (the launcher). None when
+/// the bar is turned off or there's no monitor. Closing it quits that loop.
+pub fn window(bar_cfg: config::Bar) -> Option<rune::AnyWindowSpec> {
+    if !bar_cfg.enabled {
+        return None;
+    }
+    bar_spec(bar_cfg).map(|spec| spec.boxed())
 }
 
 fn bar_spec(bar_cfg: config::Bar) -> Option<rune::WindowSpec<State>> {

@@ -813,6 +813,16 @@ impl Wm {
                 log::info!("config reloaded");
             }
             Command::Exec(line) => spawn(&line),
+            Command::Launcher => {
+                let area = self.monitors.get(self.focused_monitor).map(|m| crate::launcher::Area {
+                    x: m.info.work.x,
+                    y: m.info.work.y,
+                    w: m.info.work.w,
+                    h: m.info.work.h,
+                    scale: m.info.scale,
+                });
+                crate::launcher::toggle(area);
+            }
             Command::Settings => open_settings(),
             Command::OpenConfig => open_config(),
             Command::Quit => self.quit = true,

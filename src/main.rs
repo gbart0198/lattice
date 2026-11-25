@@ -1,7 +1,7 @@
 //! lattice: a tiling window manager for Windows 11.
 //!
-//! Threads: the main thread runs the Rune top bar; the WM thread owns all window-management
-//! state and the Win32 hooks (see `hooks.rs`).
+//! Threads: the main thread runs Rune (the top bar and the app launcher); the WM thread owns all
+//! window-management state and the Win32 hooks (see `hooks.rs`).
 
 // Release builds have no console window; logs go to %APPDATA%\lattice\lattice.log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -11,6 +11,7 @@ mod border;
 mod config;
 mod hooks;
 mod icon;
+mod launcher;
 mod layout;
 mod logger;
 mod shared;
@@ -99,6 +100,26 @@ fn bar_preview(bar_cfg: config::Bar) {
     bar::run(bar_cfg);
 }
 
+/// The launcher's options from lattice's config: it wears the bar's colours and font.
+fn launcher_options(cfg: &config::Config) -> launcher::Options {
+    let (bar, fallback) = (&cfg.bar, config::Bar::default());
+    let pick = |set: &str, default: &str| bar::color(set, bar::color(default, rune::Color::default()));
+    launcher::Options {
+        style: launcher::Style {
+            background: pick(&bar.background, &fallback.background),
+            surface: pick(&bar.occupied, &fallback.occupied),
+            foreground: pick(&bar.foreground, &fallback.foreground),
+            muted: pick(&bar.muted, &fallback.muted),
+            accent: pick(&bar.accent, &fallback.accent),
+        },
+        families: bar::font_families(&bar.font),
+        width: cfg.launcher.width,
+        max_results: cfg.launcher.max_results,
+        data_dir: config::config_dir(),
+        clean_env: vec![CPU_FIRST_ENV.to_string()],
+    }
+}
+
 /// Rune's switch for drawing on the CPU (see `main`).
 pub const CPU_FIRST_ENV: &str = "RUNE_CPU_FIRST";
 
@@ -171,6 +192,7 @@ fn main() {
     let cfg = config::load();
     log::info!("config: {}", config::config_path().display());
     let bar_cfg = cfg.bar.clone();
+    let launcher_opts = cfg.launcher.enabled.then(|| launcher_options(&cfg));
 
     let wm_thread = std::thread::Builder::new()
         .name("lattice-wm".into())
@@ -182,9 +204,14 @@ fn main() {
         })
         .expect("spawn WM thread");
 
-    // The focus border belongs to the WM thread; Rune runs only for the bar.
-    if bar_cfg.enabled {
-        bar::run(bar_cfg);
+    // The focus border belongs to the WM thread; Rune runs the bar and the launcher, in one
+    // event loop on this thread.
+    let mut windows: Vec<rune::AnyWindowSpec> = bar::window(bar_cfg).into_iter().collect();
+    if let Some(opts) = launcher_opts {
+        windows.push(launcher::window(opts));
+    }
+    if !windows.is_empty() {
+        rune::run_windows(move |_displays| windows);
         // The UI only returns if the bar was closed: shut the WM down too.
         shared::send_command(config::Command::Quit);
     }

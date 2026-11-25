@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub border: Border,
     #[serde(default)]
+    pub launcher: Launcher,
+    #[serde(default)]
     pub rules: Vec<Rule>,
     #[serde(default = "default_keybinds")]
     pub keybinds: BTreeMap<String, String>,
@@ -137,6 +139,23 @@ impl Border {
     }
 }
 
+/// The app launcher (`launcher` command). Its colours and font follow the bar's.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Launcher {
+    pub enabled: bool,
+    /// Window width, logical pixels.
+    pub width: f32,
+    /// Result rows shown at once.
+    pub max_results: usize,
+}
+
+impl Default for Launcher {
+    fn default() -> Self {
+        Self { enabled: true, width: 680.0, max_results: 8 }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct Rule {
     pub exe: Option<String>,
@@ -235,6 +254,9 @@ pub fn load() -> Config {
     b.radius = b.radius.clamp(0.0, 40.0);
     b.glow = b.glow.clamp(0.0, 60.0);
     b.glow_opacity = b.glow_opacity.clamp(0.0, 1.0);
+    let l = &mut cfg.launcher;
+    l.width = l.width.clamp(360.0, 1600.0);
+    l.max_results = l.max_results.clamp(1, 20);
     cfg
 }
 
@@ -273,6 +295,8 @@ pub enum Command {
     Retile,
     Reload,
     Exec(String),
+    /// Show or hide the app launcher.
+    Launcher,
     /// Open the settings window.
     Settings,
     /// Open config.toml in a text editor.
@@ -340,6 +364,7 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "close" | "kill" => Command::Close,
         "retile" => Command::Retile,
         "reload" => Command::Reload,
+        "launcher" | "launch" => Command::Launcher,
         "settings" => Command::Settings,
         "open-config" | "edit-config" => Command::OpenConfig,
         "quit" | "exit" => Command::Quit,
