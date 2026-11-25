@@ -245,7 +245,8 @@ pub enum Phase {
     /// The first frame, before the dim fades in.
     Entering,
     Showing,
-    /// The step's action happened at this clock; it moves on shortly.
+    /// The step's action happened at this clock. The card shows what happened and stays until
+    /// Next, so a step's follow-up ("now go back with Win+1") can't be missed.
     Done(f64),
     /// Fading out since this clock, then the process quits.
     Leaving(f64),
@@ -271,8 +272,6 @@ pub struct Tour {
 }
 
 const QUERY_EVERY: f64 = 0.1;
-/// How long a step's "done" note shows before the next step.
-const DONE_FOR: f64 = 1.1;
 const LEAVE_FOR: f64 = 0.35;
 
 impl Tour {
@@ -441,10 +440,6 @@ fn poll(s: &mut Tour, t: f64, tx: &mut Tx) -> bool {
                 tx.wake_after(Duration::from_secs_f64(LEAVE_FOR - (t - at)));
             }
             return changed;
-        }
-        Phase::Done(at) if t - at >= DONE_FOR => {
-            s.next(tx);
-            changed = true;
         }
         _ => {}
     }
