@@ -333,6 +333,8 @@ pub enum Command {
     Settings,
     /// Open config.toml in a text editor.
     OpenConfig,
+    /// Show the welcome tour again.
+    Onboarding,
     Quit,
 }
 
@@ -399,6 +401,7 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "launcher" | "launch" => Command::Launcher,
         "settings" => Command::Settings,
         "open-config" | "edit-config" => Command::OpenConfig,
+        "onboarding" | "welcome" | "tour" => Command::Onboarding,
         "quit" | "exit" => Command::Quit,
         "exec" => {
             if rest.is_empty() {

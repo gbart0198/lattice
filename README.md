@@ -20,6 +20,8 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   folder's path (both configurable). It uses [Everything](https://www.voidtools.com) when it's
   running, else lattice's own background index of your user folder.
 - **Settings window** (Win+Alt+Comma) for everything above.
+- **Welcome tour**: a one-minute animated walkthrough of the features and keys, shown on
+  first start and replayable any time.
 
 ## Install
 
@@ -71,6 +73,7 @@ To look around before letting it manage anything:
 cargo run --release -- --list          # monitors + windows it would tile/float/ignore; changes nothing
 cargo run --release -- --bar-preview   # just the bar, with sample data
 cargo run --release -- --settings      # just the settings window
+cargo run --release -- --onboarding    # just the welcome tour
 ```
 
 If linking fails with `LNK1104: cannot open file`, the folder path is too long for the MSVC
@@ -119,6 +122,24 @@ too. To start it elevated at sign-in, use a scheduled task instead of `-Autostar
 ```powershell
 schtasks /Create /TN lattice /TR "\"$env:LOCALAPPDATA\Programs\lattice\lattice.exe\"" /SC ONLOGON /RL HIGHEST
 ```
+
+## Welcome tour
+
+The first time lattice starts, it opens a short welcome tour: eight animated slides covering
+tiling and layouts, workspaces, keybinds, the launcher, the bar and focus border, and settings.
+Move through it with →/Enter and ←, click the dots to jump, and press **Esc** (or **Skip
+tour**) to leave at any point.
+
+Finishing, skipping or closing the tour writes `%APPDATA%\lattice\onboarded`, and lattice
+doesn't open it again while that file exists. People upgrading from a version without the tour
+see it once too, since they don't have the file yet.
+
+To see it again:
+
+- **Settings > General > Help > Show tour**
+- `lattice.exe --onboarding` (always shows it, seen or not)
+- bind the `onboarding` command to a key, e.g. `"super+f1" = "onboarding"`
+- to try the first-start path, delete `%APPDATA%\lattice\onboarded` and restart lattice
 
 ## Configuration
 
@@ -273,6 +294,7 @@ soundtrack.
 | `src/bar.rs` | Rune top bar |
 | `src/border.rs` | Rune focus-border overlay |
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
+| `src/onboarding/` | The welcome tour: slides and navigation (`mod.rs`), animated illustrations (`scenes.rs`), keycaps and mock windows (`parts.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |
 | `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), Rune UI (`ui.rs`) |
 | `src/sysinfo.rs` | CPU, memory, battery and clock |

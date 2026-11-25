@@ -606,6 +606,13 @@ fn general_tab(s: &S, p: &P) -> Vec<El> {
             toggle(p, "mouse-follow", "Mouse follows focus", Some("Move the cursor to windows focused by keyboard"), s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
             setting_row(p, "rules", &format!("Other window rules ({})", s.other_rules), Some("Float or ignore apps: edit them in the config file"), open_config_button(p)),
         ]),
+        section(p, "help-sec", "Help", vec![setting_row(
+            p,
+            "tour",
+            "Welcome tour",
+            Some("A one-minute walkthrough of lattice's features and keys"),
+            Button::new("Show tour").variant(ButtonVariant::Outline).on_press(|_s: &mut S| crate::onboarding::open()).build(&kit(p)),
+        )]),
     ]
 }
 

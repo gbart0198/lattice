@@ -825,6 +825,7 @@ impl Wm {
             }
             Command::Settings => open_settings(),
             Command::OpenConfig => open_config(),
+            Command::Onboarding => crate::onboarding::open(),
             Command::Quit => self.quit = true,
         }
     }

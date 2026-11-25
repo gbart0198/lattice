@@ -157,6 +157,7 @@ float = true
 #   retile   reload   quit   exec <command line>
 #   launcher (show/hide the app launcher)
 #   settings (open the settings window)   open-config (open this file in an editor)
+#   onboarding (show the welcome tour again)
 # Setting a key to "none" disables it. Note: super+L (lock) can't be overridden by any app.
 [keybinds]
 "super+left" = "focus left"

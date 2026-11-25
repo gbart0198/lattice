@@ -14,6 +14,7 @@ mod icon;
 mod launcher;
 mod layout;
 mod logger;
+mod onboarding;
 mod shared;
 mod settings;
 mod sysinfo;
@@ -34,12 +35,13 @@ unsafe extern "system" fn on_console_ctrl(_: u32) -> BOOL {
 
 const HELP: &str = "lattice - tiling window manager for Windows 11
 
-USAGE: lattice [--list | --bar-preview | --help]
+USAGE: lattice [--list | --bar-preview | --settings | --onboarding | --help]
 
   (no args)       start the window manager and bar
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
   --bar-preview   show only the bar with sample data (no window management)
   --settings      open the settings window (Win+Alt+Comma)
+  --onboarding    show the welcome tour (lattice shows it once, on its first start)
   --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
@@ -194,6 +196,11 @@ fn main() {
         settings::run();
         return;
     }
+    if has("--onboarding") {
+        // Its own process too; finishing or skipping it writes the `onboarded` marker.
+        onboarding::run();
+        return;
+    }
     if has("--help") || has("-h") {
         println!("{HELP}");
         return;
@@ -254,6 +261,8 @@ fn main() {
     log::info!("config: {}", config::config_path().display());
     let bar_cfg = cfg.bar.clone();
     let launcher_opts = cfg.launcher.enabled.then(|| launcher_options(&cfg));
+    // First start (no `onboarded` marker yet): show the welcome tour once.
+    onboarding::open_if_new();
 
     let wm_thread = std::thread::Builder::new()
         .name("lattice-wm".into())
