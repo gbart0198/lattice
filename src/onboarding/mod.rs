@@ -161,10 +161,27 @@ fn go(s: &mut S, to: usize) {
     s.next_tick = None;
 }
 
-/// Ends the tour (finished, skipped or closed): remember it, and close.
+/// Ends the tour (finished or skipped): remember it, start lattice if it isn't running yet
+/// (the tour was opened on its own, e.g. `lattice.exe --onboarding`), and close.
 fn done(tx: &mut Tx) {
     mark_done();
+    start_lattice_if_stopped();
     tx.quit();
+}
+
+/// Starts the window manager unless one is already running (its control window exists).
+fn start_lattice_if_stopped() {
+    if crate::settings::control_window().is_some() {
+        return;
+    }
+    match std::env::current_exe() {
+        Ok(exe) => {
+            if let Err(e) = std::process::Command::new(exe).env_remove(crate::CPU_FIRST_ENV).spawn() {
+                log::error!("start lattice after the tour: {e}");
+            }
+        }
+        Err(e) => log::error!("start lattice after the tour: {e}"),
+    }
 }
 
 fn next(s: &mut S, tx: &mut Tx) {

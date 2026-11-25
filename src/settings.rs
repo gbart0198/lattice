@@ -433,7 +433,7 @@ fn save(s: &mut S) -> Result<String, String> {
 // ---------------------------------------------------------------------------------------------
 // Talking to the running lattice (its hidden "lattice-control" window)
 
-fn control_window() -> Option<windows::Win32::Foundation::HWND> {
+pub(crate) fn control_window() -> Option<windows::Win32::Foundation::HWND> {
     use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
     use windows::core::w;
     unsafe { FindWindowW(w!("lattice-display-listener"), w!("lattice-control")).ok().filter(|h| !h.is_invalid()) }
