@@ -26,7 +26,7 @@ mod ui;
 pub use files::{FileAction, FileActions, FileOptions};
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -188,6 +188,19 @@ pub fn hide() {
     let Some(l) = LAUNCHER.get() else { return };
     l.app.update(|s, _| s.reset());
     l.app.hide();
+    warn_if_gpu_started();
+}
+
+/// Logs once if some frame needed Rune's GPU renderer (a rotated element, a blur, ...): the
+/// device it starts stays for the life of the process and costs ~100 MB.
+fn warn_if_gpu_started() {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.load(Ordering::Relaxed) {
+        return;
+    }
+    if rune::marks::marks().iter().any(|(name, _)| *name == "cpu_first.needs_gpu") && !WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!("a frame needed the GPU renderer, which started a GPU device (~100 MB); draw it with CPU-supported elements");
+    }
 }
 
 fn show(l: &Launcher, on: Option<Area>) {

@@ -10,8 +10,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rune::{
-    Color, Cx, El, Image, ImageCache, Key, KeyEvent, Span, SurfaceFit, TextEdit, TextStyle, Tx, col, el, row, spacer, text,
-    text_input,
+    Color, Cx, El, Image, ImageCache, Key, KeyEvent, Shape, Span, SurfaceFit, TextEdit, TextStyle, Tx, canvas, col, el, row,
+    spacer, text, text_input,
 };
 
 use super::files::{FileActions, FileHit, Results, Searcher, Source};
@@ -676,16 +676,14 @@ fn hairline(t: &Style) -> El {
 }
 
 /// A magnifying glass: a ring and a handle at 45 degrees.
+///
+/// The handle is a stroked line, not a rotated box: `El::rotate` draws through a turned layer,
+/// which Rune's CPU renderer can't paint, so the first open would start a GPU device (~100 MB
+/// that stays for the life of the process).
 fn search_glyph(c: Color) -> El {
     el().size(20.0, 20.0)
         .child(el().absolute(1.0, 1.0).size(13.0, 13.0).radius(6.5).border(2.0, c))
-        .child(
-            el().absolute(10.75, 13.9)
-                .size(8.5, 2.2)
-                .radius(1.1)
-                .fill(c)
-                .rotate(std::f32::consts::FRAC_PI_4),
-        )
+        .child(canvas(Shape::new().stroke(vec![[12.77, 12.77], [17.23, 17.23]], 2.2, c)).absolute(0.0, 0.0).size(20.0, 20.0))
 }
 
 #[cfg(test)]
