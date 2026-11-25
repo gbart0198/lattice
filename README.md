@@ -127,6 +127,23 @@ Settings shared by all layouts:
   title. Run `lattice --list` to find these values. `repaint = true` fixes apps that come back
   black after a workspace switch; Steam has it by default.
 
+### App workspaces
+
+Send an app to a workspace every time it opens, e.g. Discord to workspace 3:
+
+```toml
+[[rules]]
+exe = "Discord.exe"
+workspace = 3
+```
+
+Or add it on the **Apps** tab of the settings window (Win+Shift+Comma), which edits these rules
+for you (the program's file name, optionally text in its title, and a workspace) and leaves
+your other rules alone. The window opens on that workspace without switching you to it. Rules
+apply to new windows and to windows already open when lattice starts; when you save or reload,
+open windows move only if their app's rule is new or changed, so a window you moved by hand
+stays put.
+
 ### The bar
 
 The bar shows your workspaces with the icons of the apps on each. Set `app_display` to

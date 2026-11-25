@@ -63,7 +63,11 @@ fn list() {
             float |= r.float;
         }
         let mode = if ignore { "ignored" } else if float { "floating" } else { "tiled" };
-        println!("  {hwnd:#010x}  {mode:<8}  {:<28} {:<32} {}", c.exe, c.class, c.title);
+        let ws = match config::rule_workspace(&cfg.rules, &c.exe, &c.class, &c.title) {
+            Some(n) if !ignore => format!("ws {n}"),
+            _ => String::new(),
+        };
+        println!("  {hwnd:#010x}  {mode:<8}  {ws:<5} {:<28} {:<32} {}", c.exe, c.class, c.title);
     }
 }
 

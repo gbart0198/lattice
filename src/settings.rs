@@ -13,7 +13,7 @@ use crate::config::{self, Config};
 use crate::win;
 
 const TITLE: &str = "lattice settings";
-const TABS: [&str; 4] = ["General", "Bar", "Border", "Keybinds"];
+const TABS: [&str; 5] = ["General", "Apps", "Bar", "Border", "Keybinds"];
 const LAYOUTS: [&str; 3] = ["dwindle", "master", "monocle"];
 const NEW_WINDOW: [&str; 2] = ["after_focused", "end"];
 const APP_DISPLAY: [&str; 3] = ["icons", "names", "both"];
@@ -22,6 +22,24 @@ struct Bind {
     id: u64,
     chord: TextEdit,
     command: TextEdit,
+}
+
+/// An app->workspace rule on the Apps tab.
+struct Assign {
+    id: u64,
+    /// Which of the config's assignment rules (see `assignment`) this row was loaded from;
+    /// `None` for rows added here.
+    origin: Option<usize>,
+    exe: TextEdit,
+    title: TextEdit,
+    /// 1-based.
+    ws: usize,
+}
+
+impl Assign {
+    fn blank(&self) -> bool {
+        self.exe.text.trim().is_empty() && self.title.text.trim().is_empty()
+    }
 }
 
 struct S {
@@ -37,7 +55,10 @@ struct S {
     float_unresizable: bool,
     follow_activation: bool,
     mouse_follows_focus: bool,
-    rules: usize,
+    /// Rules the Apps tab doesn't edit (float, ignore, ...).
+    other_rules: usize,
+    // [[rules]] that only pin an app to a workspace
+    apps: Vec<Assign>,
     // [bar]
     bar_enabled: bool,
     bar_height: f32,
@@ -94,7 +115,23 @@ fn init() -> S {
     } else {
         binds = cfg.keybinds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     }
-    let n = binds.len() as u64;
+    let apps: Vec<Assign> = doc
+        .as_ref()
+        .and_then(|d| d.get("rules"))
+        .and_then(|r| r.as_array_of_tables())
+        .map(|a| a.iter().filter_map(assignment).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (exe, title, ws))| Assign {
+            id: (binds.len() + i) as u64,
+            origin: Some(i),
+            exe: TextEdit::new(exe),
+            title: TextEdit::new(title),
+            ws,
+        })
+        .collect();
+    let n = (binds.len() + apps.len()) as u64;
     let mut s = S {
         tab: 0,
         layout: idx(&LAYOUTS, g.layout.name()),
@@ -107,7 +144,8 @@ fn init() -> S {
         float_unresizable: g.float_unresizable,
         follow_activation: g.follow_activation,
         mouse_follows_focus: g.mouse_follows_focus,
-        rules: cfg.rules.len(),
+        other_rules: cfg.rules.len().saturating_sub(apps.len()),
+        apps,
         bar_enabled: b.enabled,
         bar_height: b.height,
         font_size: b.font_size,
@@ -175,6 +213,104 @@ fn bind_errors(b: &Bind) -> Option<String> {
     config::parse_command(cmd).err()
 }
 
+/// The app->workspace rules the Apps tab owns: `workspace` plus `exe` and/or `title`, and
+/// nothing else. Rules with other keys (a floating app pinned to a workspace, a class match)
+/// are left to the config file, untouched. Returns (exe, title, workspace).
+fn assignment(t: &toml_edit::Table) -> Option<(String, String, usize)> {
+    if t.iter().any(|(k, _)| !matches!(k, "exe" | "title" | "workspace")) {
+        return None;
+    }
+    let ws = t.get("workspace")?.as_integer().filter(|n| *n >= 1)? as usize;
+    let field = |k: &str| match t.get(k) {
+        None => Some(String::new()),
+        Some(v) => v.as_str().map(str::to_string),
+    };
+    let (exe, title) = (field("exe")?, field("title")?);
+    (!exe.is_empty() || !title.is_empty()).then_some((exe, title, ws))
+}
+
+/// An exe matcher that can never match: a path, or a name without ".exe".
+fn bad_exe(exe: &str) -> bool {
+    let exe = exe.trim();
+    !exe.is_empty() && (exe.contains(['\\', '/']) || !exe.to_ascii_lowercase().ends_with(".exe"))
+}
+
+fn assign_error(a: &Assign, workspaces: usize) -> Option<String> {
+    if a.blank() {
+        return None; // blank rows are dropped on save
+    }
+    if bad_exe(&a.exe.text) {
+        return Some("use the program's file name, like Discord.exe".into());
+    }
+    if !(1..=workspaces).contains(&a.ws) {
+        return Some(format!("there are only {workspaces} workspaces"));
+    }
+    None
+}
+
+/// Writes the Apps tab back into `[[rules]]`: rows loaded from a rule update it in place (its
+/// comments stay), rules whose row was removed go, new rows are appended. Every other rule is
+/// left exactly as it was.
+fn write_assignments(doc: &mut DocumentMut, apps: &[Assign]) -> Result<(), String> {
+    let apps: Vec<&Assign> = apps.iter().filter(|a| !a.blank()).collect();
+    if doc.get("rules").is_none() {
+        if apps.is_empty() {
+            return Ok(());
+        }
+        doc["rules"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+    }
+    let arr = doc["rules"]
+        .as_array_of_tables_mut()
+        .ok_or("Write the rules in config.toml as [[rules]] tables to edit apps here")?;
+    let owned: Vec<usize> = arr.iter().enumerate().filter(|(_, t)| assignment(t).is_some()).map(|(i, _)| i).collect();
+    let mut gone = Vec::new();
+    for (k, &i) in owned.iter().enumerate() {
+        match apps.iter().find(|a| a.origin == Some(k)) {
+            Some(a) => fill_rule(arr.get_mut(i).expect("owned rule"), a),
+            None => gone.push(i),
+        }
+    }
+    for i in gone.into_iter().rev() {
+        // The first rule carries the comment block that documents rules: hand it on.
+        if i == 0 && arr.len() > 1 {
+            let prefix = arr.get(0).and_then(|t| t.decor().prefix().cloned());
+            if let (Some(p), Some(next)) = (prefix, arr.get_mut(1)) {
+                next.decor_mut().set_prefix(p);
+            }
+        }
+        arr.remove(i);
+    }
+    for a in apps.iter().filter(|a| a.origin.is_none_or(|k| k >= owned.len())) {
+        let mut t = toml_edit::Table::new();
+        fill_rule(&mut t, a);
+        arr.push(t);
+    }
+    if arr.is_empty() {
+        doc.remove("rules");
+    }
+    Ok(())
+}
+
+fn fill_rule(t: &mut toml_edit::Table, a: &Assign) {
+    for (key, v) in [("exe", a.exe.text.trim()), ("title", a.title.text.trim())] {
+        if v.is_empty() {
+            t.remove(key);
+        } else {
+            put(t, key, v);
+        }
+    }
+    put(t, "workspace", a.ws as i64);
+}
+
+/// Sets `key`, keeping the old value's trailing comment.
+fn put(t: &mut toml_edit::Table, key: &str, v: impl Into<toml_edit::Value>) {
+    let mut new: toml_edit::Value = v.into();
+    if let Some(old) = t.get(key).and_then(|i| i.as_value()) {
+        *new.decor_mut() = old.decor().clone();
+    }
+    t[key] = toml_edit::Item::Value(new);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Saving
 
@@ -209,6 +345,17 @@ fn save(s: &mut S) -> Result<String, String> {
         let c = b.chord.text.trim().to_ascii_lowercase();
         if !c.is_empty() && !chords.insert(c.clone()) {
             return Err(format!("\"{c}\" is bound twice"));
+        }
+    }
+    let workspaces = s.workspaces.round() as usize;
+    let mut apps = std::collections::HashSet::new();
+    for a in &s.apps {
+        let name = if a.exe.text.trim().is_empty() { a.title.text.trim() } else { a.exe.text.trim() };
+        if let Some(e) = assign_error(a, workspaces) {
+            return Err(format!("App \"{name}\": {e}"));
+        }
+        if !a.blank() && !apps.insert((a.exe.text.trim().to_ascii_lowercase(), a.title.text.trim().to_lowercase())) {
+            return Err(format!("\"{name}\" is listed twice"));
         }
     }
     let path = config::config_path();
@@ -262,6 +409,8 @@ fn save(s: &mut S) -> Result<String, String> {
             table.insert(c, toml_edit::value(m));
         }
     }
+
+    write_assignments(&mut doc, &s.apps)?;
 
     // Make sure what we write is a config lattice accepts before touching the file.
     let out = doc.to_string();
@@ -455,7 +604,7 @@ fn general_tab(s: &S, p: &P) -> Vec<El> {
         section(p, "behavior-sec", "Behaviour", vec![
             toggle(p, "float-unres", "Float fixed-size windows", Some("Dialogs and pickers that can't be resized"), s.float_unresizable, |s| &mut s.float_unresizable),
             toggle(p, "mouse-follow", "Mouse follows focus", Some("Move the cursor to windows focused by keyboard"), s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
-            setting_row(p, "rules", &format!("Window rules ({})", s.rules), Some("Float, ignore or pin apps: edit them in the config file"), open_config_button(p)),
+            setting_row(p, "rules", &format!("Other window rules ({})", s.other_rules), Some("Float or ignore apps: edit them in the config file"), open_config_button(p)),
         ]),
     ]
 }
@@ -570,6 +719,75 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
     ]
 }
 
+fn apps_tab(s: &S, p: &P) -> Vec<El> {
+    let k = kit(p);
+    let workspaces = s.workspaces.round() as usize;
+    let mut rows = Vec::new();
+    for (i, a) in s.apps.iter().enumerate() {
+        let err = assign_error(a, workspaces);
+        let exe = TextInput::new(&a.exe)
+            .label("Program")
+            .placeholder("Discord.exe")
+            .width(Some(200.0))
+            .invalid(bad_exe(&a.exe.text))
+            .on_edit(move |s: &mut S| &mut s.apps[i].exe)
+            .build(&k);
+        let title = TextInput::new(&a.title)
+            .label("Title contains")
+            .placeholder("title contains (optional)")
+            .width(Some(170.0))
+            .on_edit(move |s: &mut S| &mut s.apps[i].title)
+            .build(&k);
+        let step = |label: &str, d: isize, disabled: bool| {
+            Button::new(label)
+                .variant(ButtonVariant::Ghost)
+                .disabled(disabled)
+                .on_press(move |s: &mut S| {
+                    let max = (s.workspaces.round() as usize).max(1);
+                    if let Some(a) = s.apps.get_mut(i) {
+                        a.ws = a.ws.saturating_add_signed(d).clamp(1, max);
+                    }
+                })
+                .build(&k)
+        };
+        let ws = row()
+            .gap(2.0)
+            .center_y()
+            .child(text("Workspace").font(TextStyle::new(11.5, 400.0)).color(p.t.text_secondary).mr(space::S1))
+            .child(step("-", -1, a.ws <= 1))
+            .child(text(a.ws.to_string()).w(20.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
+            .child(step("+", 1, a.ws >= workspaces));
+        let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| {
+            if i < s.apps.len() {
+                s.apps.remove(i);
+            }
+        });
+        let mut line = col().key(format!("app-{}", a.id)).px(space::S3).py(space::S1).gap(2.0).child(
+            row().gap(space::S2).center_y().child(exe).child(title).child(ws).child(remove.build(&k)),
+        );
+        if let Some(e) = err {
+            line = line.child(text(e).font(TextStyle::new(11.5, 500.0)).color(crate::bar::color("#f38ba8", Color::WHITE)));
+        }
+        rows.push(line);
+    }
+    let add = Button::new("Add app").on_press(|s: &mut S| {
+        let ws = (s.workspaces.round() as usize).clamp(1, 2);
+        s.apps.push(Assign { id: s.next_id, origin: None, exe: TextEdit::new(""), title: TextEdit::new(""), ws });
+        s.next_id += 1;
+    });
+    rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
+    vec![
+        col().key("apps-help").gap(4.0).mx(space::S3).w_full().child(
+            text("Open an app's windows on a workspace. Match by program file name (lattice --list shows them) and, optionally, text in the window title. Applies when a window opens and when lattice starts; saving a new or changed entry also moves that app's open windows.".to_string())
+                .w_full()
+                .wrap()
+                .font(TextStyle::new(11.5, 400.0))
+                .color(p.t.text_secondary),
+        ),
+        section(p, "apps-sec", &format!("App workspaces ({})", s.apps.len()), rows),
+    ]
+}
+
 const DEFAULT_FONT_ID: &str = "__default__";
 
 /// Font dropdown listing every installed family (searchable). Fonts are enumerated only
@@ -654,8 +872,9 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
     let mut overlays: Vec<El> = Vec::new();
     let body = match s.tab {
         0 => general_tab(s, &p),
-        1 => bar_tab(s, &p, &mut overlays),
-        2 => border_tab(s, &p),
+        1 => apps_tab(s, &p),
+        2 => bar_tab(s, &p, &mut overlays),
+        3 => border_tab(s, &p),
         _ => keybinds_tab(s, &p),
     };
     let content = col()
@@ -752,15 +971,19 @@ pub fn run() {
         min_size: Some((560.0, 420.0)),
         // For headless previews: `--snap x.png --scene bar`.
         scenes: &[
-            ("bar", |s: &mut S| s.tab = 1),
-            ("border", |s: &mut S| s.tab = 2),
-            ("keybinds", |s: &mut S| s.tab = 3),
-            ("fonts", |s: &mut S| {
+            ("apps", |s: &mut S| {
                 s.tab = 1;
+                s.apps.push(Assign { id: 9000, origin: None, exe: TextEdit::new("Discord.exe"), title: TextEdit::new(""), ws: 3 });
+            }),
+            ("bar", |s: &mut S| s.tab = 2),
+            ("border", |s: &mut S| s.tab = 3),
+            ("keybinds", |s: &mut S| s.tab = 4),
+            ("fonts", |s: &mut S| {
+                s.tab = 2;
                 s.font_picker.step(rune_kit::ComboboxEvent::Toggle { current: Some(DEFAULT_FONT_ID) });
             }),
             ("segoe", |s: &mut S| {
-                s.tab = 1;
+                s.tab = 2;
                 s.font = "Segoe UI".into();
             }),
         ],
@@ -808,5 +1031,89 @@ mod tests {
         assert!(save(&mut s).is_err(), "bad chord blocks saving");
         assert!(!std::fs::read_to_string(&path).unwrap().contains("banana"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn app(origin: Option<usize>, exe: &str, ws: usize) -> Assign {
+        Assign { id: 0, origin, exe: TextEdit::new(exe), title: TextEdit::new(""), ws }
+    }
+
+    const RULES: &str = r#"
+# Window rules header
+[[rules]]
+exe = "Discord.exe"   # chat
+workspace = 3
+
+[[rules]]
+exe = "Calculator.exe"
+float = true
+
+[[rules]]
+exe = "Spotify.exe"
+workspace = 4
+float = true
+
+# music
+[[rules]]
+exe = "Foobar.exe"
+workspace = 5
+
+[keybinds]
+"super+q" = "close"
+"#;
+
+    #[test]
+    fn only_plain_workspace_rules_are_assignments() {
+        let doc: DocumentMut = RULES.parse().unwrap();
+        let found: Vec<_> = doc["rules"].as_array_of_tables().unwrap().iter().filter_map(assignment).collect();
+        assert_eq!(found, vec![("Discord.exe".into(), String::new(), 3), ("Foobar.exe".into(), String::new(), 5)]);
+        let t: DocumentMut = "title = \"Teams\"\nworkspace = 2".parse().unwrap();
+        assert_eq!(assignment(t.as_table()), Some((String::new(), "Teams".into(), 2)));
+        for bad in ["exe = \"a.exe\"", "exe = \"a.exe\"\nworkspace = 0", "workspace = 2", "class = \"x\"\nworkspace = 2"] {
+            let t: DocumentMut = bad.parse().unwrap();
+            assert_eq!(assignment(t.as_table()), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn writing_assignments_leaves_other_rules_alone() {
+        let mut doc: DocumentMut = RULES.parse().unwrap();
+        // Discord moves to 2, Foobar is removed, Slack is added, the blank row is dropped.
+        write_assignments(&mut doc, &[app(Some(0), "Discord.exe", 2), app(None, "Slack.exe", 6), app(None, "", 1)]).unwrap();
+        let out = doc.to_string();
+        let cfg: Config = toml::from_str(&out).unwrap();
+        let got: Vec<_> = cfg.rules.iter().map(|r| (r.exe.clone().unwrap(), r.workspace, r.float)).collect();
+        assert_eq!(got, vec![
+            ("Discord.exe".into(), Some(2), false),
+            ("Calculator.exe".into(), None, true),
+            ("Spotify.exe".into(), Some(4), true),
+            ("Slack.exe".into(), Some(6), false),
+        ]);
+        assert!(out.contains("# Window rules header"));
+        assert!(out.contains("exe = \"Discord.exe\"   # chat\nworkspace = 2"), "trailing comment kept:\n{out}");
+        assert!(!out.contains("Foobar") && !out.contains("# music"));
+        assert!(out.find("Slack.exe").unwrap() < out.find("[keybinds]").unwrap(), "new rules go with the others:\n{out}");
+        assert_eq!(cfg.keybinds.len(), 1);
+
+        // Removing the first rule keeps the header comment.
+        let mut doc: DocumentMut = RULES.parse().unwrap();
+        write_assignments(&mut doc, &[app(Some(1), "Foobar.exe", 5)]).unwrap();
+        let out = doc.to_string();
+        assert!(!out.contains("Discord") && out.contains("# Window rules header"), "{out}");
+        assert!(out.find("# Window rules header").unwrap() < out.find("Calculator").unwrap());
+
+        // No rules yet.
+        let mut doc: DocumentMut = "[general]\nworkspaces = 9\n".parse().unwrap();
+        write_assignments(&mut doc, &[app(None, "Discord.exe", 3)]).unwrap();
+        let cfg: Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(cfg.rules[0].workspace, Some(3));
+    }
+
+    #[test]
+    fn assignment_validation() {
+        assert_eq!(assign_error(&app(None, "", 99), 9), None, "blank rows are ignored");
+        assert!(assign_error(&app(None, "Discord.exe", 3), 9).is_none());
+        assert!(assign_error(&app(None, "Discord", 3), 9).is_some());
+        assert!(assign_error(&app(None, r"C:\x\Discord.exe", 3), 9).is_some());
+        assert!(assign_error(&app(None, "Discord.exe", 10), 9).is_some());
     }
 }
