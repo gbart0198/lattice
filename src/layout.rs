@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 
+use crate::config::Dir;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Rect {
     pub x: i32,
@@ -11,7 +13,7 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
         Self { x, y, w, h }
     }
     pub fn right(&self) -> i32 {
@@ -64,11 +66,25 @@ impl LayoutKind {
     }
 }
 
-pub struct Params {
+pub struct Params<'a> {
     pub gaps_inner: i32,
     pub gaps_outer: i32,
     /// dwindle: share of the first half of each split; master: master column width share.
     pub ratio: f32,
+    /// dwindle: per-split overrides of `ratio`; split `i` divides window `i` from the rest.
+    pub splits: &'a [f32],
+}
+
+impl Params<'_> {
+    fn split_ratio(&self, i: usize) -> f32 {
+        self.splits.get(i).copied().unwrap_or(self.ratio)
+    }
+
+    /// The area tiles are carved from: shrunk by (outer - inner/2), then each tile by inner/2,
+    /// so edges get `outer` and seams `inner`.
+    fn inner(&self, area: Rect) -> Rect {
+        area.inset(self.gaps_outer - self.gaps_inner / 2)
+    }
 }
 
 /// Lays out `n` windows in `area`. Gaps: `gaps_outer` at the edges, `gaps_inner` between tiles.
@@ -76,15 +92,13 @@ pub fn tile(kind: LayoutKind, area: Rect, n: usize, p: &Params) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
     }
-    let half = p.gaps_inner / 2;
-    // Shrink by (outer - inner/2), then each tile by inner/2: edges get `outer`, seams `inner`.
-    let inner_area = area.inset(p.gaps_outer - half);
+    let inner_area = p.inner(area);
     let raw = match kind {
         LayoutKind::Monocle => vec![inner_area; n],
-        LayoutKind::Dwindle => dwindle(inner_area, n, p.ratio),
+        LayoutKind::Dwindle => dwindle(inner_area, n, p),
         LayoutKind::Master => master(inner_area, n, p.ratio),
     };
-    raw.into_iter().map(|r| r.inset(half)).collect()
+    raw.into_iter().map(|r| r.inset(p.gaps_inner / 2)).collect()
 }
 
 fn split(r: Rect, ratio: f32, vertical: bool) -> (Rect, Rect) {
@@ -99,7 +113,7 @@ fn split(r: Rect, ratio: f32, vertical: bool) -> (Rect, Rect) {
 
 /// Hyprland-style dwindle: each window takes part of what's left, splitting along the longer
 /// side, so windows spiral inward.
-fn dwindle(area: Rect, n: usize, ratio: f32) -> Vec<Rect> {
+fn dwindle(area: Rect, n: usize, p: &Params) -> Vec<Rect> {
     let mut out = Vec::with_capacity(n);
     let mut rest = area;
     for i in 0..n {
@@ -107,7 +121,7 @@ fn dwindle(area: Rect, n: usize, ratio: f32) -> Vec<Rect> {
             out.push(rest);
             break;
         }
-        let (a, b) = split(rest, ratio, rest.w > rest.h);
+        let (a, b) = split(rest, p.split_ratio(i), rest.w > rest.h);
         out.push(a);
         rest = b;
     }
@@ -129,11 +143,63 @@ fn master(area: Rect, n: usize, ratio: f32) -> Vec<Rect> {
     out
 }
 
+/// What a directional resize adjusts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeTarget {
+    /// The dwindle split at this index.
+    Split(usize),
+    /// The master column's width.
+    Master,
+}
+
+/// Finds the boundary that "expand window `k` toward `dir`" moves. The boundary always moves
+/// toward `dir` (see `nudge`): normally it's the edge of window `k` on the `dir` side, which
+/// grows the window. A window touching the screen edge on that side has no such boundary, so
+/// its opposite edge moves instead, shrinking it (like i3 / Hyprland). Monocle, and master's
+/// up/down (stack rows are always even), have nothing to resize.
+pub fn resize_target(kind: LayoutKind, area: Rect, n: usize, k: usize, p: &Params, dir: Dir) -> Option<ResizeTarget> {
+    let vertical = matches!(dir, Dir::Left | Dir::Right);
+    let forward = matches!(dir, Dir::Right | Dir::Down);
+    match kind {
+        LayoutKind::Monocle => None,
+        LayoutKind::Master => (n >= 2 && k < n && vertical).then_some(ResizeTarget::Master),
+        LayoutKind::Dwindle => {
+            if k >= n {
+                return None;
+            }
+            // Window k is the first half of split k and the second half of every split before
+            // it, so split k is its right/bottom edge and the latest matching earlier one its
+            // left/top edge.
+            let (mut before, mut after) = (None, None);
+            let mut rest = p.inner(area);
+            for i in 0..(n - 1).min(k + 1) {
+                let v = rest.w > rest.h;
+                if v == vertical {
+                    if i == k {
+                        after = Some(i);
+                    } else {
+                        before = Some(i);
+                    }
+                }
+                rest = split(rest, p.split_ratio(i), v).1;
+            }
+            let found = if forward { after.or(before) } else { before.or(after) };
+            found.map(ResizeTarget::Split)
+        }
+    }
+}
+
+/// Moves a ratio's boundary `amount` toward `dir`: right/down grows the first half.
+pub fn nudge(ratio: f32, dir: Dir, amount: f32) -> f32 {
+    let d = if matches!(dir, Dir::Right | Dir::Down) { amount } else { -amount };
+    (ratio + d).clamp(0.1, 0.9)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const P: Params = Params { gaps_inner: 0, gaps_outer: 0, ratio: 0.5 };
+    const P: Params<'static> = Params { gaps_inner: 0, gaps_outer: 0, ratio: 0.5, splits: &[] };
 
     #[test]
     fn dwindle_three() {
@@ -153,11 +219,76 @@ mod tests {
 
     #[test]
     fn gaps() {
-        let p = Params { gaps_inner: 10, gaps_outer: 20, ratio: 0.5 };
+        let p = Params { gaps_inner: 10, gaps_outer: 20, ..P };
         let r = tile(LayoutKind::Dwindle, Rect::new(0, 0, 1000, 500), 2, &p);
         assert_eq!(r[0].x, 20);
         assert_eq!(r[0].y, 20);
         assert_eq!(r[1].x - r[0].right(), 10);
         assert_eq!(1000 - r[1].right(), 20);
+    }
+
+    const WIDE: Rect = Rect::new(0, 0, 1000, 500);
+
+    fn target(kind: LayoutKind, n: usize, k: usize, dir: Dir) -> Option<ResizeTarget> {
+        resize_target(kind, WIDE, n, k, &P, dir)
+    }
+
+    #[test]
+    fn per_split_ratios() {
+        let p = Params { splits: &[0.7], ..P };
+        let r = tile(LayoutKind::Dwindle, WIDE, 3, &p);
+        assert_eq!(r[0], Rect::new(0, 0, 700, 500));
+        // Split 1 has no override: the default ratio.
+        assert_eq!(r[1], Rect::new(700, 0, 300, 250));
+    }
+
+    #[test]
+    fn dwindle_resize_toward_neighbor() {
+        use ResizeTarget::Split;
+        // Window 0 left; windows 1 (top) and 2 (bottom) on the right.
+        assert_eq!(target(LayoutKind::Dwindle, 3, 0, Dir::Right), Some(Split(0)));
+        assert_eq!(target(LayoutKind::Dwindle, 3, 1, Dir::Left), Some(Split(0)));
+        assert_eq!(target(LayoutKind::Dwindle, 3, 2, Dir::Left), Some(Split(0)));
+        assert_eq!(target(LayoutKind::Dwindle, 3, 1, Dir::Down), Some(Split(1)));
+        assert_eq!(target(LayoutKind::Dwindle, 3, 2, Dir::Up), Some(Split(1)));
+        // Expanding right grows window 0.
+        let ratio = nudge(0.5, Dir::Right, 0.05);
+        let p = Params { splits: &[ratio], ..P };
+        assert_eq!(tile(LayoutKind::Dwindle, WIDE, 3, &p)[0].w, 550);
+    }
+
+    #[test]
+    fn dwindle_resize_at_screen_edge() {
+        use ResizeTarget::Split;
+        // At the edge, the opposite boundary moves the same way (shrinking the window).
+        assert_eq!(target(LayoutKind::Dwindle, 3, 1, Dir::Right), Some(Split(0)));
+        assert_eq!(target(LayoutKind::Dwindle, 3, 0, Dir::Left), Some(Split(0)));
+        assert_eq!(target(LayoutKind::Dwindle, 3, 1, Dir::Up), Some(Split(1)));
+        assert_eq!(nudge(0.5, Dir::Left, 0.05), 0.45);
+        // No split along that axis at all, or nothing to split.
+        assert_eq!(target(LayoutKind::Dwindle, 3, 0, Dir::Up), None);
+        assert_eq!(target(LayoutKind::Dwindle, 1, 0, Dir::Right), None);
+    }
+
+    #[test]
+    fn dwindle_resize_picks_nearest_split() {
+        use ResizeTarget::Split;
+        // 5 windows on a wide screen: splits alternate vertical, horizontal, vertical, ...
+        // Window 2's left edge is split 0 (split 1 is horizontal), its right edge split 2.
+        assert_eq!(target(LayoutKind::Dwindle, 5, 2, Dir::Left), Some(Split(0)));
+        assert_eq!(target(LayoutKind::Dwindle, 5, 2, Dir::Right), Some(Split(2)));
+        // Window 3's top edge is split 1 (not split 2, which is vertical), its bottom split 3.
+        assert_eq!(target(LayoutKind::Dwindle, 5, 3, Dir::Up), Some(Split(1)));
+        assert_eq!(target(LayoutKind::Dwindle, 5, 3, Dir::Down), Some(Split(3)));
+    }
+
+    #[test]
+    fn master_and_monocle_resize() {
+        assert_eq!(target(LayoutKind::Master, 3, 0, Dir::Right), Some(ResizeTarget::Master));
+        assert_eq!(target(LayoutKind::Master, 3, 2, Dir::Left), Some(ResizeTarget::Master));
+        assert_eq!(target(LayoutKind::Master, 3, 1, Dir::Up), None);
+        assert_eq!(target(LayoutKind::Master, 1, 0, Dir::Right), None);
+        assert_eq!(target(LayoutKind::Monocle, 3, 0, Dir::Right), None);
+        assert_eq!(nudge(0.88, Dir::Right, 0.05), 0.9);
     }
 }

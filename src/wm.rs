@@ -53,6 +53,9 @@ struct Workspace {
     layout: LayoutKind,
     split_ratio: f32,
     master_ratio: f32,
+    /// Dwindle per-split ratios on each monitor, from directional resizes; splits past the end
+    /// use `split_ratio`.
+    splits: HashMap<usize, Vec<f32>>,
     last_focus: Option<Hwnd>,
     /// Last focused window on each monitor, for focus-monitor and closing windows.
     mon_focus: HashMap<usize, Hwnd>,
@@ -131,6 +134,7 @@ impl Wm {
                 layout: g.layout,
                 split_ratio: g.split_ratio,
                 master_ratio: g.master_ratio,
+                splits: HashMap::new(),
                 last_focus: None,
                 mon_focus: HashMap::new(),
                 fullscreen: None,
@@ -159,6 +163,7 @@ impl Wm {
         }
         for ws in &mut self.workspaces {
             ws.mon_focus = ws.mon_focus.drain().filter_map(|(m, h)| remap.get(m).map(|n| (*n, h))).collect();
+            ws.splits = ws.splits.drain().filter_map(|(m, v)| remap.get(m).map(|n| (*n, v))).collect();
         }
         self.focused_monitor = self.focused_monitor.min(self.monitors.len().saturating_sub(1));
         // Keep the bar across the top of the primary monitor's (possibly new) work area.
@@ -350,29 +355,40 @@ impl Wm {
             return;
         }
         for mon in 0..self.monitors.len() {
-            self.retile_monitor(ws_idx, mon);
+            let n = self.retile_monitor(ws_idx, mon);
+            // Split ratios belong to positions: forget those past the last split.
+            if let Some(v) = self.workspaces[ws_idx].splits.get_mut(&mon) {
+                v.truncate(n.saturating_sub(1));
+            }
         }
     }
 
-    fn retile_monitor(&self, ws_idx: usize, mon: usize) {
+    /// Tiled (not floating or minimized) windows of workspace `ws` on monitor `mon`, in order.
+    fn tiled(&self, ws: usize, mon: usize) -> Vec<Hwnd> {
+        self.on_monitor(ws, mon).into_iter().filter(|h| self.windows.get(h).is_some_and(|w| !w.floating && !w.minimized)).collect()
+    }
+
+    fn params(&self, ws_idx: usize, mon: usize) -> Params<'_> {
         let ws = &self.workspaces[ws_idx];
-        let area = self.tiling_area(mon);
-        let tiled: Vec<Hwnd> = self
-            .on_monitor(ws_idx, mon)
-            .into_iter()
-            .filter(|h| self.windows.get(h).is_some_and(|w| !w.floating && !w.minimized))
-            .collect();
-        if let Some(f) = ws.fullscreen.filter(|f| tiled.contains(f)) {
-            place_if_moved(f, area);
-            win::raise(f);
-            return;
-        }
-        let params = Params {
+        Params {
             gaps_inner: self.cfg.general.gaps_inner,
             gaps_outer: self.cfg.general.gaps_outer,
             ratio: if ws.layout == LayoutKind::Master { ws.master_ratio } else { ws.split_ratio },
-        };
-        let rects = layout::tile(ws.layout, area, tiled.len(), &params);
+            splits: ws.splits.get(&mon).map_or(&[], |v| v),
+        }
+    }
+
+    /// Lays out one monitor; returns how many windows it tiles.
+    fn retile_monitor(&self, ws_idx: usize, mon: usize) -> usize {
+        let ws = &self.workspaces[ws_idx];
+        let area = self.tiling_area(mon);
+        let tiled = self.tiled(ws_idx, mon);
+        if let Some(f) = ws.fullscreen.filter(|f| tiled.contains(f)) {
+            place_if_moved(f, area);
+            win::raise(f);
+            return tiled.len();
+        }
+        let rects = layout::tile(ws.layout, area, tiled.len(), &self.params(ws_idx, mon));
         for (hwnd, r) in tiled.iter().zip(rects) {
             place_if_moved(*hwnd, r);
         }
@@ -381,6 +397,33 @@ impl Wm {
         {
             win::raise(*top);
         }
+        tiled.len()
+    }
+
+    /// Expands the focused tiled window toward `dir` by moving the split boundary on that side
+    /// (or, at the screen edge, the opposite one: see `layout::resize_target`).
+    fn resize_dir(&mut self, dir: Dir, amount: f32) {
+        let Some(h) = self.focused_window() else { return };
+        let (ws_idx, mon) = (self.windows[&h].ws, self.windows[&h].mon);
+        if ws_idx != self.active || self.workspaces[ws_idx].fullscreen.is_some() {
+            return;
+        }
+        let tiled = self.tiled(ws_idx, mon);
+        let Some(k) = tiled.iter().position(|x| *x == h) else { return };
+        let target = layout::resize_target(self.workspaces[ws_idx].layout, self.tiling_area(mon), tiled.len(), k, &self.params(ws_idx, mon), dir);
+        let ws = &mut self.workspaces[ws_idx];
+        match target {
+            Some(layout::ResizeTarget::Master) => ws.master_ratio = layout::nudge(ws.master_ratio, dir, amount),
+            Some(layout::ResizeTarget::Split(i)) => {
+                let v = ws.splits.entry(mon).or_default();
+                if v.len() <= i {
+                    v.resize(i + 1, ws.split_ratio);
+                }
+                v[i] = layout::nudge(v[i], dir, amount);
+            }
+            None => return,
+        }
+        self.retile(ws_idx);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -713,10 +756,18 @@ impl Wm {
             }
             Command::Resize(delta) => {
                 let w = &mut self.workspaces[self.active];
-                let r = if w.layout == LayoutKind::Master { &mut w.master_ratio } else { &mut w.split_ratio };
-                *r = (*r + delta).clamp(0.1, 0.9);
+                if w.layout == LayoutKind::Master {
+                    w.master_ratio = (w.master_ratio + delta).clamp(0.1, 0.9);
+                } else {
+                    // Every split, including ones a directional resize has moved.
+                    w.split_ratio = (w.split_ratio + delta).clamp(0.1, 0.9);
+                    for r in w.splits.values_mut().flatten() {
+                        *r = (*r + delta).clamp(0.1, 0.9);
+                    }
+                }
                 self.retile(self.active);
             }
+            Command::ResizeDir(dir, amount) => self.resize_dir(dir, amount),
             Command::ToggleFloat => {
                 let Some(h) = self.focused_window() else { return };
                 let w = self.windows.get_mut(&h).unwrap();
@@ -756,6 +807,7 @@ impl Wm {
                     ws.layout = cfg.general.layout;
                     ws.split_ratio = cfg.general.split_ratio;
                     ws.master_ratio = cfg.general.master_ratio;
+                    ws.splits.clear();
                 }
                 self.cfg = cfg;
                 // The border is ours (not the bar's), so its settings can apply right away.

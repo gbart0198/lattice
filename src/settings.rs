@@ -1,4 +1,4 @@
-//! The settings window (`lattice.exe --settings`, Win+Shift+Comma): a Rune app that edits
+//! The settings window (`lattice.exe --settings`, Win+Alt+Comma): a Rune app that edits
 //! config.toml in place, keeping its comments, then tells the running lattice to reload.
 //!
 //! It runs as its own process. Lattice never manages lattice.exe windows, so this one floats
@@ -560,7 +560,7 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
     vec![
         col().key("kb-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize grow|shrink, toggle-float, toggle-fullscreen, close, settings, open-config, reload, quit, exec <program>.".to_string())
+            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize left|right|up|down [amount], resize grow|shrink, toggle-float, toggle-fullscreen, close, settings, open-config, reload, quit, exec <program>.".to_string())
                 .w_full()
                 .wrap()
                 .font(TextStyle::new(11.5, 400.0))
@@ -726,7 +726,7 @@ pub fn run() {
     use windows::core::{HSTRING, w};
     unsafe {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        // One settings window: a second Win+Shift+Comma brings the first to the front.
+        // One settings window: a second Win+Alt+Comma brings the first to the front.
         let guard = CreateMutexW(None, true, w!("Local\\lattice-settings"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             if let Ok(h) = FindWindowW(None, &HSTRING::from(TITLE))

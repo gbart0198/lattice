@@ -14,7 +14,7 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
 - **Top bar**: workspaces with the icons of the apps on each, the focused window's title, a
   layout button, CPU, memory, battery and the clock, in any installed font.
 - **Focus border**: a soft glowing frame around the focused window.
-- **Settings window** (Win+Shift+Comma) for everything above.
+- **Settings window** (Win+Alt+Comma) for everything above.
 
 ## Getting started
 
@@ -92,7 +92,7 @@ schtasks /Create /TN lattice /TR "\"$env:LOCALAPPDATA\Programs\lattice\lattice.e
 
 ## Configuration
 
-Press **Win+Shift+Comma** to open the settings window. It floats above everything and is never
+Press **Win+Alt+Comma** to open the settings window. It floats above everything and is never
 tiled, with these tabs:
 
 - **General**: layouts, gaps, workspaces and behavior.
@@ -117,6 +117,12 @@ The log is at `%APPDATA%\lattice\lattice.log`. Set `LATTICE_LOG=debug` for more 
 | `dwindle` | Each new window takes half of the remaining space. The split runs along the longer side, so windows spiral inward. With `new_window = "after_focused"` a new window splits the focused one, as in Hyprland. `split_ratio` sets the size of the first half. |
 | `master` | One master window on the left (`master_ratio` of the width). All other windows stack evenly on the right. |
 | `monocle` | Every window fills the area. Only the focused one is visible, and focus left/right cycles through them. |
+
+`resize left|right|up|down` (Win+Shift+`,` `.` `;` `'`) expands the focused window that way
+by moving the split on that side. A window already at the screen edge on that side shrinks
+instead, as its opposite edge moves the same way. In `master`, left/right move the master
+column's edge and up/down do nothing; `monocle` has nothing to resize. Each dwindle split
+remembers its own size until the window count changes it or you reload.
 
 Settings shared by all layouts:
 
@@ -153,12 +159,14 @@ and `glow_opacity`.
 | Win + . / Win + , | Next / previous workspace |
 | Win + O / Win + Shift + O | Focus the next monitor / move the window there |
 | Win + Space | Cycle layout (dwindle → master → monocle) |
-| Win + = / Win + − | Grow / shrink the master or first split |
+| Win + = / Win + − | Grow / shrink the master column or every split |
+| Win + Shift + . / , | Expand the window right / left |
+| Win + Shift + ; / ' | Expand the window up / down |
 | Win + Shift + Space | Toggle floating |
 | Win + F | Toggle fullscreen (fills the tiling area) |
 | Win + Q / Win + W | Close the window |
 | Win + Enter | Open Windows Terminal (`exec wt.exe`) |
-| Win + Shift + , | Open the settings window |
+| Win + Alt + , | Open the settings window |
 | Win + Ctrl + , | Open config.toml in your editor |
 | Win + Shift + R / Win + Shift + E | Reload config / quit |
 
