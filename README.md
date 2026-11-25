@@ -37,6 +37,15 @@ The installer isn't code-signed yet, so SmartScreen may warn about it: choose
 
 Silent install for scripts: `lattice-setup-<version>.exe /VERYSILENT /TASKS=autostart`.
 
+### Updates
+
+Once a day lattice asks GitHub whether a newer release is out. If one is, the bar shows an
+**Update** button. Click it and lattice downloads the new installer, checks it against the
+SHA-256 digest GitHub publishes for it, and runs it silently; lattice restarts on the new
+version a few seconds later. Nothing is downloaded until you click. **Settings > General >
+Updates** has **Check now** and turns the daily check off (`check_for_updates = false` under
+`[general]`). Only the installed copy updates itself; a build run from source never does.
+
 ## Building from source
 
 

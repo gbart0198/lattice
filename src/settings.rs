@@ -10,6 +10,7 @@ use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, Slider, Switch, Tex
 use toml_edit::DocumentMut;
 
 use crate::config::{self, Config};
+use crate::update;
 use crate::win;
 
 const TITLE: &str = "lattice settings";
@@ -55,6 +56,7 @@ struct S {
     float_unresizable: bool,
     follow_activation: bool,
     mouse_follows_focus: bool,
+    check_updates: bool,
     /// Rules the Apps tab doesn't edit (float, ignore, ...).
     other_rules: usize,
     // [[rules]] that only pin an app to a workspace
@@ -89,6 +91,8 @@ struct S {
     binds: Vec<Bind>,
     next_id: u64,
     // UI
+    update: update::Status,
+    update_gen: u64,
     status: String,
     status_ok: bool,
     restart_needed: bool,
@@ -144,6 +148,7 @@ fn init() -> S {
         float_unresizable: g.float_unresizable,
         follow_activation: g.follow_activation,
         mouse_follows_focus: g.mouse_follows_focus,
+        check_updates: g.check_for_updates,
         other_rules: cfg.rules.len().saturating_sub(apps.len()),
         apps,
         bar_enabled: b.enabled,
@@ -175,6 +180,8 @@ fn init() -> S {
             .map(|(i, (k, v))| Bind { id: i as u64, chord: TextEdit::new(k), command: TextEdit::new(v) })
             .collect(),
         next_id: n,
+        update: update::Status::Unknown,
+        update_gen: 0,
         status: String::new(),
         status_ok: true,
         restart_needed: false,
@@ -372,6 +379,7 @@ fn save(s: &mut S) -> Result<String, String> {
     set(&mut doc, "general", "float_unresizable", s.float_unresizable);
     set(&mut doc, "general", "follow_activation", s.follow_activation);
     set(&mut doc, "general", "mouse_follows_focus", s.mouse_follows_focus);
+    set(&mut doc, "general", "check_for_updates", s.check_updates);
 
     set(&mut doc, "bar", "enabled", s.bar_enabled);
     set(&mut doc, "bar", "height", s.bar_height.round() as i64);
@@ -606,7 +614,56 @@ fn general_tab(s: &S, p: &P) -> Vec<El> {
             toggle(p, "mouse-follow", "Mouse follows focus", Some("Move the cursor to windows focused by keyboard"), s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
             setting_row(p, "rules", &format!("Other window rules ({})", s.other_rules), Some("Float or ignore apps: edit them in the config file"), open_config_button(p)),
         ]),
+        section(p, "update-sec", "Updates", vec![
+            toggle(p, "check-updates", "Check for updates", Some("Once a day, from GitHub releases. Nothing installs until you say so"), s.check_updates, |s| &mut s.check_updates),
+            update_row(s, p),
+        ]),
     ]
+}
+
+/// "lattice x.y.z" with what the last check found, and the button for the next step.
+fn update_row(s: &S, p: &P) -> El {
+    let k = kit(p);
+    let installed = update::installed();
+    let check = || Button::new("Check now").variant(ButtonVariant::Outline).on_press(|_: &mut S| update::check_async()).build(&k);
+    let (hint, control): (String, El) = match &s.update {
+        update::Status::Unknown => ("Not checked yet".into(), check()),
+        update::Status::Checking => ("Checking GitHub…".into(), el()),
+        update::Status::UpToDate => ("Up to date".into(), check()),
+        update::Status::CheckFailed(e) => (format!("Check failed: {e}"), check()),
+        update::Status::Available(r) if !installed => (
+            format!("{} is out. This copy isn't the installed one, so get it from GitHub releases", r.version_str()),
+            check(),
+        ),
+        update::Status::Available(r) | update::Status::InstallFailed(r, _) => {
+            let hint = match &s.update {
+                update::Status::InstallFailed(_, e) => format!("Update failed: {e}"),
+                _ => format!("{} is available", r.version_str()),
+            };
+            let button = Button::new(format!("Install {}", r.version_str()))
+                .variant(ButtonVariant::Submit)
+                .on_press(|_: &mut S| update::install_async())
+                .build(&k);
+            (hint, button)
+        }
+        update::Status::Downloading(r) => (format!("Downloading {}…", r.version_str()), el()),
+        update::Status::Installing(r) => (format!("Installing {}; lattice will restart", r.version_str()), el()),
+    };
+    setting_row(p, "update", &format!("lattice {}", env!("CARGO_PKG_VERSION")), Some(&hint), control)
+}
+
+fn setup(_s: &mut S, wake: rune::Waker) {
+    update::set_waker(wake);
+}
+
+fn poll(s: &mut S, _t: f64, _tx: &mut Tx) -> bool {
+    let g = update::GEN.load(std::sync::atomic::Ordering::SeqCst);
+    if g == s.update_gen {
+        return false;
+    }
+    s.update_gen = g;
+    s.update = update::status();
+    true
 }
 
 fn bar_tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
@@ -968,6 +1025,8 @@ pub fn run() {
         (m.work.x + (m.work.w - pw).max(0) / 2, m.work.y + (m.work.h - ph).max(0) / 2)
     });
     App::new(AppSpec {
+        setup: Some(setup),
+        poll: Some(poll),
         min_size: Some((560.0, 420.0)),
         // For headless previews: `--snap x.png --scene bar`.
         scenes: &[

@@ -18,6 +18,7 @@ mod shared;
 mod settings;
 mod sysinfo;
 mod tour;
+mod update;
 mod win;
 mod wm;
 
@@ -282,6 +283,7 @@ fn main() {
     }
     // The first time lattice runs (or the first time since the tour arrived), show it around.
     tour::start_if_new();
+    update::start_background();
     if !windows.is_empty() {
         rune::run_windows(move |_displays| windows);
         // The UI only returns if the bar was closed: shut the WM down too.
