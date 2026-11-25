@@ -1,0 +1,276 @@
+//! The Windows side of the launcher: the app catalog (`shell:AppsFolder`, the Start menu's own
+//! "All apps" list: desktop and Store apps alike), app icons, launching, and bringing the
+//! launcher window to the front.
+//!
+//! `scan` and `icon` use COM: call them on a thread that ran `com_init`.
+
+use std::ffi::c_void;
+use std::sync::Arc;
+
+use windows::Win32::Foundation::{HWND, SIZE};
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDIBits,
+    GetObjectW, HBITMAP, HGDIOBJ,
+};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, IBindCtx};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput,
+    VK_MENU,
+};
+use windows::Win32::UI::Shell::{
+    BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, IShellItemImageFactory, KF_FLAG_DEFAULT, SIGDN,
+    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, SIIGBF_ICONONLY, SHCreateItemFromParsingName, SHGetKnownFolderItem,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ASFW_ANY, AllowSetForegroundWindow, GetForegroundWindow, IsWindowVisible, SetForegroundWindow,
+};
+use windows::core::{HSTRING, Interface};
+
+/// One launchable app.
+#[derive(Clone, Debug)]
+pub struct App {
+    /// What the Start menu calls it.
+    pub name: Arc<str>,
+    /// Its AppsFolder parsing name: an AppUserModelID ("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
+    /// or a path, possibly under a known-folder GUID ("{6D809377-...}\cmd.exe").
+    pub id: Arc<str>,
+}
+
+/// Icon pixels: straight-alpha RGBA, `size` x `size`.
+pub struct Icon {
+    pub size: u32,
+    pub rgba: Arc<[u8]>,
+}
+
+/// Prepares the calling thread for the shell's COM objects.
+pub fn com_init() {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+}
+
+/// Every app in the Start menu's "All apps", sorted by name. Skips uninstallers and the readme
+/// and help documents some installers add.
+pub fn scan() -> Vec<App> {
+    let mut apps = Vec::new();
+    unsafe {
+        let folder: IShellItem = match SHGetKnownFolderItem(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None) {
+            Ok(f) => f,
+            Err(e) => {
+                log::error!("launcher: can't open the apps folder: {e}");
+                return apps;
+            }
+        };
+        let items: IEnumShellItems = match folder.BindToHandler(None::<&IBindCtx>, &BHID_EnumItems) {
+            Ok(i) => i,
+            Err(e) => {
+                log::error!("launcher: can't list the apps folder: {e}");
+                return apps;
+            }
+        };
+        loop {
+            let mut slot = [None];
+            let mut fetched = 0u32;
+            // S_FALSE (also Ok) with nothing fetched is the end of the list.
+            if items.Next(&mut slot, Some(&mut fetched)).is_err() || fetched == 0 {
+                break;
+            }
+            let Some(item) = slot[0].take() else { break };
+            let (Some(name), Some(id)) =
+                (display_name(&item, SIGDN_NORMALDISPLAY), display_name(&item, SIGDN_PARENTRELATIVEPARSING))
+            else {
+                continue;
+            };
+            if wanted(&name, &id) {
+                apps.push(App { name: name.into(), id: id.into() });
+            }
+        }
+    }
+    apps.sort_by_cached_key(|a| a.name.to_lowercase());
+    apps.dedup_by(|a, b| a.id == b.id);
+    apps
+}
+
+unsafe fn display_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
+    unsafe {
+        let p = item.GetDisplayName(kind).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const c_void));
+        s.filter(|s| !s.trim().is_empty())
+    }
+}
+
+fn wanted(name: &str, id: &str) -> bool {
+    const DOCUMENTS: [&str; 9] = [".txt", ".chm", ".pdf", ".htm", ".html", ".rtf", ".md", ".log", ".ini"];
+    let id = id.to_ascii_lowercase();
+    !name.to_lowercase().contains("uninstall") && !DOCUMENTS.iter().any(|ext| id.ends_with(ext))
+}
+
+/// The app's icon at `size` pixels, as the Start menu draws it.
+pub fn icon(id: &str, size: u32) -> Option<Icon> {
+    unsafe {
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(apps_folder_path(id)), None::<&IBindCtx>).ok()?;
+        let factory: IShellItemImageFactory = item.cast().ok()?;
+        let side = size as i32;
+        let bitmap = factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_ICONONLY).ok()?;
+        let icon = bitmap_rgba(bitmap);
+        let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        icon
+    }
+}
+
+/// A 32-bit bitmap's pixels as straight-alpha RGBA (it must be square).
+unsafe fn bitmap_rgba(bitmap: HBITMAP) -> Option<Icon> {
+    unsafe {
+        let mut bm = BITMAP::default();
+        let got = GetObjectW(HGDIOBJ(bitmap.0), std::mem::size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut c_void));
+        if got == 0 || bm.bmWidth <= 0 || bm.bmWidth != bm.bmHeight.abs() {
+            return None;
+        }
+        let side = bm.bmWidth;
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: side,
+                biHeight: -side, // top-down rows
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut px = vec![0u8; (side * side * 4) as usize];
+        let dc = CreateCompatibleDC(None);
+        let rows = GetDIBits(dc, bitmap, 0, side as u32, Some(px.as_mut_ptr() as *mut c_void), &mut info, DIB_RGB_COLORS);
+        let _ = DeleteDC(dc);
+        if rows != side {
+            return None;
+        }
+        Some(Icon { size: side as u32, rgba: bgra_to_rgba(px).into() })
+    }
+}
+
+/// The shell hands icons over as BGRA, premultiplied, and older icons without any alpha at all.
+fn bgra_to_rgba(mut px: Vec<u8>) -> Vec<u8> {
+    let has_alpha = px.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
+    // Straight alpha has colour brighter than its alpha somewhere; premultiplied never does.
+    let premultiplied = has_alpha && px.as_chunks::<4>().0.iter().all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
+    for p in px.as_chunks_mut::<4>().0 {
+        p.swap(0, 2);
+        if !has_alpha {
+            p[3] = 255;
+        } else if premultiplied && p[3] != 0 && p[3] != 255 {
+            let a = p[3] as u32;
+            for c in &mut p[..3] {
+                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+    px
+}
+
+fn apps_folder_path(id: &str) -> String {
+    format!("shell:AppsFolder\\{id}")
+}
+
+/// Starts the app the way the Start menu does: the running shell launches it, so the app gets
+/// the shell's environment, not ours. `clean_env` is kept from the short-lived explorer.exe
+/// that hands the request over, in case it ends up launching the app itself.
+pub fn launch(id: &str, clean_env: &[String]) {
+    unsafe {
+        // We hold the foreground (the launcher had it): let the new app take it.
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    }
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("explorer.exe");
+    // Quoted by hand: explorer parses its own command line, and ids can contain spaces.
+    cmd.raw_arg(format!("\"{}\"", apps_folder_path(id)));
+    for var in clean_env {
+        cmd.env_remove(var);
+    }
+    if let Err(e) = cmd.spawn() {
+        log::error!("launcher: launch {id}: {e}");
+    }
+}
+
+/// Makes `hwnd` the foreground window, escalating past Windows' foreground lock: a plain
+/// request, then after a synthetic (zero) mouse move, then after a synthetic Alt tap.
+pub fn bring_to_front(hwnd: isize) {
+    let h = HWND(hwnd as *mut c_void);
+    let size = std::mem::size_of::<INPUT>() as i32;
+    let try_front = || unsafe { SetForegroundWindow(h).as_bool() && GetForegroundWindow() == h };
+    unsafe {
+        if !IsWindowVisible(h).as_bool() || try_front() {
+            return;
+        }
+        let nudge = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: MOUSEEVENTF_MOVE, ..Default::default() } },
+        };
+        SendInput(&[nudge], size);
+        if try_front() {
+            return;
+        }
+        let alt = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_MENU, dwFlags: flags, ..Default::default() } },
+        };
+        SendInput(&[alt(Default::default()), alt(KEYEVENTF_KEYUP)], size);
+        let _ = SetForegroundWindow(h);
+    }
+}
+
+/// Whether `hwnd` is the foreground window.
+pub fn is_foreground(hwnd: isize) -> bool {
+    unsafe { GetForegroundWindow().0 as isize == hwnd }
+}
+
+/// Windows 11 chrome for the borderless launcher: rounded corners and a hairline border in
+/// `border` (sRGB), drawn by DWM outside our pixels so they cost nothing to paint.
+pub fn style_window(hwnd: isize, border: [u8; 3]) {
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
+    let h = HWND(hwnd as *mut c_void);
+    let corner = DWMWCP_ROUND;
+    // COLORREF is 0x00BBGGRR.
+    let colour = border[0] as u32 | (border[1] as u32) << 8 | (border[2] as u32) << 16;
+    unsafe {
+        let _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as *const c_void, 4);
+        let _ = DwmSetWindowAttribute(h, DWMWA_BORDER_COLOR, &colour as *const _ as *const c_void, 4);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn premultiplied_icons_are_unpremultiplied() {
+        // Half-transparent pure red, premultiplied, as BGRA.
+        let out = bgra_to_rgba(vec![0, 0, 128, 128]);
+        assert_eq!(out, vec![255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn straight_alpha_is_kept() {
+        // Bright colour over low alpha can't be premultiplied.
+        let out = bgra_to_rgba(vec![200, 0, 0, 10]);
+        assert_eq!(out, vec![0, 0, 200, 10]);
+    }
+
+    #[test]
+    fn alphaless_bitmaps_are_opaque() {
+        let out = bgra_to_rgba(vec![1, 2, 3, 0]);
+        assert_eq!(out, vec![3, 2, 1, 255]);
+    }
+
+    #[test]
+    fn documents_and_uninstallers_are_skipped() {
+        assert!(wanted("Firefox", "308046B0AF4A39CB"));
+        assert!(!wanted("Uninstall Foo", "C:\\foo\\unins000.exe"));
+        assert!(!wanted("Foo Readme", "{7C5A40EF}\\Foo\\readme.txt"));
+        assert!(wanted("Steam Game", "steam.url"), "Steam games are .url shortcuts");
+    }
+}

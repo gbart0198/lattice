@@ -14,6 +14,8 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
 - **Top bar**: workspaces with the icons of the apps on each, the focused window's title, a
   layout button, CPU, memory, battery and the clock, in any installed font.
 - **Focus border**: a soft glowing frame around the focused window.
+- **App launcher** (Win+Space): a Raycast-style search over every app in the Start menu,
+  Store apps included. Type a few letters, press Enter.
 - **Settings window** (Win+Shift+Comma) for everything above.
 
 ## Getting started
@@ -141,6 +143,16 @@ overlay that lattice keeps wrapped around the window. Set it up in `[border]`: `
 `width`, `radius` (Windows 11 windows use 8), `glow` (blur size in pixels, 0 for a flat line)
 and `glow_opacity`.
 
+### Launcher
+
+Win+Space opens a search box in the middle of the focused monitor. It lists every app in the
+Start menu's "All apps" (desktop and Store apps), matched fuzzily as you type: `vsc` finds
+Visual Studio Code, `term` finds Terminal. Apps you launch often rise to the top, and with an
+empty search the list shows them first. ↑/↓ (or Ctrl+N / Ctrl+P) pick, Enter opens, Escape
+clears the search and then closes; clicking elsewhere closes it too. It wears the bar's colours
+and font; set its `width`, the number of `max_results`, or turn it off in `[launcher]`. The
+launch counts live in `%APPDATA%\lattice\launcher-history.tsv`.
+
 ### Default keybinds
 
 | Keys | Action |
@@ -152,7 +164,8 @@ and `glow_opacity`.
 | Win + Ctrl + 1…9 | Move the window to workspace N and stay |
 | Win + . / Win + , | Next / previous workspace |
 | Win + O / Win + Shift + O | Focus the next monitor / move the window there |
-| Win + Space | Cycle layout (dwindle → master → monocle) |
+| Win + Space | Open / close the app launcher |
+| Win + \\ | Cycle layout (dwindle → master → monocle) |
 | Win + = / Win + − | Grow / shrink the master or first split |
 | Win + Shift + Space | Toggle floating |
 | Win + F | Toggle fullscreen (fills the tiling area) |
@@ -209,6 +222,7 @@ soundtrack.
 | `src/border.rs` | Rune focus-border overlay |
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
 | `src/icon.rs` | Extracts app icons for the bar |
+| `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), Rune UI (`ui.rs`) |
 | `src/sysinfo.rs` | CPU, memory, battery and clock |
 | `src/config.rs` | Config file, keybind and command parsing |
 | `build.rs` | Draws the app icon and embeds it in the exe |

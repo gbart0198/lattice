@@ -560,7 +560,7 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
     vec![
         col().key("kb-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize grow|shrink, toggle-float, toggle-fullscreen, close, settings, open-config, reload, quit, exec <program>.".to_string())
+            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize grow|shrink, toggle-float, toggle-fullscreen, close, launcher, settings, open-config, reload, quit, exec <program>.".to_string())
                 .w_full()
                 .wrap()
                 .font(TextStyle::new(11.5, 400.0))

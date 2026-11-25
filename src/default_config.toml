@@ -73,6 +73,14 @@ color = "#89b4fa"
 glow = 14
 glow_opacity = 0.55
 
+[launcher]
+# App launcher (the `launcher` command, super+space): type to search every app in the Start
+# menu, Enter to open. It uses the bar's colours and font.
+enabled = true
+# Width in logical pixels, and how many results show at once.
+width = 680
+max_results = 8
+
 # Window rules. Every field you set must match (exe = process file name, class = window
 # class, title = substring of the title; all case-insensitive). Effects:
 #   float = true      -> managed (follows its workspace) but not tiled
@@ -113,6 +121,7 @@ float = true
 #   layout dwindle|master|monocle|next
 #   resize grow|shrink                toggle-float   toggle-fullscreen   close
 #   retile   reload   quit   exec <command line>
+#   launcher (show/hide the app launcher)
 #   settings (open the settings window)   open-config (open this file in an editor)
 # Setting a key to "none" disables it. Note: super+L (lock) can't be overridden by any app.
 [keybinds]
@@ -161,7 +170,8 @@ float = true
 "super+o" = "focus-monitor next"
 "super+shift+o" = "move-to-monitor next"
 
-"super+space" = "layout next"
+"super+space" = "launcher"
+"super+backslash" = "layout next"
 "super+equal" = "resize grow"
 "super+minus" = "resize shrink"
 "super+shift+space" = "toggle-float"
