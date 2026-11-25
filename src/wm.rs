@@ -754,19 +754,6 @@ impl Wm {
                 self.retile(self.active);
                 self.publish();
             }
-            Command::Resize(delta) => {
-                let w = &mut self.workspaces[self.active];
-                if w.layout == LayoutKind::Master {
-                    w.master_ratio = (w.master_ratio + delta).clamp(0.1, 0.9);
-                } else {
-                    // Every split, including ones a directional resize has moved.
-                    w.split_ratio = (w.split_ratio + delta).clamp(0.1, 0.9);
-                    for r in w.splits.values_mut().flatten() {
-                        *r = (*r + delta).clamp(0.1, 0.9);
-                    }
-                }
-                self.retile(self.active);
-            }
             Command::ResizeDir(dir, amount) => self.resize_dir(dir, amount),
             Command::ToggleFloat => {
                 let Some(h) = self.focused_window() else { return };

@@ -159,7 +159,6 @@ and `glow_opacity`.
 | Win + . / Win + , | Next / previous workspace |
 | Win + O / Win + Shift + O | Focus the next monitor / move the window there |
 | Win + Space | Cycle layout (dwindle → master → monocle) |
-| Win + = / Win + − | Grow / shrink the master column or every split |
 | Win + Shift + . / , | Expand the window right / left |
 | Win + Shift + ; / ' | Expand the window up / down |
 | Win + Shift + Space | Toggle floating |

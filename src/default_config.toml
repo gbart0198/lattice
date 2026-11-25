@@ -116,7 +116,6 @@ float = true
 #                                     side, its opposite edge moves that way instead (shrinks).
 #                                     dwindle: the nearest split on that side; master:
 #                                     left/right move the master edge, up/down do nothing.
-#   resize grow|shrink                (master column / every dwindle split)
 #   toggle-float   toggle-fullscreen   close
 #   retile   reload   quit   exec <command line>
 #   settings (open the settings window)   open-config (open this file in an editor)
@@ -168,8 +167,6 @@ float = true
 "super+shift+o" = "move-to-monitor next"
 
 "super+space" = "layout next"
-"super+equal" = "resize grow"
-"super+minus" = "resize shrink"
 "super+shift+period" = "resize right"
 "super+shift+comma" = "resize left"
 "super+shift+semicolon" = "resize up"
