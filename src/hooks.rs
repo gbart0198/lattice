@@ -211,7 +211,11 @@ unsafe extern "system" fn display_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
     // Scripts (install/uninstall) ask lattice to quit cleanly by closing this window: same
     // path as Win+Shift+E, so every hidden window is shown again before exit.
     if msg == shared::WM_TOUR_STATUS {
-        return LRESULT(shared::tour_status(wp.0 != 0) as isize);
+        let status = shared::tour_status(wp.0 != 0);
+        if wp.0 != 0 {
+            crate::border::tuck_under_tour();
+        }
+        return LRESULT(status as isize);
     }
     if msg == shared::WM_TOUR_RECT {
         return LRESULT(shared::tour_rect(wp.0) as isize);

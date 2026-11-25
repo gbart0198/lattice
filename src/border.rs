@@ -186,6 +186,7 @@ impl Border {
             return;
         }
         let rects = strip_rects(outer.w, outer.h, g.thick);
+        let above = tour_overlay().unwrap_or(HWND_TOPMOST);
         let repaint = self.painted != Some(size);
         for (h, r) in self.strips.into_iter().zip(rects) {
             let pos = POINT { x: outer.x + r.x, y: outer.y + r.y };
@@ -199,8 +200,9 @@ impl Border {
                     continue;
                 }
                 // Size comes from the painted bitmap; this moves, raises and shows.
+                // Raised to the top, but kept under the product tour's overlay while it runs.
                 let flags = SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW;
-                let _ = SetWindowPos(h, Some(HWND_TOPMOST), pos.x, pos.y, 0, 0, flags);
+                let _ = SetWindowPos(h, Some(above), pos.x, pos.y, 0, 0, flags);
             }
         }
         if repaint {
@@ -280,6 +282,38 @@ impl Border {
                 px[i + 2] = (red * a).round() as u8;
                 px[i + 3] = (255.0 * a).round() as u8;
             }
+        }
+    }
+}
+
+/// The product tour's overlay window (`lattice --tour`), while a tour is running.
+fn tour_overlay() -> Option<HWND> {
+    if !crate::shared::tour_active() {
+        return None;
+    }
+    unsafe { FindWindowW(None, w!("lattice tour")).ok().filter(|h| !h.is_invalid()) }
+}
+
+/// Moves this process's border strips just under the tour's overlay, so the glow never shows
+/// through the tour's dimmed backdrop or its card. The strips raise themselves to the top
+/// whenever they move, and the tour's overlay appears after them, so this runs each time the
+/// tour checks in. Strips that are hidden stay hidden.
+pub fn tuck_under_tour() {
+    let Some(tour) = tour_overlay() else { return };
+    let pid = std::process::id();
+    let mut prev: Option<HWND> = None;
+    unsafe {
+        while let Ok(h) = FindWindowExW(None, prev, w!("lattice-border"), None) {
+            if h.is_invalid() {
+                break;
+            }
+            let mut owner = 0u32;
+            GetWindowThreadProcessId(h, Some(&mut owner));
+            if owner == pid {
+                let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+                let _ = SetWindowPos(h, Some(tour), 0, 0, 0, 0, flags);
+            }
+            prev = Some(h);
         }
     }
 }
