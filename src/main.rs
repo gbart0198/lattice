@@ -38,7 +38,7 @@ USAGE: lattice [--list | --bar-preview | --help]
   (no args)       start the window manager and bar
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
   --bar-preview   show only the bar with sample data (no window management)
-  --settings      open the settings window (Win+Shift+Comma)
+  --settings      open the settings window (Win+Alt+Comma)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
 
