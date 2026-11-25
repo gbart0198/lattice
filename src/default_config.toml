@@ -38,8 +38,8 @@ follow_activation = true
 # Move the mouse cursor to the centre of a window focused by keyboard.
 mouse_follows_focus = false
 
-# Look for a newer lattice on GitHub once a day; the bar shows an "Update" button when there
-# is one. Nothing is downloaded until you click it.
+# Look for a newer lattice on GitHub once a day; a notice at the bottom right offers it when
+# there is one. Nothing is downloaded until you click "Update & restart".
 check_for_updates = true
 
 [bar]

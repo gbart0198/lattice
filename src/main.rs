@@ -19,6 +19,7 @@ mod settings;
 mod sysinfo;
 mod tour;
 mod update;
+mod update_toast;
 mod win;
 mod wm;
 
@@ -45,6 +46,7 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --help]
   --tour          show the guided tour over your desktop (Win+Shift+/); again to end it.
                   lattice shows it by itself once, on its first start. Add --tour-preview to
                   see it over a sample desktop in a window, without lattice running
+  --update-preview  show the update notice with a made-up release (changes nothing)
   --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
@@ -234,6 +236,12 @@ fn main() {
         bar_preview(config::load().bar);
         return;
     }
+    if has("--update-preview") {
+        // The update toast with a made-up release (end the process to close it).
+        let opts = launcher_options(&config::load());
+        update_toast::preview(opts.style, opts.families);
+        return;
+    }
     if has("--border-preview") {
         // Only the focus border, around a sample rectangle (end the process to close it).
         border::preview(config::load().border);
@@ -264,6 +272,7 @@ fn main() {
     log::info!("config: {}", config::config_path().display());
     let bar_cfg = cfg.bar.clone();
     let launcher_opts = cfg.launcher.enabled.then(|| launcher_options(&cfg));
+    let toast_opts = launcher_options(&cfg);
 
     let wm_thread = std::thread::Builder::new()
         .name("lattice-wm".into())
@@ -281,6 +290,7 @@ fn main() {
     if let Some(opts) = launcher_opts {
         windows.push(launcher::window(opts));
     }
+    windows.push(update_toast::window(toast_opts.style, toast_opts.families));
     // The first time lattice runs (or the first time since the tour arrived), show it around.
     tour::start_if_new();
     update::start_background();

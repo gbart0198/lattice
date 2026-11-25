@@ -1,8 +1,8 @@
 //! Update checks against the GitHub releases of this repo, and installing a newer release.
 //!
 //! The WM process checks once a day (if `general.check_for_updates` is on and this is the
-//! installed copy) and the bar shows an "Update" button when a newer release is out. The
-//! settings window has "Check now". Nothing is downloaded or run until the user clicks.
+//! installed copy) and a toast at the bottom right offers it when a newer release is out
+//! (`update_toast`). The settings window has "Check now". Nothing is downloaded or run until the user clicks.
 //!
 //! Trust: everything goes over HTTPS (Windows' own TLS and certificate store, plain HTTP is
 //! refused, redirects included). The installer has to be the release's
@@ -39,6 +39,11 @@ pub struct Release {
 }
 
 impl Release {
+    /// A made-up release for UI previews; it can't be installed.
+    pub fn preview(version: Version) -> Self {
+        Release { version, url: String::new(), sha256: [0; 32], size: 0 }
+    }
+
     pub fn version_str(&self) -> String {
         let (a, b, c) = self.version;
         format!("{a}.{b}.{c}")
@@ -64,7 +69,20 @@ static STATUS: Mutex<Status> = Mutex::new(Status::Unknown);
 pub static GEN: AtomicU64 = AtomicU64::new(0);
 static WAKER: OnceLock<rune::Waker> = OnceLock::new();
 
-/// Wakes `w` whenever the status changes (one UI per process).
+/// Shows `s` in the UI, for previews. Nothing is checked or installed.
+pub fn preview(s: Status) {
+    PREVIEW.store(true, Ordering::SeqCst);
+    set_status(s);
+}
+
+pub fn is_preview() -> bool {
+    PREVIEW.load(Ordering::SeqCst)
+}
+
+static PREVIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Calls `w` whenever the status changes (one listener per process: the update toast in the
+/// WM, the settings window in its own process).
 pub fn set_waker(w: rune::Waker) {
     let _ = WAKER.set(w);
 }
@@ -331,7 +349,7 @@ pub fn install_async() {
             Status::Available(r) | Status::InstallFailed(r, _) => r.clone(),
             _ => return,
         };
-        if !installed() {
+        if !installed() || is_preview() {
             return;
         }
         *s = Status::Downloading(rel.clone());
