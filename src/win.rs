@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, COLORREF, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
@@ -222,10 +222,18 @@ pub fn frame_rect(hwnd: Hwnd) -> Option<Rect> {
 
 /// Moves a window so its *visible frame* lands exactly on `target`.
 pub fn place(hwnd: Hwnd, target: Rect) {
-    unsafe {
-        if is_maximized(hwnd) || is_minimized(hwnd) {
+    if is_maximized(hwnd) || is_minimized(hwnd) {
+        unsafe {
             let _ = ShowWindowAsync(h(hwnd), SW_RESTORE);
         }
+    }
+    place_quiet(hwnd, target);
+}
+
+/// `place` without restoring a maximized or minimized window first, so it never shows one:
+/// moves a window lattice is hiding back to where it belongs.
+pub fn place_quiet(hwnd: Hwnd, target: Rect) {
+    unsafe {
         let (mut l, mut t, mut r, mut b) = (0, 0, 0, 0);
         if let (Some(w), Some(f)) = (window_rect(hwnd), frame_rect(hwnd)) {
             l = f.x - w.x;
@@ -248,6 +256,65 @@ pub fn place(hwnd: Hwnd, target: Rect) {
         // first move; a second move pins the final size.
         if crossing {
             let _ = SetWindowPos(h(hwnd), None, x, y, w, hh, flags);
+        }
+    }
+}
+
+/// A window lattice made invisible (it keeps drawing, so its live preview can be animated), and
+/// what it takes to put it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Faded {
+    /// Its extended style before.
+    pub ex: isize,
+    /// Its own layered-window attributes (colour key, alpha, flags), when it was layered already.
+    pub attrs: Option<(u32, u8, u32)>,
+}
+
+/// Makes a window fully transparent without hiding it: DWM still composes it, so previews of it
+/// stay live. None when it can't be (a window running as administrator, or one that draws its
+/// own per-pixel transparency).
+pub fn fade(hwnd: Hwnd) -> Option<Faded> {
+    unsafe {
+        let ex = GetWindowLongPtrW(h(hwnd), GWL_EXSTYLE);
+        let layered = WS_EX_LAYERED.0 as isize;
+        let attrs = if ex & layered != 0 {
+            // Fails for windows drawn with UpdateLayeredWindow: leave those alone.
+            let (mut key, mut alpha, mut flags) = (COLORREF(0), 0u8, LAYERED_WINDOW_ATTRIBUTES_FLAGS(0));
+            GetLayeredWindowAttributes(h(hwnd), Some(&mut key), Some(&mut alpha), Some(&mut flags)).ok()?;
+            Some((key.0, alpha, flags.0))
+        } else {
+            SetWindowLongPtrW(h(hwnd), GWL_EXSTYLE, ex | layered);
+            if GetWindowLongPtrW(h(hwnd), GWL_EXSTYLE) & layered == 0 {
+                return None;
+            }
+            None
+        };
+        let f = Faded { ex, attrs };
+        // Keep a colour key it had; alpha 0 on top.
+        let key = attrs.map_or(0, |a| a.0);
+        let flags = LWA_ALPHA.0 | attrs.map_or(0, |a| a.2 & LWA_COLORKEY.0);
+        if SetLayeredWindowAttributes(h(hwnd), COLORREF(key), 0, LAYERED_WINDOW_ATTRIBUTES_FLAGS(flags)).is_err() {
+            unfade(hwnd, f);
+            return None;
+        }
+        Some(f)
+    }
+}
+
+/// Undoes `fade`.
+pub fn unfade(hwnd: Hwnd, f: Faded) {
+    use windows::Win32::Graphics::Gdi::{RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RedrawWindow};
+    unsafe {
+        match f.attrs {
+            Some((key, alpha, flags)) => {
+                let _ = SetLayeredWindowAttributes(h(hwnd), COLORREF(key), alpha, LAYERED_WINDOW_ATTRIBUTES_FLAGS(flags));
+            }
+            None => {
+                let _ = SetLayeredWindowAttributes(h(hwnd), COLORREF(0), 255, LWA_ALPHA);
+                SetWindowLongPtrW(h(hwnd), GWL_EXSTYLE, f.ex);
+                // Dropping WS_EX_LAYERED needs a repaint to bring the window's own surface back.
+                let _ = RedrawWindow(Some(h(hwnd)), None, None, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+            }
         }
     }
 }

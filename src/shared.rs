@@ -1,6 +1,6 @@
 //! State shared between the window-manager thread and the bar (Rune) thread.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -49,6 +49,9 @@ static COMMANDS: Mutex<Vec<Command>> = Mutex::new(Vec::new());
 static HIDDEN: Mutex<Option<HashSet<Hwnd>>> = Mutex::new(None);
 /// The hidden set changed since `hidden.txt` was last written (`flush_hidden`).
 static HIDDEN_DIRTY: AtomicBool = AtomicBool::new(false);
+/// Windows made transparent for an animation, so they can be made opaque again on exit or
+/// crash (an app left invisible is worse than one left hidden).
+static FADED: Mutex<Option<HashMap<Hwnd, win::Faded>>> = Mutex::new(None);
 
 pub fn set_wm_thread(id: u32) {
     WM_THREAD.store(id, Ordering::SeqCst);
@@ -107,6 +110,18 @@ pub fn mark_hidden(hwnd: Hwnd, hidden: bool) {
     }
 }
 
+pub fn mark_faded(hwnd: Hwnd, faded: Option<win::Faded>) {
+    let mut g = FADED.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
+    let changed = match faded {
+        Some(f) => map.insert(hwnd, f) != Some(f),
+        None => map.remove(&hwnd).is_some(),
+    };
+    if changed {
+        HIDDEN_DIRTY.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Writes `hidden.txt` if the set changed. The WM thread calls this once it has worked through
 /// a batch of events, so a workspace switch that hides or shows N windows writes the file
 /// once instead of N times.
@@ -118,10 +133,24 @@ pub fn flush_hidden() {
     if let Some(set) = g.as_ref() {
         save_hidden(set);
     }
+    drop(g);
+    let g = FADED.lock().unwrap_or_else(|e| e.into_inner());
+    save_faded(g.as_ref());
 }
 
-/// Shows every window lattice hid. Safe to call from a panic hook.
+/// Shows every window lattice hid, and makes every one it made transparent opaque again. Safe
+/// to call from a panic hook.
 pub fn restore_hidden() {
+    let mut g = FADED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(map) = g.take() {
+        for (hwnd, f) in map {
+            if win::is_window(hwnd) {
+                win::unfade(hwnd, f);
+            }
+        }
+    }
+    drop(g);
+    let _ = std::fs::remove_file(faded_path());
     let mut g = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(set) = g.take() {
         for hwnd in set {
@@ -147,8 +176,57 @@ fn save_hidden(set: &HashSet<Hwnd>) {
     let _ = std::fs::write(hidden_path(), text);
 }
 
+fn faded_path() -> std::path::PathBuf {
+    crate::config::config_dir().join("faded.txt")
+}
+
+/// One "hwnd pid exstyle attrs" line per transparent window; attrs is "key:alpha:flags" or "-".
+fn save_faded(map: Option<&HashMap<Hwnd, win::Faded>>) {
+    let Some(map) = map.filter(|m| !m.is_empty()) else {
+        let _ = std::fs::remove_file(faded_path());
+        return;
+    };
+    let text: String = map
+        .iter()
+        .map(|(h, f)| {
+            let attrs = f.attrs.map_or("-".to_string(), |(k, a, fl)| format!("{k:x}:{a}:{fl:x}"));
+            format!("{h:x} {} {:x} {attrs}\n", win::pid(*h), f.ex)
+        })
+        .collect();
+    let _ = std::fs::create_dir_all(crate::config::config_dir());
+    let _ = std::fs::write(faded_path(), text);
+}
+
+fn parse_faded(line: &str) -> Option<(Hwnd, u32, win::Faded)> {
+    let mut p = line.split_whitespace();
+    let hwnd = isize::from_str_radix(p.next()?, 16).ok()?;
+    let pid = p.next()?.parse().ok()?;
+    let ex = isize::from_str_radix(p.next()?, 16).ok()?;
+    let attrs = match p.next()? {
+        "-" => None,
+        a => {
+            let mut q = a.split(':');
+            Some((u32::from_str_radix(q.next()?, 16).ok()?, q.next()?.parse().ok()?, u32::from_str_radix(q.next()?, 16).ok()?))
+        }
+    };
+    Some((hwnd, pid, win::Faded { ex, attrs }))
+}
+
 /// Called at startup: shows windows a previous lattice hid and never got to restore.
 pub fn recover_hidden_from_last_run() {
+    if let Ok(text) = std::fs::read_to_string(faded_path()) {
+        let mut restored = 0;
+        for (hwnd, pid, f) in text.lines().filter_map(parse_faded) {
+            if win::is_window(hwnd) && win::pid(hwnd) == pid {
+                win::unfade(hwnd, f);
+                restored += 1;
+            }
+        }
+        if restored > 0 {
+            log::warn!("made {restored} window(s) a previous lattice run left transparent opaque again");
+        }
+        let _ = std::fs::remove_file(faded_path());
+    }
     let path = hidden_path();
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let mut restored = 0;

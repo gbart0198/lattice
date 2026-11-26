@@ -20,6 +20,8 @@ pub struct Config {
     #[serde(default)]
     pub launcher: Launcher,
     #[serde(default)]
+    pub animations: Animations,
+    #[serde(default)]
     pub rules: Vec<Rule>,
     #[serde(default = "default_keybinds")]
     pub keybinds: BTreeMap<String, String>,
@@ -139,6 +141,36 @@ impl Border {
     /// How far the overlay extends past the window on each side, in logical pixels.
     pub fn margin(&self) -> f32 {
         if self.glow > 0.0 { self.glow * 1.5 } else { 1.0 }
+    }
+}
+
+/// How animations look: "fancy" (slower, eased with a little overshoot, workspaces cascade in)
+/// or "fast" (short and plain).
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AnimStyle {
+    Fancy,
+    Fast,
+}
+
+/// Window animations (see `anim.rs`). They apply on reload: no restart.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Animations {
+    pub enabled: bool,
+    pub style: AnimStyle,
+}
+
+impl Default for Animations {
+    fn default() -> Self {
+        Self { enabled: false, style: AnimStyle::Fancy }
+    }
+}
+
+impl Animations {
+    /// The style to animate with, or None when animations are off.
+    pub fn active(&self) -> Option<AnimStyle> {
+        self.enabled.then_some(self.style)
     }
 }
 
@@ -541,6 +573,16 @@ mod tests {
         assert!(parse_command("resize -0.1").is_err());
         assert!(parse_command("resize left -1").is_err());
         assert!(parse_command("resize sideways").is_err());
+    }
+
+    #[test]
+    fn animations_default_off_and_parse() {
+        assert_eq!(Config::default().animations.active(), None);
+        let on = toml::from_str::<Config>("[animations]\nenabled = true\nstyle = \"fast\"").unwrap();
+        assert_eq!(on.animations.active(), Some(AnimStyle::Fast));
+        let style_only = toml::from_str::<Config>("[animations]\nenabled = true").unwrap();
+        assert_eq!(style_only.animations.active(), Some(AnimStyle::Fancy));
+        assert!(toml::from_str::<Config>("[animations]\nstyle = \"wobbly\"").is_err());
     }
 
     #[test]

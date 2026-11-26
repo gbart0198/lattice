@@ -9,7 +9,7 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
 - **Layouts**: `dwindle` (Hyprland's spiral, the default), `master` (master + stack) and
   `monocle`, chosen per workspace.
 - **Workspaces** (1–10) that span all your monitors and switch instantly. They don't use
-  Windows virtual desktops, so there's no animation.
+  Windows virtual desktops, so there's no Windows animation (lattice's own is optional).
 - **Keybinds** for every action, with the Windows key as the modifier.
 - **Top bar**: workspaces with the icons of the apps on each, the focused window's title, a
   layout button, CPU, memory, battery and the clock, in any installed font.
@@ -141,7 +141,7 @@ schtasks /Create /TN lattice /TR "\"$env:LOCALAPPDATA\Programs\lattice\lattice.e
 Press **Win+Alt+Comma** to open the settings window. It floats above everything and is never
 tiled, with these tabs:
 
-- **General**: layouts, gaps, workspaces and behavior.
+- **General**: layouts, gaps, workspaces, animations and behavior.
 - **Bar**: what it shows, size, colors, and a font picker that lists every font installed on
   your PC, with a live preview.
 - **Border**: the focus glow, with a live preview.
@@ -209,6 +209,28 @@ The focused window gets a glowing rounded frame, drawn by Rune on a transparent,
 overlay that lattice keeps wrapped around the window. Set it up in `[border]`: `color`,
 `width`, `radius` (Windows 11 windows use 8), `glow` (blur size in pixels, 0 for a flat line)
 and `glow_opacity`.
+
+### Animations
+
+Turn on **Animate windows** in the settings window (or `enabled = true` under `[animations]`)
+and windows glide instead of jumping: when you move or swap them, go fullscreen and back, and
+when the others close up around a window you minimize (or make room when it comes back).
+Switching workspaces slides the old one off the top of every screen and the new one up from
+below; going to a lower workspace runs the other way. Two styles:
+
+- `style = "fancy"`: about a third of a second, settling with a slight overshoot, and
+  workspaces cascade in one window after another.
+- `style = "fast"`: about half that, with a plain ease-out.
+
+Changes apply as soon as you save: no restart. The compositor does the animating, so every
+animation runs at your display's refresh rate however heavy the app: while a window animates,
+lattice makes it transparent (it keeps drawing) and Windows' own live preview of it glides
+across the screen. A window changing tiles is moved once, near the end, never step by step.
+A window lattice can't animate this way (one running as administrator, say) just moves at
+once. Lattice opens no GPU device for any of this, and the previews show the surfaces apps
+already have; while nothing moves nothing exists, and with animations off nothing runs.
+`lattice --animation-preview swap` (or `move`, `workspace`, `fullscreen`, `minimize`; add
+`fast` for that style) plays one over demo windows without touching your desktop.
 
 ### Guided tour
 
@@ -314,6 +336,7 @@ soundtrack.
 | `src/shared.rs` | State shared between the WM thread and the Rune UI, hidden-window bookkeeping |
 | `src/bar.rs` | Rune top bar |
 | `src/border.rs` | Rune focus-border overlay |
+| `src/anim/` | Window animations: easing curves, the animator and its vsync frame clock (`mod.rs`), the live-preview overlay (`dwm.rs`), and the `--animation-preview` demo (`preview.rs`) |
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
 | `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |

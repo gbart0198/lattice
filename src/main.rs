@@ -6,6 +6,7 @@
 // Release builds have no console window; logs go to %APPDATA%\lattice\lattice.log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod anim;
 mod bar;
 mod border;
 mod config;
@@ -37,7 +38,7 @@ unsafe extern "system" fn on_console_ctrl(_: u32) -> BOOL {
 
 const HELP: &str = "lattice - tiling window manager for Windows 11
 
-USAGE: lattice [--list | --bar-preview | --settings | --tour | --help]
+USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-preview SCENE | --help]
 
   (no args)       start the window manager and bar
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
@@ -46,6 +47,9 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --help]
   --tour          show the guided tour over your desktop (Win+Shift+/); again to end it.
                   lattice shows it by itself once, on its first start. Add --tour-preview to
                   see it over a sample desktop in a window, without lattice running
+  --animation-preview SCENE [fast]  play an animation (move, swap, workspace, fullscreen,
+                  minimize) over demo windows in the middle of the screen, then exit. Uses the
+                  fancy style unless `fast` is given; touches no other window
   --update-preview  show the update notice with a made-up release (changes nothing)
   --launcher-bench  open and dismiss the launcher on its own and print how long each open and
                   keystroke takes (takes the focus while it runs). --cycles N (8), --gap MS
@@ -254,6 +258,10 @@ fn main() {
         let opts = launcher_options(&config::load());
         let ms = std::time::Duration::from_millis;
         launcher::bench(opts, num("--cycles", 8) as usize, ms(num("--gap", 1000)), ms(num("--settle", 250)));
+        return;
+    }
+    if has("--animation-preview") {
+        anim::preview::run(&args);
         return;
     }
     if has("--border-preview") {

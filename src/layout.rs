@@ -28,6 +28,9 @@ impl Rect {
     pub fn contains(&self, (px, py): (i32, i32)) -> bool {
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()
     }
+    pub fn offset(&self, dx: i32, dy: i32) -> Rect {
+        Rect::new(self.x + dx, self.y + dy, self.w, self.h)
+    }
     pub fn inset(&self, d: i32) -> Rect {
         Rect::new(self.x + d, self.y + d, (self.w - 2 * d).max(1), (self.h - 2 * d).max(1))
     }
