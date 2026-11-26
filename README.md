@@ -141,7 +141,7 @@ schtasks /Create /TN lattice /TR "\"$env:LOCALAPPDATA\Programs\lattice\lattice.e
 Press **Win+Alt+Comma** to open the settings window. It floats above everything and is never
 tiled, with these tabs:
 
-- **General**: layouts, gaps, workspaces and behavior.
+- **General**: layouts, gaps, workspaces, animations and behavior.
 - **Bar**: what it shows, size, colors, and a font picker that lists every font installed on
   your PC, with a live preview.
 - **Border**: the focus glow, with a live preview.
@@ -209,6 +209,24 @@ The focused window gets a glowing rounded frame, drawn by Rune on a transparent,
 overlay that lattice keeps wrapped around the window. Set it up in `[border]`: `color`,
 `width`, `radius` (Windows 11 windows use 8), `glow` (blur size in pixels, 0 for a flat line)
 and `glow_opacity`.
+
+### Animations
+
+Turn on **Animate windows** in the settings window (or `enabled = true` under `[animations]`)
+and windows glide instead of jumping: when you move or swap them, go fullscreen and back, and
+when the others close up around a window you minimize (or make room when it comes back).
+Switching workspaces slides the old one off the top of every screen and the new one up from
+below; going to a lower workspace runs the other way. Two styles:
+
+- `style = "fancy"`: about a third of a second, settling with a slight overshoot, and
+  workspaces cascade in one window after another.
+- `style = "fast"`: about half that, with a plain ease-out.
+
+Changes apply as soon as you save: no restart. Animations move the real windows, so lattice
+opens no GPU device for them and holds no snapshots. While nothing moves it holds nothing at
+all, and with animations off nothing runs. `lattice --animation-preview swap` (or `move`,
+`workspace`, `fullscreen`, `minimize`; add `fast` for that style) plays one over demo windows
+without touching your desktop.
 
 ### Guided tour
 
@@ -314,6 +332,7 @@ soundtrack.
 | `src/shared.rs` | State shared between the WM thread and the Rune UI, hidden-window bookkeeping |
 | `src/bar.rs` | Rune top bar |
 | `src/border.rs` | Rune focus-border overlay |
+| `src/anim/` | Window animations: easing curves, the animator and its vsync frame clock (`mod.rs`), and the `--animation-preview` demo (`preview.rs`) |
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
 | `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |

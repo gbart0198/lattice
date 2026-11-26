@@ -324,6 +324,8 @@ pub fn run(cfg: Config) {
         if wm.quit {
             break;
         }
+        // A frame of any running animations (the frame clock's wakeups land here too).
+        wm.animate();
         // Once per batch, not per item: a drag queues dozens of location changes, and a
         // workspace switch hides and shows every window on two workspaces.
         wm.update_border();

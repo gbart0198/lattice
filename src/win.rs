@@ -222,10 +222,18 @@ pub fn frame_rect(hwnd: Hwnd) -> Option<Rect> {
 
 /// Moves a window so its *visible frame* lands exactly on `target`.
 pub fn place(hwnd: Hwnd, target: Rect) {
-    unsafe {
-        if is_maximized(hwnd) || is_minimized(hwnd) {
+    if is_maximized(hwnd) || is_minimized(hwnd) {
+        unsafe {
             let _ = ShowWindowAsync(h(hwnd), SW_RESTORE);
         }
+    }
+    place_quiet(hwnd, target);
+}
+
+/// `place` without restoring a maximized or minimized window first, so it never shows one:
+/// moves a window lattice is hiding back to where it belongs.
+pub fn place_quiet(hwnd: Hwnd, target: Rect) {
+    unsafe {
         let (mut l, mut t, mut r, mut b) = (0, 0, 0, 0);
         if let (Some(w), Some(f)) = (window_rect(hwnd), frame_rect(hwnd)) {
             l = f.x - w.x;

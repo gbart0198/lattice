@@ -18,6 +18,7 @@ const TABS: [&str; 5] = ["General", "Apps", "Bar", "Border", "Keybinds"];
 const LAYOUTS: [&str; 3] = ["dwindle", "master", "monocle"];
 const NEW_WINDOW: [&str; 2] = ["after_focused", "end"];
 const APP_DISPLAY: [&str; 3] = ["icons", "names", "both"];
+const ANIM_STYLES: [&str; 2] = ["fancy", "fast"];
 
 struct Bind {
     id: u64,
@@ -57,6 +58,9 @@ struct S {
     follow_activation: bool,
     mouse_follows_focus: bool,
     check_updates: bool,
+    // [animations]
+    anim_enabled: bool,
+    anim_style: usize,
     /// Rules the Apps tab doesn't edit (float, ignore, ...).
     other_rules: usize,
     // [[rules]] that only pin an app to a workspace
@@ -149,6 +153,8 @@ fn init() -> S {
         follow_activation: g.follow_activation,
         mouse_follows_focus: g.mouse_follows_focus,
         check_updates: g.check_for_updates,
+        anim_enabled: cfg.animations.enabled,
+        anim_style: if cfg.animations.style == config::AnimStyle::Fast { 1 } else { 0 },
         other_rules: cfg.rules.len().saturating_sub(apps.len()),
         apps,
         bar_enabled: b.enabled,
@@ -381,6 +387,9 @@ fn save(s: &mut S) -> Result<String, String> {
     set(&mut doc, "general", "mouse_follows_focus", s.mouse_follows_focus);
     set(&mut doc, "general", "check_for_updates", s.check_updates);
 
+    set(&mut doc, "animations", "enabled", s.anim_enabled);
+    set(&mut doc, "animations", "style", ANIM_STYLES[s.anim_style]);
+
     set(&mut doc, "bar", "enabled", s.bar_enabled);
     set(&mut doc, "bar", "height", s.bar_height.round() as i64);
     set(&mut doc, "bar", "font_size", s.font_size.round() as i64);
@@ -608,6 +617,10 @@ fn general_tab(s: &S, p: &P) -> Vec<El> {
         section(p, "ws-sec", "Workspaces", vec![
             slider(p, "workspaces", "Number of workspaces", s.workspaces, 1.0, 10.0, 1.0, count, |s| &mut s.workspaces),
             toggle(p, "follow", "Follow app activation", Some("Switch to a workspace when its app asks for attention"), s.follow_activation, |s| &mut s.follow_activation),
+        ]),
+        section(p, "anim-sec", "Animations", vec![
+            toggle(p, "anim-on", "Animate windows", Some("Moves, swaps, fullscreen, minimize and workspace switches. Applies on save"), s.anim_enabled, |s| &mut s.anim_enabled),
+            choice(p, "anim-style", "Style", Some(if s.anim_style == 0 { "Smooth, with a slight overshoot" } else { "Quick and plain" }), &ANIM_STYLES, s.anim_style, |s| &mut s.anim_style),
         ]),
         section(p, "behavior-sec", "Behaviour", vec![
             toggle(p, "float-unres", "Float fixed-size windows", Some("Dialogs and pickers that can't be resized"), s.float_unresizable, |s| &mut s.float_unresizable),
@@ -1067,6 +1080,14 @@ mod tests {
         unsafe { std::env::set_var("LATTICE_CONFIG", &path) };
 
         let mut s = init();
+        // Animations apply on reload: turning them on asks for no restart.
+        s.anim_enabled = true;
+        s.anim_style = 1;
+        save(&mut s).expect("save animations");
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cfg.animations.active(), Some(config::AnimStyle::Fast));
+        assert!(!s.restart_needed, "animations apply without a restart");
+
         let before = s.binds.len();
         s.gaps_inner = 20.0;
         s.glow_opacity = 0.7;

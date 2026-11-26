@@ -77,6 +77,16 @@ color = "#89b4fa"
 glow = 14
 glow_opacity = 0.55
 
+[animations]
+# Animate windows: moving and swapping them, fullscreen, the others closing up around a
+# window you minimize (and making room when it comes back), and workspace switches (one slides
+# out, the next slides in). Applies as soon as you save or reload; no restart.
+# Animations move the real windows, so they need no GPU memory in lattice; off, they cost nothing.
+enabled = false
+#   "fancy" - about a third of a second, settling with a slight overshoot; workspaces cascade in
+#   "fast"  - about half that, a plain ease-out
+style = "fancy"
+
 [launcher]
 # App launcher (the `launcher` command, super+space): type to search every app in the Start
 # menu, Enter to open. It uses the bar's colours and font.
