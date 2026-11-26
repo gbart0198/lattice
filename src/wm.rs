@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use crate::anim::{self, After, Animator, Glide, Kind};
 use crate::config::{self, AnimStyle, Command, Config, Dir, NewWindow, WsTarget};
+use crate::events;
+use crate::ipc;
 use crate::layout::{self, LayoutKind, Params, Rect};
 use crate::shared::{self, BarModel, WsInfo};
 use crate::win::{self, Hwnd, MonitorInfo};
@@ -99,6 +101,11 @@ pub struct Wm {
     anim: Animator,
     /// Counts focus changes, to stamp `Window::focused_at`.
     focus_seq: u64,
+    /// Script events (`events.rs`): the last snapshot, whether anything since could have
+    /// changed it, and events that aren't state changes (a reload).
+    events: events::Tracker,
+    events_dirty: bool,
+    pending_events: Vec<events::Event>,
 }
 
 /// What a directional search can land on: a window, or an empty monitor.
@@ -126,6 +133,9 @@ impl Wm {
             border_dirty: true,
             anim: Animator::new(),
             focus_seq: 0,
+            events: events::Tracker::default(),
+            events_dirty: false,
+            pending_events: Vec::new(),
             cfg,
         };
         wm.build_workspaces();
@@ -917,6 +927,7 @@ impl Wm {
     pub fn command(&mut self, cmd: Command) {
         log::debug!("command {cmd:?}");
         self.border_dirty = true;
+        self.events_dirty = true;
         match cmd {
             Command::Focus(d) => self.focus_dir(d),
             Command::MoveWindow(d) => self.move_dir(d),
@@ -1009,6 +1020,8 @@ impl Wm {
                     self.finish_animations();
                 }
                 self.reload_keymap = true;
+                events::set_hooks(&self.cfg.hooks);
+                self.pending_events.push(events::Event::new(events::Kind::ConfigReloaded));
                 self.refresh_monitors();
                 self.apply_changed_assignments(&old_rules);
                 self.retile(self.active);
@@ -1113,6 +1126,97 @@ impl Wm {
         &self.cfg
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Scripting (`lattice query`, hooks, `lattice subscribe`)
+
+    /// A snapshot for queries and event diffs. `rects` asks Windows where every window is,
+    /// which only queries need.
+    pub fn state(&self, rects: bool) -> ipc::State {
+        let focused = self.focused_window();
+        let mut windows = Vec::new();
+        let mut workspaces = Vec::new();
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            let mut mons: Vec<usize> = Vec::new();
+            for h in &ws.windows {
+                let Some(w) = self.windows.get(h) else { continue };
+                if !mons.contains(&w.mon) {
+                    mons.push(w.mon);
+                }
+                windows.push(ipc::WindowState {
+                    hwnd: *h,
+                    title: w.title.clone(),
+                    exe: w.exe.clone(),
+                    class: w.class.clone(),
+                    workspace: i + 1,
+                    monitor: w.mon,
+                    floating: w.floating,
+                    minimized: w.minimized,
+                    fullscreen: ws.fullscreen == Some(*h),
+                    focused: focused == Some(*h),
+                    rect: if rects { self.rect_of(*h).map(Into::into) } else { None },
+                });
+            }
+            mons.sort_unstable();
+            workspaces.push(ipc::WorkspaceState {
+                index: i + 1,
+                active: i == self.active,
+                layout: ws.layout.name(),
+                windows: ws.windows.len(),
+                monitors: mons,
+                focused: ws.last_focus.filter(|h| ws.windows.contains(h)),
+                fullscreen: ws.fullscreen,
+            });
+        }
+        let monitors = self
+            .monitors
+            .iter()
+            .enumerate()
+            .map(|(i, m)| ipc::MonitorState {
+                index: i,
+                primary: m.info.primary,
+                focused: i == self.focused_monitor,
+                rect: m.info.rect.into(),
+                work_area: m.info.work.into(),
+                scale: m.info.scale,
+            })
+            .collect();
+        ipc::State {
+            workspaces,
+            windows,
+            monitors,
+            active_workspace: self.active + 1,
+            focused_monitor: self.focused_monitor,
+            focused_window: focused,
+        }
+    }
+
+    /// Takes the baseline for event diffs and announces `startup`.
+    pub fn start_events(&mut self) {
+        if events::listening() {
+            self.events.update(self.state(false));
+        }
+        events::emit(events::Event::new(events::Kind::Startup).with("workspace", self.active + 1).with("version", env!("CARGO_PKG_VERSION")));
+    }
+
+    /// Sends what changed since the last batch to hooks and subscribers. The WM loop calls this
+    /// once per batch; it does nothing unless a batch could have changed something and someone
+    /// is listening.
+    pub fn emit_events(&mut self) {
+        for e in std::mem::take(&mut self.pending_events) {
+            events::emit(e);
+        }
+        if !std::mem::take(&mut self.events_dirty) {
+            return;
+        }
+        if !events::listening() {
+            self.events.reset();
+            return;
+        }
+        for e in self.events.update(self.state(false)) {
+            events::emit(e);
+        }
+    }
+
     /// Forgets windows that died without us noticing.
     fn cleanup(&mut self) {
         let dead: Vec<Hwnd> = self.windows.keys().copied().filter(|h| !win::is_window(*h)).collect();
@@ -1129,6 +1233,9 @@ impl Wm {
         // only the focused window's own moves can move the border.
         if !matches!(ev, Event::Location(h) if Some(h) != self.border_watch) {
             self.border_dirty = true;
+        }
+        if !matches!(ev, Event::Location(_)) {
+            self.events_dirty = true;
         }
         match ev {
             Event::Show(h) => {
@@ -1392,15 +1499,20 @@ fn search_name(exe: &str, short: &str) -> String {
     if stem.is_empty() || stem.eq_ignore_ascii_case("ApplicationFrameHost") { short.to_string() } else { stem.to_string() }
 }
 
-fn spawn(line: &str) {
+/// A process started on the user's behalf: no console window of its own, and without our
+/// Rune switch (see `main`) in its environment.
+pub fn background_command(program: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = std::process::Command::new(program);
+    c.creation_flags(CREATE_NO_WINDOW).env_remove(crate::CPU_FIRST_ENV);
+    c
+}
+
+fn spawn(line: &str) {
+    use std::os::windows::process::CommandExt;
     // `start` resolves App Paths (wt.exe, code, ...) and URIs like a Run dialog would.
-    let result = std::process::Command::new("cmd")
-        .raw_arg(format!("/C start \"\" {line}"))
-        .creation_flags(CREATE_NO_WINDOW)
-        .env_remove(crate::CPU_FIRST_ENV)
-        .spawn();
+    let result = background_command("cmd").raw_arg(format!("/C start \"\" {line}")).spawn();
     if let Err(e) = result {
         log::error!("exec '{line}': {e}");
     }

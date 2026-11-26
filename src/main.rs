@@ -10,8 +10,10 @@ mod anim;
 mod bar;
 mod border;
 mod config;
+mod events;
 mod hooks;
 mod icon;
+mod ipc;
 mod launcher;
 mod layout;
 mod logger;
@@ -247,6 +249,10 @@ fn main() {
         unsafe {
             let _ = windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS);
         }
+    }
+    if matches!(args.first().map(String::as_str), Some("msg" | "query" | "subscribe")) {
+        // Talks to the running lattice (`ipc.rs`) and exits; touches no log or lock.
+        std::process::exit(ipc::cli(&args));
     }
     if has("--settings") {
         // The settings window runs as its own process; it must not touch the WM log or lock.
