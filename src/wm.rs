@@ -48,6 +48,8 @@ struct Window {
     name: Arc<str>,
     icon: Option<crate::icon::AppIcon>,
     title: String,
+    /// When it last had focus (`Wm::focus_seq`; 0: never), for window search's recency order.
+    focused_at: u64,
 }
 
 struct Workspace {
@@ -95,6 +97,8 @@ pub struct Wm {
     border_dirty: bool,
     /// Windows gliding or sliding somewhere (empty, and free, when nothing moves).
     anim: Animator,
+    /// Counts focus changes, to stamp `Window::focused_at`.
+    focus_seq: u64,
 }
 
 /// What a directional search can land on: a window, or an empty monitor.
@@ -121,6 +125,7 @@ impl Wm {
             border_watch: None,
             border_dirty: true,
             anim: Animator::new(),
+            focus_seq: 0,
             cfg,
         };
         wm.build_workspaces();
@@ -269,7 +274,7 @@ impl Wm {
         );
         let name = app_name(&c.exe, &c.title).into();
         let icon = crate::icon::for_window(hwnd);
-        self.windows.insert(hwnd, Window { ws, mon, floating, minimized, repaint, name, icon, exe: c.exe, class: c.class, title: c.title });
+        self.windows.insert(hwnd, Window { ws, mon, floating, minimized, repaint, name, icon, exe: c.exe, class: c.class, title: c.title, focused_at: 0 });
 
         let w = &mut self.workspaces[ws];
         let pos = match (self.cfg.general.new_window, w.last_focus) {
@@ -633,7 +638,9 @@ impl Wm {
 
     /// Records that `hwnd` has focus (workspace memory, focused monitor).
     fn note_focus(&mut self, hwnd: Hwnd) {
-        let Some(w) = self.windows.get(&hwnd) else { return };
+        self.focus_seq += 1;
+        let Some(w) = self.windows.get_mut(&hwnd) else { return };
+        w.focused_at = self.focus_seq;
         let (ws, mon) = (w.ws, w.mon);
         self.workspaces[ws].last_focus = Some(hwnd);
         self.workspaces[ws].mon_focus.insert(mon, hwnd);
@@ -1009,21 +1016,69 @@ impl Wm {
                 log::info!("config reloaded");
             }
             Command::Exec(line) => spawn(&line),
-            Command::Launcher => {
-                let area = self.monitors.get(self.focused_monitor).map(|m| crate::launcher::Area {
-                    x: m.info.work.x,
-                    y: m.info.work.y,
-                    w: m.info.work.w,
-                    h: m.info.work.h,
-                    scale: m.info.scale,
-                });
-                crate::launcher::toggle(area);
+            Command::Launcher => crate::launcher::toggle(self.launcher_area()),
+            Command::WindowSearch => crate::launcher::toggle_windows(self.launcher_area(), self.window_list()),
+            Command::ListWindows => crate::launcher::set_windows(self.window_list()),
+            Command::FocusWindow(h) => {
+                let Some(ws) = self.windows.get(&h).map(|w| w.ws) else { return };
+                if ws != self.active {
+                    // Arrive on it, not on whatever was last used there.
+                    self.workspaces[ws].last_focus = Some(h);
+                    self.show_workspace(ws);
+                }
+                // `focus` restores a minimized window and raises a floating one.
+                self.focus(h);
+                self.publish();
             }
             Command::Settings => open_settings(),
             Command::Tour => crate::tour::start(),
             Command::OpenConfig => open_config(),
             Command::Quit => self.quit = true,
         }
+    }
+
+    /// The focused monitor's work area, to open the launcher on.
+    fn launcher_area(&self) -> Option<crate::launcher::Area> {
+        self.monitors.get(self.focused_monitor).map(|m| crate::launcher::Area {
+            x: m.info.work.x,
+            y: m.info.work.y,
+            w: m.info.work.w,
+            h: m.info.work.h,
+            scale: m.info.scale,
+        })
+    }
+
+    /// Every managed window for window search, most recently focused first (never-focused ones
+    /// after, by workspace and tiling order).
+    fn window_list(&self) -> Vec<crate::launcher::WindowEntry> {
+        // The launcher may have focus already (switching it to window search): then the window
+        // you were in is the active workspace's last one.
+        let current = self.focused_window().or(self.workspaces[self.active].last_focus);
+        let mut list: Vec<(u64, crate::launcher::WindowEntry)> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.windows.iter())
+            .filter_map(|h| {
+                let w = self.windows.get(h)?;
+                Some((w.focused_at, crate::launcher::WindowEntry {
+                    hwnd: *h,
+                    title: w.title.clone(),
+                    app: search_name(&w.exe, &w.name),
+                    workspace: w.ws + 1,
+                    monitor: w.mon + 1,
+                    floating: w.floating,
+                    minimized: w.minimized,
+                    current: current == Some(*h),
+                    icon: w.icon.as_ref().map(|i| crate::launcher::WindowIcon {
+                        key: i.key,
+                        size: crate::icon::SIZE,
+                        rgba: i.rgba.clone(),
+                    }),
+                }))
+            })
+            .collect();
+        list.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        list.into_iter().map(|(_, e)| e).collect()
     }
 
     /// After a reload, moves open windows whose app->workspace rule changed (added, or pointed
@@ -1328,6 +1383,13 @@ fn app_name(exe: &str, title: &str) -> String {
     };
     let name = name.to_lowercase();
     if name.chars().count() > 14 { name.chars().take(13).chain(std::iter::once('…')).collect() } else { name }
+}
+
+/// An app's name for window search: the whole exe name without ".exe" (the bar's short name
+/// is lowercased and cut), or the bar's name for UWP-hosted apps, whose exe says nothing.
+fn search_name(exe: &str, short: &str) -> String {
+    let stem = exe.get(..exe.len().saturating_sub(4)).filter(|_| exe.to_ascii_lowercase().ends_with(".exe")).unwrap_or(exe);
+    if stem.is_empty() || stem.eq_ignore_ascii_case("ApplicationFrameHost") { short.to_string() } else { stem.to_string() }
 }
 
 fn spawn(line: &str) {
