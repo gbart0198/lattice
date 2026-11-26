@@ -133,6 +133,11 @@ fn launcher_options(cfg: &config::Config) -> launcher::Options {
         data_dir: config::config_dir(),
         clean_env: vec![CPU_FIRST_ENV.to_string()],
         files: file_options(&cfg.launcher),
+        windows: launcher::WindowSearch {
+            prefix: cfg.launcher.window_prefix.trim().to_string(),
+            list: std::sync::Arc::new(|| shared::send_command(config::Command::ListWindows)),
+            focus: std::sync::Arc::new(|hwnd| shared::send_command(config::Command::FocusWindow(hwnd))),
+        },
     }
 }
 

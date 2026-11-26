@@ -19,6 +19,8 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   files and folders instead: Enter opens, Ctrl+Enter shows a file in its folder or copies a
   folder's path (both configurable). It uses [Everything](https://www.voidtools.com) when it's
   running, else lattice's own background index of your user folder.
+- **Window search** (Win+J): fuzzy-search the titles and apps of every open window, on every
+  workspace and monitor, most recently used first. Enter switches straight to it.
 - **Settings window** (Win+Alt+Comma) for everything above.
 - **Guided tour**: on the first start, a spotlight walks you over your real desktop (the bar,
   workspaces, layouts, the launcher) and waits for you to try each key. Replay it with
@@ -267,6 +269,13 @@ clears the search and then closes; clicking elsewhere closes it too. It wears th
 and font; set its `width`, the number of `max_results`, or turn it off in `[launcher]`. The
 launch counts live in `%APPDATA%\lattice\launcher-history.tsv`.
 
+Win+J opens it searching windows instead: every window lattice manages, on any workspace or
+monitor, floating and minimized ones included, matched on its title and its app's name. With
+an empty search they're listed most recently used first, the one you're in last, so Win+J then
+Enter flips back to the previous window, as Alt+Tab does. Enter switches to the window's
+workspace and focuses it (restoring it if it's minimized). In the app search, `w` and a space
+does the same (`window_prefix` in `[launcher]`); Backspace on an empty field goes back to apps.
+
 ### Default keybinds
 
 | Keys | Action |
@@ -279,6 +288,7 @@ launch counts live in `%APPDATA%\lattice\launcher-history.tsv`.
 | Win + . / Win + , | Next / previous workspace |
 | Win + O / Win + Shift + O | Focus the next monitor / move the window there |
 | Win + Space | Open / close the app launcher |
+| Win + J | Search open windows and jump to one |
 | Win + \\ | Cycle layout (dwindle → master → monocle) |
 | Win + Shift + . / , | Expand the window right / left |
 | Win + Shift + ; / ' | Expand the window up / down |
@@ -340,7 +350,7 @@ soundtrack.
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
 | `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |
-| `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), Rune UI (`ui.rs`) |
+| `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), window search ranking (`windows.rs`), Rune UI (`ui.rs`) |
 | `src/sysinfo.rs` | CPU, memory, battery and clock |
 | `src/config.rs` | Config file, keybind and command parsing |
 | `build.rs` | Draws the app icon and embeds it in the exe |

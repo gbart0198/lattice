@@ -4,6 +4,9 @@
 //! Two modes: apps, and files (entered by typing the file prefix and a space, shown by a chip
 //! beside the field, left with Backspace on an empty field). In file mode Ctrl+Enter runs the
 //! item's second action.
+//!
+//! Window search is a third mode, opened by the host's window search key or entered with the
+//! window prefix: the host's open windows, most recently used first; Enter switches to one.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
@@ -17,7 +20,8 @@ use rune::{
 use super::files::{FileActions, FileHit, Results, Searcher, Source};
 use super::rank::{self, History};
 use super::system::{App, Icon};
-use super::{Job, Style};
+use super::windows::{self, WindowEntry, WindowHit};
+use super::{Job, Style, WindowSearch};
 
 const HEADER: f32 = 60.0;
 const SECTION: f32 = 30.0;
@@ -58,6 +62,7 @@ struct Hit {
 enum Mode {
     Apps,
     Files,
+    Windows,
 }
 
 /// File mode's parts, from the launcher's options.
@@ -94,10 +99,17 @@ pub struct State {
     requested: HashSet<Arc<str>>,
     /// Icons that arrived before the window (and its image cache) existed.
     pending: Vec<(Arc<str>, Icon)>,
+    windows: WindowSearch,
+    /// The host's windows, most recently used first, once they've arrived (`window_listed`).
+    window_list: Vec<WindowEntry>,
+    window_listed: bool,
+    window_hits: Vec<WindowHit>,
+    /// Window search was entered by typing its prefix (Backspace puts the prefix back).
+    window_by_prefix: bool,
 }
 
 impl State {
-    pub(super) fn new(history: History, jobs: Sender<Job>, files: Files) -> Self {
+    pub(super) fn new(history: History, jobs: Sender<Job>, files: Files, windows: WindowSearch) -> Self {
         State {
             query: focused_edit(),
             mode: Mode::Apps,
@@ -117,6 +129,11 @@ impl State {
             ready: HashSet::new(),
             requested: HashSet::new(),
             pending: Vec::new(),
+            windows,
+            window_list: Vec::new(),
+            window_listed: false,
+            window_hits: Vec::new(),
+            window_by_prefix: false,
         }
     }
 
@@ -125,6 +142,7 @@ impl State {
         self.query = focused_edit();
         self.mode = Mode::Apps;
         self.file_hits.clear();
+        self.window_list.clear();
         self.refresh();
     }
 
@@ -141,6 +159,62 @@ impl State {
             self.query.set_caret(rest.len());
             self.files.searcher.warm();
         }
+        if self.mode == Mode::Apps
+            && let Some(rest) = strip_mode_prefix(&self.query.text, &self.windows.prefix)
+        {
+            let rest = rest.to_string();
+            self.enter_windows(true);
+            self.query.replace_text(rest.clone());
+            self.query.set_caret(rest.len());
+            (self.windows.list)();
+        }
+        self.refresh();
+    }
+
+    /// Window search, waiting for the host's list.
+    fn enter_windows(&mut self, by_prefix: bool) {
+        self.mode = Mode::Windows;
+        self.window_by_prefix = by_prefix;
+        self.window_list.clear();
+        self.window_hits.clear();
+        self.window_listed = false;
+    }
+
+    pub fn in_windows(&self) -> bool {
+        self.mode == Mode::Windows
+    }
+
+    /// Window search over `list`, with an empty field (the host's window search key).
+    pub fn show_windows(&mut self, list: Vec<WindowEntry>, by_prefix: bool) {
+        self.query = focused_edit();
+        self.enter_windows(by_prefix);
+        self.windows_listed(list);
+    }
+
+    /// The host's windows arrived (they come with their icons).
+    pub fn windows_listed(&mut self, list: Vec<WindowEntry>) {
+        if self.mode != Mode::Windows {
+            return; // asked for by a window search that has since been left
+        }
+        for icon in list.iter().filter_map(|w| w.icon.as_ref()) {
+            let id = icon.id();
+            if !self.icons.contains_key(&id) && !self.pending.iter().any(|(p, _)| *p == id) {
+                self.pending.push((id, Icon { size: icon.size, rgba: icon.rgba.clone() }));
+            }
+        }
+        self.decode_pending();
+        self.window_list = list;
+        self.window_listed = true;
+        self.refresh();
+    }
+
+    /// Back to app search; the field holds the prefix again if that's how it was entered.
+    fn leave_windows(&mut self) {
+        let text = if self.window_by_prefix { self.windows.prefix.clone() } else { String::new() };
+        self.mode = Mode::Apps;
+        self.window_list.clear();
+        self.query.replace_text(text.clone());
+        self.query.set_caret(text.len());
         self.refresh();
     }
 
@@ -203,7 +277,14 @@ impl State {
         match self.mode {
             Mode::Apps => self.refresh_apps(),
             Mode::Files => self.refresh_files(),
+            Mode::Windows => self.refresh_windows(),
         }
+    }
+
+    fn refresh_windows(&mut self) {
+        self.window_hits = windows::rank(self.query.text.trim(), &self.window_list, max_results());
+        self.selected = 0;
+        self.request_icons();
     }
 
     fn refresh_files(&mut self) {
@@ -243,12 +324,14 @@ impl State {
         let on_screen: HashSet<Arc<str>> = match self.mode {
             Mode::Apps => self.hits.iter().map(|h| self.apps[h.app].id.clone()).collect(),
             Mode::Files => self.file_hits.iter().map(|h| h.path.clone()).collect(),
+            // All of them, not just the shown rows: they arrive with the list, never fetched again.
+            Mode::Windows => self.window_list.iter().filter_map(|w| Some(w.icon.as_ref()?.id())).collect(),
         };
         for id in &on_screen {
-            if self.requested.insert(id.clone()) {
+            if self.mode != Mode::Windows && self.requested.insert(id.clone()) {
                 let job = match self.mode {
                     Mode::Apps => Job::Icon(id.clone()),
-                    Mode::Files => Job::FileIcon(id.clone()),
+                    Mode::Files | Mode::Windows => Job::FileIcon(id.clone()),
                 };
                 let _ = self.jobs.send(job);
             }
@@ -266,6 +349,7 @@ impl State {
         match self.mode {
             Mode::Apps => self.hits.len(),
             Mode::Files => self.file_hits.len(),
+            Mode::Windows => self.window_hits.len(),
         }
     }
 
@@ -286,6 +370,12 @@ impl State {
                 let path = hit.path.clone();
                 self.files.history.lock().unwrap().record(&path);
                 let _ = self.jobs.send(Job::File(action, path));
+                self.reset();
+                tx.close_window();
+            }
+            Mode::Windows => {
+                let Some(hit) = self.window_hits.get(index) else { return };
+                (self.windows.focus)(self.window_list[hit.window].hwnd);
                 self.reset();
                 tx.close_window();
             }
@@ -355,6 +445,11 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             s.activate(i, true, tx);
         }
         Key::Backspace if s.mode == Mode::Files && s.query.text.is_empty() => s.leave_files(),
+        Key::Backspace if s.mode == Mode::Windows && s.query.text.is_empty() => s.leave_windows(),
+        Key::Escape if s.mode == Mode::Windows && !s.query.text.is_empty() => {
+            s.query = focused_edit();
+            s.refresh();
+        }
         Key::Escape if !s.query.text.is_empty() || s.mode == Mode::Files => s.reset(),
         Key::Escape => {
             s.reset();
@@ -380,8 +475,11 @@ pub fn view(s: &State, cx: &mut Cx<State>) -> El {
 fn build(s: &State, _cx: &mut Cx<State>) -> El {
     let t = style();
     let files = s.mode == Mode::Files;
-    let (label, placeholder) =
-        if files { ("Search files and folders", "Search files and folders…") } else { ("Search apps", "Search apps…") };
+    let (label, placeholder) = match s.mode {
+        Mode::Files => ("Search files and folders", "Search files and folders…"),
+        Mode::Windows => ("Search windows", "Search open windows…"),
+        Mode::Apps => ("Search apps", "Search apps…"),
+    };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0))
         .key("query")
         .label(label)
@@ -401,10 +499,15 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
     if files {
         header = header.child(mode_chip("Files", t));
     }
+    if s.mode == Mode::Windows {
+        header = header.child(chip("Windows", windows_glyph(t.accent), t));
+    }
     let header = header.child(field);
 
     let body = if files {
         file_body(s, t)
+    } else if s.mode == Mode::Windows {
+        window_body(s, t)
     } else if !s.scanned {
         message("Finding your apps…", t)
     } else if s.hits.is_empty() {
@@ -442,6 +545,11 @@ fn results(s: &State, t: &Style) -> El {
 
 /// The file mode indicator beside the field.
 fn mode_chip(label: &str, t: &Style) -> El {
+    chip(label, folder_glyph(t.accent), t)
+}
+
+/// A mode indicator: a glyph and a label on an accent tint.
+fn chip(label: &str, glyph: El, t: &Style) -> El {
     row()
         .key("mode-chip")
         .label(format!("{label} mode"))
@@ -451,7 +559,7 @@ fn mode_chip(label: &str, t: &Style) -> El {
         .radius(7.0)
         .center_y()
         .fill(t.accent.alpha(0.18))
-        .child(folder_glyph(t.accent))
+        .child(glyph)
         .child(text(label.to_string()).font(TextStyle::new(12.5, 650.0)).color(t.accent))
 }
 
@@ -482,6 +590,73 @@ fn file_body(s: &State, t: &Style) -> El {
         .enumerate()
         .fold(col().w_full().px(LIST_PAD).gap(0.0), |list, (i, hit)| list.child(file_row(s, i, hit, t)));
     col().w_full().grow(1.0).pt(LIST_PAD).child(section).child(list)
+}
+
+fn window_body(s: &State, t: &Style) -> El {
+    let query = s.query.text.trim();
+    if !s.window_listed {
+        return message("Listing windows…", t);
+    }
+    if s.window_list.is_empty() {
+        return message("No open windows", t);
+    }
+    if s.window_hits.is_empty() {
+        return message(&format!("No windows match \u{201c}{query}\u{201d}"), t);
+    }
+    let n = s.window_list.len();
+    let section = row()
+        .w_full()
+        .h(SECTION)
+        .px(20.0)
+        .center_y()
+        .child(text("Windows").font(TextStyle::new(12.0, 600.0)).color(t.muted))
+        .child(spacer())
+        .child(text(format!("{n} open")).font(TextStyle::new(11.5, 500.0)).color(t.muted.alpha(0.8)));
+    let monitors = windows::many_monitors(&s.window_list);
+    let list = s
+        .window_hits
+        .iter()
+        .enumerate()
+        .fold(col().w_full().px(LIST_PAD).gap(0.0), |list, (i, hit)| list.child(window_row(s, i, hit, monitors, t)));
+    col().w_full().grow(1.0).pt(LIST_PAD).child(section).child(list)
+}
+
+fn window_row(s: &State, i: usize, hit: &WindowHit, monitors: bool, t: &Style) -> El {
+    let w = &s.window_list[hit.window];
+    let on = i == s.selected;
+    // A window without a title goes by its app's name, which then carries the app highlight.
+    let untitled = w.title.trim().is_empty();
+    let (name, positions) = if untitled { (w.app.as_str(), &hit.app) } else { (w.title.as_str(), &hit.title) };
+    let title = text(name.to_string())
+        .spans(highlight(name, positions, t.accent))
+        .font(TextStyle::new(14.0, if on { 550.0 } else { 450.0 }))
+        .color(t.foreground)
+        .truncate();
+    // The detail line starts with the app name, so its match offsets apply as they are.
+    let detail = windows::detail(w, monitors);
+    let app_spans = if untitled { Vec::new() } else { highlight(&detail, &hit.app, t.accent) };
+    let detail = text(detail.clone()).spans(app_spans).font(TextStyle::new(11.5, 400.0)).color(t.muted).truncate();
+    let kind = if on { "Switch".to_string() } else { format!("Workspace {}", w.workspace) };
+    let kind = text(kind).font(TextStyle::new(12.5, 500.0)).color(if on { t.foreground.alpha(0.7) } else { t.muted });
+    let initial = w.app.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    let icon_id = w.icon.as_ref().map(|i| i.id());
+    row()
+        .key(format!("window-{:x}", w.hwnd))
+        .role("button")
+        .label(name.to_string())
+        .hit()
+        .w_full()
+        .h(ROW)
+        .px(12.0)
+        .gap(14.0)
+        .radius(10.0)
+        .center_y()
+        .fill(if on { t.surface } else { Color::TRANSPARENT })
+        .on_hover(move |s: &mut State| s.selected = i)
+        .on_press_tx(move |s: &mut State, tx| s.activate(i, false, tx))
+        .child(icon_or_tile(s, icon_id.as_deref().unwrap_or(""), initial, t))
+        .child(col().gap(1.0).grow(1.0).shrink().child(title).child(detail))
+        .child(kind)
 }
 
 fn is_walking(source: Source) -> bool {
@@ -638,6 +813,10 @@ fn footer(s: &State, t: &Style) -> El {
                 .child(hint(a.pick(hit.dir, false).label(), &["↵"], t))
                 .child(hint(a.pick(hit.dir, true).label(), &["ctrl", "↵"], t));
         }
+    } else if s.mode == Mode::Windows {
+        if !s.window_hits.is_empty() {
+            hints = hints.child(hint("Switch", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
+        }
     } else if !s.hits.is_empty() {
         hints = hints.child(hint("Open", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
     }
@@ -679,6 +858,13 @@ fn folder_glyph(c: Color) -> El {
     el().size(14.0, 12.0)
         .child(el().absolute(0.0, 0.0).size(6.0, 4.0).radius(1.5).fill(c))
         .child(el().absolute(0.0, 2.0).size(14.0, 10.0).radius(2.0).fill(c))
+}
+
+/// Two windows, one behind the other.
+fn windows_glyph(c: Color) -> El {
+    el().size(14.0, 12.0)
+        .child(el().absolute(4.0, 0.0).size(10.0, 8.0).radius(2.0).border(1.5, c))
+        .child(el().absolute(0.0, 4.0).size(10.0, 8.0).radius(2.0).fill(c))
 }
 
 fn hairline(t: &Style) -> El {
