@@ -151,7 +151,7 @@ fn audio_outputs() -> windows::core::Result<Vec<AudioOutput>> {
             }
             out.push(AudioOutput { default: default.as_deref() == Some(id.as_str()), id, name });
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|d| d.name.to_lowercase());
         Ok(out)
     }
 }

@@ -7,6 +7,9 @@
 //!
 //! Window search is a third mode, opened by the host's window search key or entered with the
 //! window prefix: the host's open windows, most recently used first; Enter switches to one.
+//!
+//! Command mode, entered with the command prefix (">"), lists commands to run. The ones that
+//! end the session take a second Enter, the row asking for it in between.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
@@ -17,6 +20,7 @@ use rune::{
     spacer, text, text_input,
 };
 
+use super::commands::{self, CommandOptions, Entry, Snapshot};
 use super::files::{FileActions, FileHit, Results, Searcher, Source};
 use super::rank::{self, History};
 use super::system::{App, Icon};
@@ -63,6 +67,7 @@ enum Mode {
     Apps,
     Files,
     Windows,
+    Commands,
 }
 
 /// File mode's parts, from the launcher's options.
@@ -106,10 +111,18 @@ pub struct State {
     window_hits: Vec<WindowHit>,
     /// Window search was entered by typing its prefix (Backspace puts the prefix back).
     window_by_prefix: bool,
+    commands: CommandOptions,
+    /// The last system snapshot, kept so a reopen lists the same rows while a new one is read.
+    system: Snapshot,
+    catalog: Vec<Entry>,
+    /// (index into `catalog`, matched byte offsets in its title).
+    command_hits: Vec<(usize, Vec<usize>)>,
+    /// The key of a command that was asked to confirm and waits for its second Enter.
+    armed: Option<String>,
 }
 
 impl State {
-    pub(super) fn new(history: History, jobs: Sender<Job>, files: Files, windows: WindowSearch) -> Self {
+    pub(super) fn new(history: History, jobs: Sender<Job>, files: Files, windows: WindowSearch, commands: CommandOptions) -> Self {
         State {
             query: focused_edit(),
             mode: Mode::Apps,
@@ -134,6 +147,11 @@ impl State {
             window_listed: false,
             window_hits: Vec::new(),
             window_by_prefix: false,
+            commands,
+            system: Snapshot::default(),
+            catalog: Vec::new(),
+            command_hits: Vec::new(),
+            armed: None,
         }
     }
 
@@ -143,6 +161,7 @@ impl State {
         self.mode = Mode::Apps;
         self.file_hits.clear();
         self.window_list.clear();
+        self.armed = None;
         self.refresh();
     }
 
@@ -168,6 +187,43 @@ impl State {
             self.query.set_caret(rest.len());
             (self.windows.list)();
         }
+        if self.mode == Mode::Apps
+            && let Some(rest) = strip_mode_prefix(&self.query.text, &self.commands.prefix)
+        {
+            let rest = rest.to_string();
+            self.mode = Mode::Commands;
+            self.catalog = commands::catalog(&self.commands.host, &self.system);
+            self.query.replace_text(rest.clone());
+            self.query.set_caret(rest.len());
+            let _ = self.jobs.send(Job::Snapshot);
+        }
+        self.armed = None;
+        self.refresh();
+    }
+
+    /// What the system offers arrived: rebuild the commands, keeping the highlighted one.
+    pub fn commands_loaded(&mut self, snapshot: Snapshot) {
+        self.system = snapshot;
+        if self.mode != Mode::Commands {
+            return;
+        }
+        let keep = self.command_hits.get(self.selected).map(|h| self.catalog[h.0].key.clone());
+        let armed = self.armed.take();
+        self.catalog = commands::catalog(&self.commands.host, &self.system);
+        self.refresh();
+        if let Some(key) = keep {
+            self.selected = self.command_hits.iter().position(|h| self.catalog[h.0].key == key).unwrap_or(0);
+        }
+        self.armed = armed.filter(|k| self.catalog.iter().any(|e| &e.key == k));
+    }
+
+    /// Back to app search, the field holding the prefix as if only the space were deleted.
+    fn leave_commands(&mut self) {
+        self.mode = Mode::Apps;
+        self.armed = None;
+        let prefix = self.commands.prefix.clone();
+        self.query.replace_text(prefix.clone());
+        self.query.set_caret(prefix.len());
         self.refresh();
     }
 
@@ -278,6 +334,10 @@ impl State {
             Mode::Apps => self.refresh_apps(),
             Mode::Files => self.refresh_files(),
             Mode::Windows => self.refresh_windows(),
+            Mode::Commands => {
+                self.command_hits = commands::rank(self.query.text.trim(), &self.catalog, max_results());
+                self.selected = 0;
+            }
         }
     }
 
@@ -326,12 +386,13 @@ impl State {
             Mode::Files => self.file_hits.iter().map(|h| h.path.clone()).collect(),
             // All of them, not just the shown rows: they arrive with the list, never fetched again.
             Mode::Windows => self.window_list.iter().filter_map(|w| Some(w.icon.as_ref()?.id())).collect(),
+            Mode::Commands => HashSet::new(),
         };
         for id in &on_screen {
             if self.mode != Mode::Windows && self.requested.insert(id.clone()) {
                 let job = match self.mode {
                     Mode::Apps => Job::Icon(id.clone()),
-                    Mode::Files | Mode::Windows => Job::FileIcon(id.clone()),
+                    Mode::Files | Mode::Windows | Mode::Commands => Job::FileIcon(id.clone()),
                 };
                 let _ = self.jobs.send(job);
             }
@@ -350,6 +411,7 @@ impl State {
             Mode::Apps => self.hits.len(),
             Mode::Files => self.file_hits.len(),
             Mode::Windows => self.window_hits.len(),
+            Mode::Commands => self.command_hits.len(),
         }
     }
 
@@ -357,6 +419,7 @@ impl State {
         let n = self.rows() as isize;
         if n > 0 {
             self.selected = (self.selected as isize + by).rem_euclid(n) as usize;
+            self.armed = None;
         }
     }
 
@@ -376,6 +439,18 @@ impl State {
             Mode::Windows => {
                 let Some(hit) = self.window_hits.get(index) else { return };
                 (self.windows.focus)(self.window_list[hit.window].hwnd);
+                self.reset();
+                tx.close_window();
+            }
+            Mode::Commands => {
+                let Some(entry) = self.command_hits.get(index).map(|h| &self.catalog[h.0]) else { return };
+                if entry.needs_confirm() && self.armed.as_ref() != Some(&entry.key) {
+                    // The first Enter (or click) only asks; the row now says what the next does.
+                    self.armed = Some(entry.key.clone());
+                    self.selected = index;
+                    return;
+                }
+                let _ = self.jobs.send(Job::Command(entry.action.clone()));
                 self.reset();
                 tx.close_window();
             }
@@ -446,11 +521,13 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         Key::Backspace if s.mode == Mode::Files && s.query.text.is_empty() => s.leave_files(),
         Key::Backspace if s.mode == Mode::Windows && s.query.text.is_empty() => s.leave_windows(),
+        Key::Backspace if s.mode == Mode::Commands && s.query.text.is_empty() => s.leave_commands(),
+        Key::Escape if s.armed.is_some() => s.armed = None,
         Key::Escape if s.mode == Mode::Windows && !s.query.text.is_empty() => {
             s.query = focused_edit();
             s.refresh();
         }
-        Key::Escape if !s.query.text.is_empty() || s.mode == Mode::Files => s.reset(),
+        Key::Escape if !s.query.text.is_empty() || matches!(s.mode, Mode::Files | Mode::Commands) => s.reset(),
         Key::Escape => {
             s.reset();
             tx.close_window();
@@ -478,6 +555,7 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
     let (label, placeholder) = match s.mode {
         Mode::Files => ("Search files and folders", "Search files and folders…"),
         Mode::Windows => ("Search windows", "Search open windows…"),
+        Mode::Commands => ("Run a command", "Run a command…"),
         Mode::Apps => ("Search apps", "Search apps…"),
     };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0))
@@ -502,12 +580,17 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
     if s.mode == Mode::Windows {
         header = header.child(chip("Windows", windows_glyph(t.accent), t));
     }
+    if s.mode == Mode::Commands {
+        header = header.child(chip("Commands", command_glyph(t.accent), t));
+    }
     let header = header.child(field);
 
     let body = if files {
         file_body(s, t)
     } else if s.mode == Mode::Windows {
         window_body(s, t)
+    } else if s.mode == Mode::Commands {
+        command_body(s, t)
     } else if !s.scanned {
         message("Finding your apps…", t)
     } else if s.hits.is_empty() {
@@ -656,6 +739,66 @@ fn window_row(s: &State, i: usize, hit: &WindowHit, monitors: bool, t: &Style) -
         .on_press_tx(move |s: &mut State, tx| s.activate(i, false, tx))
         .child(icon_or_tile(s, icon_id.as_deref().unwrap_or(""), initial, t))
         .child(col().gap(1.0).grow(1.0).shrink().child(title).child(detail))
+        .child(kind)
+}
+
+fn command_body(s: &State, t: &Style) -> El {
+    if s.command_hits.is_empty() {
+        return message(&format!("No commands match \u{201c}{}\u{201d}", s.query.text.trim()), t);
+    }
+    let section = row()
+        .w_full()
+        .h(SECTION)
+        .px(20.0)
+        .center_y()
+        .child(text("Commands").font(TextStyle::new(12.0, 600.0)).color(t.muted));
+    let list = s
+        .command_hits
+        .iter()
+        .enumerate()
+        .fold(col().w_full().px(LIST_PAD).gap(0.0), |list, (i, (entry, positions))| {
+            list.child(command_row(s, i, &s.catalog[*entry], positions, t))
+        });
+    col().w_full().grow(1.0).pt(LIST_PAD).child(section).child(list)
+}
+
+fn command_row(s: &State, i: usize, entry: &Entry, positions: &[usize], t: &Style) -> El {
+    let on = i == s.selected;
+    let armed = s.armed.as_ref() == Some(&entry.key);
+    let title = text(entry.title.clone())
+        .spans(highlight(&entry.title, positions, t.accent))
+        .font(TextStyle::new(14.0, if on { 550.0 } else { 450.0 }))
+        .color(t.foreground)
+        .truncate();
+    let detail = if armed {
+        text(format!("Press Enter again to {}", entry.title.to_lowercase())).font(TextStyle::new(11.5, 600.0)).color(t.accent)
+    } else {
+        text(entry.detail.clone()).font(TextStyle::new(11.5, 400.0)).color(t.muted)
+    };
+    let kind = match (armed, on) {
+        (true, _) => "Confirm",
+        (false, true) => "Run",
+        (false, false) if matches!(entry.action, commands::Action::Host(..)) => "lattice",
+        (false, false) => "System",
+    };
+    let kind = text(kind).font(TextStyle::new(12.5, 500.0)).color(if armed { t.accent } else if on { t.foreground.alpha(0.7) } else { t.muted });
+    let initial = entry.title.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    row()
+        .key(format!("command-{}", entry.key))
+        .role("button")
+        .label(entry.title.clone())
+        .hit()
+        .w_full()
+        .h(ROW)
+        .px(12.0)
+        .gap(14.0)
+        .radius(10.0)
+        .center_y()
+        .fill(if on { t.surface } else { Color::TRANSPARENT })
+        .on_hover(move |s: &mut State| s.selected = i)
+        .on_press_tx(move |s: &mut State, tx| s.activate(i, false, tx))
+        .child(icon_or_tile(s, "", initial, t))
+        .child(col().gap(1.0).grow(1.0).shrink().child(title).child(detail.truncate()))
         .child(kind)
 }
 
@@ -813,6 +956,11 @@ fn footer(s: &State, t: &Style) -> El {
                 .child(hint(a.pick(hit.dir, false).label(), &["↵"], t))
                 .child(hint(a.pick(hit.dir, true).label(), &["ctrl", "↵"], t));
         }
+    } else if s.mode == Mode::Commands {
+        if let Some(h) = s.command_hits.get(s.selected) {
+            let armed = s.armed.as_ref() == Some(&s.catalog[h.0].key);
+            hints = hints.child(hint(if armed { "Confirm" } else { "Run" }, &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
+        }
     } else if s.mode == Mode::Windows {
         if !s.window_hits.is_empty() {
             hints = hints.child(hint("Switch", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
@@ -867,6 +1015,13 @@ fn windows_glyph(c: Color) -> El {
         .child(el().absolute(0.0, 4.0).size(10.0, 8.0).radius(2.0).fill(c))
 }
 
+/// A prompt: a chevron and an underscore.
+fn command_glyph(c: Color) -> El {
+    el().size(14.0, 12.0)
+        .child(canvas(Shape::new().stroke(vec![[1.5, 2.0], [6.0, 6.0], [1.5, 10.0]], 1.8, c)).absolute(0.0, 0.0).size(14.0, 12.0))
+        .child(el().absolute(7.5, 9.5).size(6.0, 1.8).fill(c))
+}
+
 fn hairline(t: &Style) -> El {
     el().w_full().h(1.0).fill(t.surface.alpha(0.8))
 }
@@ -901,6 +1056,8 @@ mod tests {
         assert_eq!(strip_mode_prefix("f", "f"), None);
         assert_eq!(strip_mode_prefix("file x", "file"), Some("x"));
         assert_eq!(strip_mode_prefix("f x", ""), None);
+        assert_eq!(strip_mode_prefix("> move 3", ">"), Some("move 3"));
+        assert_eq!(strip_mode_prefix(">move", ">"), None);
     }
 
     #[test]

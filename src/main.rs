@@ -138,7 +138,47 @@ fn launcher_options(cfg: &config::Config) -> launcher::Options {
             list: std::sync::Arc::new(|| shared::send_command(config::Command::ListWindows)),
             focus: std::sync::Arc::new(|hwnd| shared::send_command(config::Command::FocusWindow(hwnd))),
         },
+        commands: launcher::CommandOptions {
+            prefix: cfg.launcher.command_prefix.trim().to_string(),
+            host: launcher_commands(cfg.general.workspaces),
+        },
     }
+}
+
+/// The window-manager commands command mode offers, each handed to the WM thread as if its
+/// keybind were pressed. Commands with an argument get one entry per value, so `> move 3`
+/// finds "Move window to workspace 3".
+fn launcher_commands(workspaces: usize) -> Vec<launcher::HostCommand> {
+    use config::{Command, WsTarget};
+    let cmd = |title: String, detail: &str, aliases: &[&str], targets_window: bool, c: Command| launcher::HostCommand {
+        title,
+        detail: detail.to_string(),
+        aliases: aliases.iter().map(|a| a.to_string()).collect(),
+        targets_window,
+        run: std::sync::Arc::new(move || shared::send_command(c.clone())),
+    };
+    let mut out = Vec::new();
+    for kind in [layout::LayoutKind::Dwindle, layout::LayoutKind::Master, layout::LayoutKind::Monocle] {
+        let name = kind.name();
+        let title = format!("Layout: {}{}", name[..1].to_uppercase(), &name[1..]);
+        out.push(cmd(title, "Tile this workspace with it", &[], false, Command::Layout(Some(kind))));
+    }
+    out.push(cmd("Toggle floating".into(), "Float the window, or tile it again", &["float"], true, Command::ToggleFloat));
+    out.push(cmd("Toggle fullscreen".into(), "Fill the tiling area with the window", &[], true, Command::ToggleFullscreen));
+    out.push(cmd("Close window".into(), "Close the focused window", &["kill"], true, Command::Close));
+    for n in 1..=workspaces {
+        out.push(cmd(format!("Go to workspace {n}"), "Switch workspace", &[], false, Command::Workspace(WsTarget::Index(n - 1))));
+    }
+    for n in 1..=workspaces {
+        let target = WsTarget::Index(n - 1);
+        out.push(cmd(format!("Move window to workspace {n}"), "And follow it there", &["send"], true, Command::MoveToWorkspace { target, follow: true }));
+    }
+    out.push(cmd("Retile".into(), "Re-adopt windows and lay them out again", &[], false, Command::Retile));
+    out.push(cmd("Reload config".into(), "Read config.toml again", &[], false, Command::Reload));
+    out.push(cmd("Open settings".into(), "lattice's settings window", &["preferences"], false, Command::Settings));
+    out.push(cmd("Open config file".into(), "Edit config.toml in your editor", &["edit config"], false, Command::OpenConfig));
+    out.push(cmd("Quit lattice".into(), "Show every window and exit", &["exit"], false, Command::Quit));
+    out
 }
 
 /// File search options; a bad action is reported and falls back to its default.

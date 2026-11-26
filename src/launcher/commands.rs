@@ -232,6 +232,8 @@ mod tests {
         assert_eq!(top("layout mas"), "Layout: Master");
         assert_eq!(top("workspace 4"), "Go to workspace 4");
         assert_eq!(top("shut"), "Shut down");
+        assert_eq!(top("ws 2"), "Go to workspace 2");
+        assert_eq!(top("layout mono"), "Layout: Monocle");
     }
 
     #[test]

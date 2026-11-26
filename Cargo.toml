@@ -50,6 +50,17 @@ features = [
     "Win32_Security",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
+    # Command mode: power, audio output and Wi-Fi.
+    "Win32_System_Shutdown",
+    "Win32_System_Variant",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Media_Audio",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_NetworkManagement_WiFi",
+    "Win32_NetworkManagement_Ndis",
+    "Devices_Radios",
+    "Foundation",
 ]
 
 [patch.crates-io]

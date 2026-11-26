@@ -1,7 +1,8 @@
 //! A Raycast-style app launcher: a search box over every app in the Start menu, ranked by fuzzy
 //! match and by how often you launch each one, opened and dismissed with a hotkey. Typing the
 //! file prefix ("f") and a space switches it to searching files and folders (see `files`).
-//! It also searches the host's open windows ([`toggle_windows`], or the window prefix "w").
+//! It also searches the host's open windows ([`toggle_windows`], or the window prefix "w"),
+//! and runs commands after the command prefix (">"): the host's, and system ones.
 //!
 //! Self-contained on purpose: nothing in here imports from the rest of lattice. A host
 //!
@@ -16,9 +17,13 @@
 //! - `files`: file search on its own thread, through `everything` (voidtools Everything's IPC)
 //!   or, when that isn't running, lattice's own `index`;
 //! - `windows`: window search ranking (pure Rust; the host lists and switches windows);
+//! - `commands`: command mode's catalog and ranking (pure Rust), and `control`, its Windows
+//!   side (power, audio output, Wi-Fi);
 //! - `ui`: the Rune state and view.
 
 mod bench;
+mod commands;
+mod control;
 mod everything;
 mod files;
 mod index;
@@ -29,6 +34,7 @@ mod ui;
 mod windows;
 
 pub use bench::run as bench;
+pub use commands::{CommandOptions, HostCommand};
 pub use files::{FileAction, FileActions, FileOptions};
 pub use windows::{WindowEntry, WindowIcon};
 
@@ -68,6 +74,7 @@ pub struct Options {
     pub clean_env: Vec<String>,
     pub files: FileOptions,
     pub windows: WindowSearch,
+    pub commands: CommandOptions,
 }
 
 /// Window search's link to the host, which owns the windows. Both callbacks run on the
@@ -107,6 +114,9 @@ enum Job {
     FileIcon(Arc<str>),
     /// Do this with the file or folder at that path.
     File(FileAction, Arc<str>),
+    /// Read what command mode can offer (sleep states, audio outputs, Wi-Fi).
+    Snapshot,
+    Command(commands::Action),
 }
 
 /// Icon pixels fetched per app: sharp at 2x for the 30-point icons rows show.
@@ -124,6 +134,8 @@ struct Launcher {
 static LAUNCHER: OnceLock<Launcher> = OnceLock::new();
 /// The launcher's native window, once Rune has made it (0 before).
 static HWND: AtomicIsize = AtomicIsize::new(0);
+/// The window that had the focus before the launcher opened, for commands that act on it.
+static PREVIOUS: AtomicIsize = AtomicIsize::new(0);
 /// A reopen is waiting for its first drawn frame to come out of DWM's cloak (see `reveal`).
 static REVEALING: AtomicBool = AtomicBool::new(false);
 
@@ -153,9 +165,10 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
         actions: opts.files.actions.clone(),
     };
     let ui_windows = opts.windows;
+    let ui_commands = opts.commands;
     let app = App::new(spec)
         .windowless()
-        .init(move || ui::State::new(history, state_jobs, ui_files, ui_windows))
+        .init(move || ui::State::new(history, state_jobs, ui_files, ui_windows, ui_commands))
         .on_focus(ui::on_focus)
         .on_frame_drawn(|_| reveal())
         .on_window(|w| {
@@ -284,6 +297,7 @@ fn show(l: &Launcher, on: Option<Area>, windows: Option<Vec<WindowEntry>>) {
             l.send(Job::Scan);
         }
     }
+    PREVIOUS.store(system::foreground(), Ordering::SeqCst);
     l.app.update(move |s, _| {
         s.reset();
         if let Some(w) = windows {
@@ -368,6 +382,19 @@ fn work(rx: Receiver<Job>, app: AppHandle<ui::State>, clean_env: Vec<String>) {
                 app.update(move |s, _| s.icon_loaded(path, icon));
             }
             Job::File(action, path) => run_file_action(&action, &path, &clean_env),
+            Job::Snapshot => {
+                let snapshot = control::snapshot();
+                app.update(move |s, _| s.commands_loaded(snapshot));
+            }
+            Job::Command(commands::Action::Host(run, targets_window)) => {
+                // The launcher had the focus; hand it back to the window the command acts on.
+                let previous = PREVIOUS.load(Ordering::SeqCst);
+                if targets_window && previous != 0 && previous != HWND.load(Ordering::SeqCst) {
+                    system::bring_to_front(previous);
+                }
+                run();
+            }
+            Job::Command(commands::Action::System(cmd)) => control::run(&cmd),
         }
     }
 }
