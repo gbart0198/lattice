@@ -2,9 +2,10 @@
 //! a canvas window in the middle of the primary monitor, then exits. Nothing else on the desktop
 //! is touched, so it's safe to run next to a live lattice (which ignores lattice's own windows).
 //!
-//! The demo uses the real animator, curves, timings and tiling code; the windows are children
-//! of the canvas (so slides stay clipped to it, like a monitor's edge) and the script stands in
-//! for the keypresses. Scenes: move, swap, workspace, fullscreen, minimize.
+//! The demo uses the real animator (live DWM previews, each window moved once), curves, timings
+//! and tiling code. The demo windows are popups owned by the canvas, since previews only exist
+//! for top-level windows; slides are cut off at the canvas's edge, like a monitor's. The script
+//! stands in for the keypresses. Scenes: move, swap, workspace, fullscreen, minimize.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,7 +16,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use super::{After, Animator, Kind, MIN_FRAME, timing};
+use super::{After, Animator, Glide, Kind, WARMUP, timing};
 use crate::config::AnimStyle;
 use crate::layout::{self, LayoutKind, Params, Rect};
 use crate::win::Hwnd;
@@ -69,7 +70,18 @@ struct Demo {
     fullscreen: Option<Hwnd>,
 }
 
+thread_local! {
+    /// The canvas's top-left on screen: demo rects are canvas coordinates.
+    static ORIGIN: std::cell::Cell<(i32, i32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+fn to_screen(r: Rect) -> Rect {
+    let (x, y) = ORIGIN.get();
+    r.offset(x, y)
+}
+
 fn place_child(h: Hwnd, r: Rect) {
+    let r = to_screen(r);
     unsafe {
         let _ = SetWindowPos(crate::win::h(h), None, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -99,17 +111,22 @@ impl Demo {
         out
     }
 
+    /// Where `h` appears now, in canvas coordinates.
     fn rect_now(&self, h: Hwnd) -> Rect {
-        self.anim.current(h).unwrap_or_else(|| child_rect(self.canvas, h))
+        let (x, y) = ORIGIN.get();
+        self.anim.current(h).map(|r| r.offset(-x, -y)).unwrap_or_else(|| child_rect(self.canvas, h))
     }
 
-    /// lattice's `retile` + `place_tile`: every tile change glides.
+    /// lattice's `retile` + `place_tile`: every tile change glides, each window moved once.
     fn retile(&mut self) {
         let t = timing(self.style, Kind::Move);
         for (h, r, _) in self.layout(self.active) {
-            if self.anim.target(h) != Some(r) && self.rect_now(h) != r {
+            if self.anim.target(h) != Some(to_screen(r)) && self.rect_now(h) != r {
                 let from = self.rect_now(h);
-                self.anim.start(h, from, r, &t, Duration::ZERO, After::Nothing);
+                // The animator moves it when its preview lands.
+                if !self.anim.glide(h, Glide::moving(to_screen(from), to_screen(r), t)) {
+                    place_child(h, r);
+                }
             }
         }
         if let Some(f) = self.fullscreen {
@@ -128,18 +145,22 @@ impl Demo {
         let down = if ws > old { 1 } else { -1 };
         let slide = timing(self.style, Kind::Slide);
         for (h, target, order) in self.layout(ws) {
-            let height = self.monitors[self.wins.iter().find(|w| w.hwnd == h).unwrap().mon].h;
-            let start = target.offset(0, down * height);
-            place_child(h, start);
+            let mon = self.wins.iter().find(|w| w.hwnd == h).unwrap().mon;
+            let start = target.offset(0, down * self.monitors[mon].h);
+            let clip = Some(to_screen(self.area(mon)));
+            self.anim.glide(h, Glide::sliding(to_screen(start), to_screen(target), slide, clip).delay(WARMUP + slide.stagger * order.min(4) as u32));
+            place_child(h, target);
             show(h, true);
-            self.anim.start(h, start, target, &slide, slide.stagger * order.min(4) as u32, After::Nothing);
         }
         for i in 0..self.wins.len() {
             let (h, w_ws, mon) = (self.wins[i].hwnd, self.wins[i].ws, self.wins[i].mon);
             if w_ws == old {
                 let from = self.rect_now(h);
                 let to = from.offset(0, -down * self.monitors[mon].h);
-                self.anim.start(h, from, to, &slide, Duration::ZERO, After::Hide { home: from });
+                let clip = Some(to_screen(self.area(mon)));
+                if !self.anim.glide(h, Glide::sliding(to_screen(from), to_screen(to), slide, clip).hiding()) {
+                    show(h, false);
+                }
             }
         }
     }
@@ -165,14 +186,13 @@ impl Demo {
         let (i, j) = (self.wins.iter().position(|w| w.hwnd == a).unwrap(), self.wins.iter().position(|w| w.hwnd == b).unwrap());
         self.wins.swap(i, j);
         self.retile();
-        raise(a);
+        self.anim.raise(a);
     }
 
     fn tick(&mut self) {
         for (h, after) in self.anim.tick(Instant::now()) {
-            if let After::Hide { home } = after {
+            if after == After::Hide {
                 show(h, false);
-                place_child(h, home);
             }
         }
     }
@@ -366,10 +386,12 @@ fn register(class: PCWSTR, proc: WNDPROC) {
     }
 }
 
-fn child(parent: HWND, class: PCWSTR, r: Rect, visible: bool) -> Hwnd {
+/// A popup owned by the canvas (so it stays above it) at `r` in canvas coordinates.
+fn child(owner: HWND, class: PCWSTR, r: Rect, visible: bool) -> Hwnd {
+    let r = to_screen(r);
     unsafe {
-        let style = WS_CHILD | WS_CLIPSIBLINGS | if visible { WS_VISIBLE } else { WINDOW_STYLE(0) };
-        CreateWindowExW(WINDOW_EX_STYLE(0), class, w!(""), style, r.x, r.y, r.w, r.h, Some(parent), None, None, None)
+        let style = WS_POPUP | if visible { WS_VISIBLE } else { WINDOW_STYLE(0) };
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class, w!(""), style, r.x, r.y, r.w, r.h, Some(owner), None, None, None)
             .map(|h| h.0 as isize)
             .unwrap_or(0)
     }
@@ -422,6 +444,7 @@ pub fn run(args: &[String]) {
         )
     };
     let Ok(canvas) = canvas else { return };
+    ORIGIN.set((x, y));
     println!("canvas {x} {y} {cw} {ch}");
 
     let bar_h = 34;
@@ -435,7 +458,7 @@ pub fn run(args: &[String]) {
         _ => vec![(0, 0), (0, 0), (0, 0)],
     };
     let mut demo = Demo {
-        anim: Animator::with(place_child, || {}),
+        anim: Animator::with(super::dwm::Dwm::default(), || {}),
         style,
         canvas,
         bar: crate::win::h(bar),
@@ -470,12 +493,12 @@ pub fn run(args: &[String]) {
                 d.focus(c);
                 d.win(c).mon = 1;
                 d.retile();
-                raise(c);
+                d.anim.raise(c);
             })),
             (2.1, Box::new(move |d: &mut Demo| {
                 d.win(c).mon = 0;
                 d.retile();
-                raise(c);
+                d.anim.raise(c);
             })),
         ],
         "swap" => vec![
@@ -517,7 +540,6 @@ pub fn run(args: &[String]) {
 
     let t0 = Instant::now();
     let mut next = 0;
-    let mut last = Instant::now() - MIN_FRAME;
     let mut msg = MSG::default();
     loop {
         unsafe {
@@ -534,10 +556,7 @@ pub fn run(args: &[String]) {
             (steps[next].1)(&mut demo);
             next += 1;
         }
-        if last.elapsed() >= MIN_FRAME {
-            last = Instant::now();
-            demo.tick();
-        }
+        demo.tick();
         if t >= end && !demo.anim.busy() {
             break;
         }

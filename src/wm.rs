@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::anim::{self, After, Animator, Kind};
+use crate::anim::{self, After, Animator, Glide, Kind};
 use crate::config::{self, AnimStyle, Command, Config, Dir, NewWindow, WsTarget};
 use crate::layout::{self, LayoutKind, Params, Rect};
 use crate::shared::{self, BarModel, WsInfo};
@@ -295,7 +295,7 @@ impl Wm {
     fn unmanage(&mut self, hwnd: Hwnd) {
         let Some(w) = self.windows.remove(&hwnd) else { return };
         log::info!("unmanage {hwnd:#x} '{}'", w.title);
-        self.anim.cancel(hwnd);
+        self.anim.cancel(hwnd, false);
         self.pending_hide.remove(&hwnd);
         self.pending_show.remove(&hwnd);
         self.hidden.remove(&hwnd);
@@ -324,16 +324,14 @@ impl Wm {
     /// the app in order, so the last one wins.
     fn hide_window(&mut self, hwnd: Hwnd) {
         if !self.hidden.contains_key(&hwnd) {
-            let sliding = self.anim.cancel(hwnd);
+            // Mid-animation it's transparent: it stays so until the hide lands, so it never
+            // flashes up where it is.
+            self.anim.cancel(hwnd, true);
             self.hidden.insert(hwnd, Instant::now());
             if win::is_visible(hwnd) {
                 *self.pending_hide.entry(hwnd).or_default() += 1;
             }
             win::hide(hwnd);
-            // Cut short mid-slide: still put it back where it belongs.
-            if let Some(After::Hide { home }) = sliding {
-                win::place_quiet(hwnd, home);
-            }
         }
         shared::mark_hidden(hwnd, true);
     }
@@ -343,13 +341,16 @@ impl Wm {
         if self.hidden.remove(&hwnd).is_some() && !self.anim.take_hide(hwnd) {
             *self.pending_show.entry(hwnd).or_default() += 1;
             win::show(hwnd);
+            // Back before a hide that was waiting to make it opaque landed.
+            self.anim.unfade_now(hwnd);
         }
         shared::mark_hidden(hwnd, false);
     }
 
-    /// `hide_window` after sliding the window `dy` pixels (off its screen). It counts as hidden
-    /// from now on; the real hide happens when the slide ends (`after_anim`).
-    fn slide_out(&mut self, hwnd: Hwnd, style: AnimStyle, dy: i32) {
+    /// `hide_window` after sliding the window's preview `dy` pixels (off its screen). It counts
+    /// as hidden from now on; the real hide happens when the slide ends (`after_anim`). The
+    /// window itself never moves. One that can't be previewed is hidden at once.
+    fn slide_out(&mut self, hwnd: Hwnd, style: AnimStyle, dy: i32, clip: Option<Rect>) {
         if self.hidden.contains_key(&hwnd) {
             return;
         }
@@ -357,27 +358,29 @@ impl Wm {
             self.hide_window(hwnd);
             return;
         };
-        // Home is where it was headed, if it was moving: that's where it belongs.
-        let home = self.anim.target(hwnd).unwrap_or(from);
+        let t = anim::timing(style, Kind::Slide);
+        if !self.anim.glide(hwnd, Glide::sliding(from, from.offset(0, dy), t, clip).hiding()) {
+            self.hide_window(hwnd);
+            return;
+        }
         self.hidden.insert(hwnd, Instant::now());
         shared::mark_hidden(hwnd, true);
-        let to = from.offset(0, dy);
-        self.anim.start(hwnd, from, to, &anim::timing(style, Kind::Slide), Duration::ZERO, After::Hide { home });
     }
 
     /// Does what a finished animation left to do.
     fn after_anim(&mut self, hwnd: Hwnd, after: After) {
-        let After::Hide { home } = after else { return };
+        if after != After::Hide {
+            return;
+        }
         // Shown again since (its workspace came back): nothing to do.
         if !self.hidden.contains_key(&hwnd) || !self.windows.contains_key(&hwnd) {
+            self.anim.unfade_now(hwnd);
             return;
         }
         if win::is_visible(hwnd) {
             *self.pending_hide.entry(hwnd).or_default() += 1;
         }
         win::hide(hwnd);
-        // After the hide (requests reach the app in order), so it never shows there.
-        win::place_quiet(hwnd, home);
     }
 
     /// Moves animating windows one frame on. The WM loop calls this on every wakeup; the frame
@@ -399,7 +402,8 @@ impl Wm {
     /// Stops a window's animation where it is, still doing what it was going to do at the end
     /// (a window sliding away still gets hidden).
     fn stop_anim(&mut self, hwnd: Hwnd) {
-        if let Some(after) = self.anim.cancel(hwnd) {
+        let hiding = self.anim.is_hiding(hwnd);
+        if let Some(after) = self.anim.cancel(hwnd, hiding) {
             self.after_anim(hwnd, after);
         }
     }
@@ -418,23 +422,27 @@ impl Wm {
         self.anim.target(hwnd).or_else(|| win::frame_rect(hwnd))
     }
 
-    /// Puts a window at `r`: glides it there with animations on, else moves it straight there.
+    /// Puts a window at `r`, in one move. With animations on, its preview glides there from
+    /// where it appears to be while the window itself, invisible, waits to be moved when the
+    /// preview lands.
     fn place_tile(&mut self, hwnd: Hwnd, r: Rect) {
         if self.anim.target(hwnd) == Some(r) {
             return;
         }
         let cur = self.rect_of_now(hwnd);
         let maximized = win::is_maximized(hwnd);
-        match (self.cfg.animations.active(), cur) {
-            (Some(style), Some(c)) if c != r && !maximized && !self.hidden.contains_key(&hwnd) && win::is_visible(hwnd) => {
-                self.anim.start(hwnd, c, r, &anim::timing(style, Kind::Move), Duration::ZERO, After::Nothing);
-            }
-            _ => {
-                self.stop_anim(hwnd);
-                if cur != Some(r) || maximized {
-                    win::place(hwnd, r);
-                }
-            }
+        if let (Some(style), Some(c)) = (self.cfg.animations.active(), cur)
+            && c != r
+            && !maximized
+            && !self.hidden.contains_key(&hwnd)
+            && win::is_visible(hwnd)
+            && self.anim.glide(hwnd, Glide::moving(c, r, anim::timing(style, Kind::Move)))
+        {
+            return;
+        }
+        self.stop_anim(hwnd);
+        if win::frame_rect(hwnd) != Some(r) || maximized {
+            win::place(hwnd, r);
         }
     }
 
@@ -577,11 +585,11 @@ impl Wm {
                 self.show_window(hwnd);
                 continue;
             }
-            // Tiled windows go to their tile; floating ones back where they were (where one
-            // still sliding away belongs, not where it got to).
+            // Tiled windows go to their tile; floating ones back where they are (a window
+            // sliding away never really moved).
             let (target, order) = match targets.get(&hwnd) {
                 Some(t) => *t,
-                None => match self.anim.hiding_home(hwnd).or_else(|| win::frame_rect(hwnd)) {
+                None => match win::frame_rect(hwnd) {
                     Some(r) => (r, 0),
                     None => {
                         self.show_window(hwnd);
@@ -589,25 +597,32 @@ impl Wm {
                     }
                 },
             };
-            // Still on screen (sliding away, or carried along by move-to-workspace): it turns
-            // around from where it is. Otherwise it starts a screen below its spot, hidden.
-            // (`show_window` below calls off a pending hide.)
+            // Still on screen (sliding away, or carried along by move-to-workspace): its preview
+            // turns around from where it is. Otherwise the preview starts a screen below its
+            // spot, after a moment for the window to draw once it's shown (a window just shown
+            // has a blank preview for a frame or two).
             let on_screen = !self.hidden.contains_key(&hwnd) || self.anim.is_hiding(hwnd);
-            let from = if on_screen {
-                self.rect_of_now(hwnd).unwrap_or(target)
+            let (from, delay) = if on_screen {
+                (self.rect_of_now(hwnd).unwrap_or(target), Duration::ZERO)
             } else {
-                let start = target.offset(0, down * height);
-                win::place_quiet(hwnd, start);
-                start
+                (target.offset(0, down * height), anim::WARMUP + slide.stagger * order.min(4) as u32)
             };
+            let clip = Some(self.tiling_area(w.mon));
+            // Before it's shown, so it never appears in place first. `show_window` calls off a
+            // pending hide.
+            if !self.anim.glide(hwnd, Glide::sliding(from, target, slide, clip).delay(delay)) {
+                self.stop_anim(hwnd);
+            }
+            if win::frame_rect(hwnd) != Some(target) {
+                win::place(hwnd, target);
+            }
             self.show_window(hwnd);
-            let delay = slide.stagger * order.min(4) as u32;
-            self.anim.start(hwnd, from, target, &slide, if on_screen { Duration::ZERO } else { delay }, After::Nothing);
         }
         self.retile(ws);
         for hwnd in self.workspaces[old].windows.clone() {
-            let height = self.windows.get(&hwnd).and_then(|w| self.monitors.get(w.mon)).map_or(0, |m| m.info.rect.h);
-            self.slide_out(hwnd, style, -down * height);
+            let mon = self.windows.get(&hwnd).map(|w| w.mon).filter(|m| *m < self.monitors.len());
+            let height = mon.map_or(0, |m| self.monitors[m].info.rect.h);
+            self.slide_out(hwnd, style, -down * height, mon.map(|m| self.tiling_area(m)));
         }
     }
 
@@ -712,8 +727,10 @@ impl Wm {
             && from == self.active
         {
             // Off it goes, the way that workspace lies.
-            let height = self.monitors.get(self.windows[&hwnd].mon).map_or(0, |m| m.info.rect.h);
-            self.slide_out(hwnd, style, if to > from { height } else { -height });
+            let mon = self.windows[&hwnd].mon.min(self.monitors.len().saturating_sub(1));
+            let height = self.monitors.get(mon).map_or(0, |m| m.info.rect.h);
+            let clip = (mon < self.monitors.len()).then(|| self.tiling_area(mon));
+            self.slide_out(hwnd, style, if to > from { height } else { -height }, clip);
         } else {
             self.hide_window(hwnd);
         }
@@ -873,19 +890,15 @@ impl Wm {
                 list.swap(a, b);
             }
             self.retile(ws);
-            if self.anim.is_animating(h) {
-                // The window you moved crosses over the one it swaps with, not under it.
-                win::raise(h);
-            }
+            // The window you moved crosses over the one it swaps with, not under it.
+            self.anim.raise(h);
             self.focus(h);
             return;
         }
         // Nothing to swap with on this screen: move to the monitor in that direction.
         if let Some(t) = self.monitor_toward(mon, dir) {
             self.move_window_to_monitor(h, t);
-            if self.anim.is_animating(h) {
-                win::raise(h);
-            }
+            self.anim.raise(h);
             self.focus(h);
             self.publish();
         }
@@ -1271,6 +1284,7 @@ impl Wm {
 
     pub fn shutdown(&mut self) {
         self.finish_animations();
+        self.anim.flush();
         shared::restore_hidden();
         for h in self.hidden.keys() {
             win::show(*h);
