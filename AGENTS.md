@@ -14,7 +14,7 @@ state and the WinEvent hooks. A third thread runs only the low-level keyboard ho
 | A command (keybind, `lattice msg`, launcher) | parsed in `config.rs` `parse_command`, run in `wm.rs` `Wm::command` |
 | Keybinds and chords | `config.rs` `build_keymap`, `parse_chord`; the hook itself in `hooks.rs` |
 | What happens when a window opens, closes, hides or gains focus | `wm.rs` `Wm::event`, `try_manage`, `unmanage` |
-| Startup and windows already open | `main.rs` `main` → `hooks.rs` `run` → `Wm::new` → `adopt_existing` |
+| Startup and windows already open | `main.rs` `main` → `hooks.rs` `run` → `Wm::new` → `restore_saved_state` (when `state.json` exists) or `adopt_existing` |
 | Tiling | `layout.rs` (pure math: `tile`, `resize_target`); `wm.rs` `retile`, `layout_monitor`, `place_tile` |
 | Workspace switching, focus | `wm.rs` `show_workspace`, `switch_to_workspace`, `focus`, `focus_dir`, `neighbor` |
 | Animations | `anim/` (`mod.rs` timing and glides, `dwm.rs` the DWM-thumbnail overlay that does the drawing, `preview.rs` the `--animation-preview` demo) |
@@ -22,6 +22,7 @@ state and the WinEvent hooks. A third thread runs only the low-level keyboard ho
 | Query output | `wm.rs` `Wm::state` builds `ipc::State`; `ipc.rs` `query_json` |
 | `[[hook]]` and subscribe events | `events.rs` (`Tracker::update` diffs state once per batch; `emit`) |
 | Setups (`[[setup]]`, `restore-setup`) | `setups.rs`; placement as windows appear in `wm.rs` (`Restore`, `try_manage`) |
+| Placement kept across restarts (`state.json`) | `persist.rs` (file format, `load`/`save`, `assign` matches live windows to saved ones, `remap_monitors`); `wm.rs` `restore_saved_state`, `snapshot`, `save_state` (called once per batch in `hooks.rs` `run`, and in `shutdown`) |
 | Config fields and defaults | `config.rs` structs; `default_config.toml` (the commented file users get) |
 | Win32 calls | `win.rs` (`Hwnd` is an `isize`); hidden-window recovery in `shared.rs` (`hidden.txt`) |
 | The bar | `bar.rs`, fed by `Wm::publish` |
