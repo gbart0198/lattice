@@ -572,4 +572,91 @@ mod tests {
         assert_eq!(monitor_slot(3, None, 1), 1);
         assert_eq!(monitor_slot(1, Some(2), 1), 0);
     }
+
+    /// An entry on `monitor` of workspace `n`.
+    fn on(n: usize, monitor: Option<usize>, apps: &[&str], splits: &[f32]) -> SetupWorkspace {
+        SetupWorkspace { monitor, splits: splits.to_vec(), ..ws(n, apps) }
+    }
+
+    /// The slots as (workspace, monitor, order, exe), sorted.
+    fn where_(p: &Plan) -> Vec<(usize, usize, usize, String)> {
+        let mut v: Vec<_> = p.slots.iter().map(|s| (s.ws, s.mon, s.order, s.exe.clone())).collect();
+        v.sort();
+        v
+    }
+
+    /// Made on two monitors across three workspaces: both monitors of workspace 1, only the
+    /// right one of workspace 2, only the left one of workspace 3.
+    fn two_monitors_three_workspaces() -> Setup {
+        Setup {
+            monitors: Some(2),
+            workspaces: vec![
+                on(1, Some(1), &["a.exe", "b.exe"], &[0.7]),
+                on(1, Some(2), &["c.exe", "d.exe"], &[0.4]),
+                on(2, Some(2), &["e.exe", "f.exe"], &[0.3]),
+                on(3, Some(1), &["g.exe"], &[]),
+            ],
+            ..dev()
+        }
+    }
+
+    #[test]
+    fn several_workspaces_of_two_monitors_restore_onto_one() {
+        let s = two_monitors_three_workspaces();
+        let p = plan(&s, &[], idx, 1, 0);
+        // Nothing is dropped: every app has a slot, all on the one monitor, each workspace in
+        // its own order (a monitor's apps after the left one's).
+        assert_eq!(
+            where_(&p),
+            vec![
+                (0, 0, 0, "a.exe".into()),
+                (0, 0, 1, "b.exe".into()),
+                (0, 0, 2, "c.exe".into()),
+                (0, 0, 3, "d.exe".into()),
+                (1, 0, 0, "e.exe".into()),
+                (1, 0, 1, "f.exe".into()),
+                (2, 0, 0, "g.exe".into()),
+            ]
+        );
+        assert_eq!(p.launch.len(), 7);
+        // Whose splits each monitor keeps: workspace 1 the left monitor's (c and d go past them
+        // on the default ratio); workspace 2 its only entry's, though it came from monitor 2.
+        let placed = placed(&s, idx, 1, 0);
+        let splits: Vec<(usize, bool, bool)> = placed.iter().map(|p| (p.ws, p.folded, p.splits)).collect();
+        assert_eq!(splits, vec![(0, false, true), (0, true, false), (1, true, true), (2, false, true)]);
+        // Restoring again with every window where the first restore put it changes nothing.
+        let open: Vec<OpenWindow> = p.slots.iter().enumerate().map(|(i, sl)| OpenWindow { hwnd: i as isize + 100, exe: Box::leak(sl.exe.clone().into_boxed_str()), ws: sl.ws, mon: 0, place: sl.order }).collect();
+        let again = plan(&s, &open, idx, 1, 0);
+        assert!(again.launch.is_empty());
+        assert_eq!(again.claims, (0..7).map(|i| (i, i as isize + 100)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn several_workspaces_of_two_monitors_restore_onto_two() {
+        // The same setup with both monitors (the right one primary): nothing folds, and each
+        // entry keeps its monitor and its splits.
+        let s = two_monitors_three_workspaces();
+        let placed = placed(&s, idx, 2, 1);
+        let got: Vec<(usize, usize, bool, bool, usize)> = placed.iter().map(|p| (p.ws, p.mon, p.folded, p.splits, p.start)).collect();
+        assert_eq!(got, vec![(0, 0, false, true, 0), (0, 1, false, true, 0), (1, 1, false, true, 0), (2, 0, false, true, 0)]);
+        // With three monitors, the third is left alone.
+        assert!(plan(&s, &[], idx, 3, 1).slots.iter().all(|sl| sl.mon < 2));
+    }
+
+    #[test]
+    fn one_monitor_setups_restore_onto_the_primary_of_several() {
+        // Made on one monitor (no monitor named), across two workspaces; restored with three
+        // monitors, the middle one primary.
+        let s = Setup { workspaces: vec![ws(1, &["a.exe", "b.exe"]), ws(2, &["c.exe"])], ..dev() };
+        assert_eq!(monitor_count(&s), 1);
+        let p = plan(&s, &[], idx, 3, 1);
+        assert!(p.slots.iter().all(|sl| sl.mon == 1), "{:?}", p.slots);
+        assert!(placed(&s, idx, 3, 1).iter().all(|p| !p.folded && p.splits));
+        // a is open on the left monitor of workspace 1: it's taken, and moves to the primary.
+        let o = vec![OpenWindow { hwnd: 9, exe: "a.exe", ws: 0, mon: 0, place: 0 }];
+        let p = plan(&s, &o, idx, 3, 1);
+        assert_eq!((p.claims.clone(), p.slots[0].mon), (vec![(0, 9)], 1));
+        // On a single monitor it's the same setup.
+        assert!(plan(&s, &[], idx, 1, 0).slots.iter().all(|sl| sl.mon == 0));
+    }
 }

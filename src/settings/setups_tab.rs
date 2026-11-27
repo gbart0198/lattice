@@ -1745,6 +1745,51 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
     }
 
     #[test]
+    fn editing_on_fewer_monitors_keeps_the_setup() {
+        // Made on two monitors across two workspaces, opened in the editor on a laptop.
+        let src = r#"
+            [[setup]]
+            name = "Dev"
+            monitors = 2
+            [[setup.workspace]]
+            number = 1
+            monitor = 1
+            splits = [0.7]
+            apps = [{ exe = "a.exe" }, { exe = "b.exe" }]
+            [[setup.workspace]]
+            number = 1
+            monitor = 2
+            apps = [{ exe = "c.exe" }]
+            [[setup.workspace]]
+            number = 2
+            monitor = 2
+            apps = [{ exe = "d.exe" }]
+        "#;
+        let cfg: config::Config = toml::from_str(src).unwrap();
+        let laptop = vec![Screen { area: Rect::new(0, 0, 1536, 824) }];
+        let mut ed = Editor::load_on(&cfg, laptop, 0);
+        ed.select(0);
+        // Both monitors are there to edit; the second is marked, drawn the laptop's size.
+        assert_eq!(ed.count(), 2);
+        assert!(ed.connected(0) && !ed.connected(1));
+        assert_eq!(ed.area(1), Rect::new(1536, 0, 1536, 824));
+        // Workspace 2's only monitor is the missing one: that's what it opens on.
+        ed.show_ws(2);
+        assert_eq!(ed.mon, 1);
+        // Saving it there writes back what was loaded: nothing folds into the config.
+        let mut doc = DocumentMut::new();
+        write(&mut doc, &ed);
+        let back: config::Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(back.setups[0].monitors, Some(2));
+        let entries: Vec<(usize, Option<usize>, usize, Vec<f32>)> =
+            back.setups[0].workspaces.iter().map(|w| (w.number, w.monitor, w.apps.len(), w.splits.clone())).collect();
+        assert_eq!(entries, vec![(1, Some(1), 2, vec![0.7]), (1, Some(2), 1, vec![]), (2, Some(2), 1, vec![])]);
+        // A new setup made on the laptop is a one-monitor setup.
+        let blank = ed.blank("New".into());
+        assert_eq!(blank.monitors, 1);
+    }
+
+    #[test]
     fn missing_monitors_are_marked() {
         let cfg: config::Config =
             toml::from_str("[[setup]]\nname = \"Big\"\nmonitors = 3\n[[setup.workspace]]\nnumber = 1\nmonitor = 3\napps = [{ exe = \"a.exe\" }]").unwrap();
