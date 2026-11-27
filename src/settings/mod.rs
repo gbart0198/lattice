@@ -13,7 +13,7 @@ use crate::config::{self, Config};
 use crate::update;
 use crate::win;
 
-mod setups_tab;
+mod setups;
 
 const TITLE: &str = "lattice settings";
 const TABS: [&str; 6] = ["General", "Apps", "Setups", "Bar", "Border", "Keybinds"];
@@ -97,7 +97,7 @@ struct S {
     binds: Vec<Bind>,
     next_id: u64,
     // [[setup]]: setups
-    ed: setups_tab::Editor,
+    ed: setups::Editor,
     // UI
     update: update::Status,
     update_gen: u64,
@@ -190,7 +190,7 @@ fn init() -> S {
             .map(|(i, (k, v))| Bind { id: i as u64, chord: TextEdit::new(k), command: TextEdit::new(v) })
             .collect(),
         next_id: n,
-        ed: setups_tab::Editor::load(&cfg),
+        ed: setups::Editor::load(&cfg),
         update: update::Status::Unknown,
         update_gen: 0,
         status: String::new(),
@@ -433,8 +433,8 @@ fn save(s: &mut S) -> Result<String, String> {
     }
 
     write_assignments(&mut doc, &s.apps)?;
-    setups_tab::validate(s)?;
-    setups_tab::write(&mut doc, &s.ed);
+    setups::validate(s)?;
+    setups::write(&mut doc, &s.ed);
 
     // Make sure what we write is a config lattice accepts before touching the file.
     let out = doc.to_string();
@@ -673,12 +673,12 @@ fn update_row(s: &S, p: &P) -> El {
 }
 
 fn setup(_s: &mut S, wake: rune::Waker) {
-    setups_tab::set_waker(wake.clone());
+    setups::set_waker(wake.clone());
     update::set_waker(wake);
 }
 
 fn poll(s: &mut S, _t: f64, _tx: &mut Tx) -> bool {
-    let setups = setups_tab::poll(s);
+    let setups = setups::poll(s);
     let g = update::GEN.load(std::sync::atomic::Ordering::SeqCst);
     if g == s.update_gen {
         return setups;
@@ -952,7 +952,7 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
     let body = match s.tab {
         0 => general_tab(s, &p),
         1 => apps_tab(s, &p),
-        2 => setups_tab::tab(s, &p, &mut overlays),
+        2 => setups::tab(s, &p, &mut overlays),
         3 => bar_tab(s, &p, &mut overlays),
         4 => border_tab(s, &p),
         _ => keybinds_tab(s, &p),
@@ -1057,61 +1057,61 @@ pub fn run() {
                 s.tab = 1;
                 s.apps.push(Assign { id: 9000, origin: None, exe: TextEdit::new("Discord.exe"), title: TextEdit::new(""), ws: 3 });
             }),
-            ("workspaces", |s: &mut S| {
+            ("setups", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
+                setups::sample(s);
             }),
-            ("workspaces-drag", |s: &mut S| {
+            ("setups-drag", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_drag(s);
+                setups::sample(s);
+                setups::sample_drag(s);
             }),
-            ("workspaces-resize", |s: &mut S| {
+            ("setups-resize", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_resize(s);
+                setups::sample(s);
+                setups::sample_resize(s);
             }),
-            ("workspaces-master", |s: &mut S| {
+            ("setups-master", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_master(s);
+                setups::sample(s);
+                setups::sample_master(s);
             }),
-            ("workspaces-add", |s: &mut S| {
+            ("setups-add", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_add(s);
+                setups::sample(s);
+                setups::sample_add(s);
             }),
-            ("workspaces-monitor", |s: &mut S| {
+            ("setups-monitor", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_monitor(s);
+                setups::sample(s);
+                setups::sample_monitor(s);
             }),
-            ("workspaces-missing", |s: &mut S| {
+            ("setups-missing", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_missing(s);
+                setups::sample(s);
+                setups::sample_missing(s);
             }),
-            ("workspaces-one", |s: &mut S| {
+            ("setups-one", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_one(s);
+                setups::sample(s);
+                setups::sample_one(s);
             }),
-            ("workspaces-list", |s: &mut S| {
+            ("setups-list", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_list(s);
+                setups::sample(s);
+                setups::sample_list(s);
             }),
-            ("workspaces-none", |s: &mut S| {
+            ("setups-none", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_none(s);
+                setups::sample(s);
+                setups::sample_none(s);
             }),
-            ("workspaces-add-ws", |s: &mut S| {
+            ("setups-add-ws", |s: &mut S| {
                 s.tab = 2;
-                setups_tab::sample(s);
-                setups_tab::sample_add_ws(s);
+                setups::sample(s);
+                setups::sample_add_ws(s);
             }),
-            ("workspaces-empty", |s: &mut S| {
+            ("setups-empty", |s: &mut S| {
                 s.tab = 2;
                 s.ed.list.clear();
                 s.ed.sel = None;

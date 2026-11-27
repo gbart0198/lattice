@@ -621,7 +621,7 @@ soundtrack.
 | `src/bar.rs` | Rune top bar |
 | `src/border.rs` | Rune focus-border overlay |
 | `src/anim/` | Window animations: easing curves, the animator and its vsync frame clock (`mod.rs`), the live-preview overlay (`dwm.rs`), and the `--animation-preview` demo (`preview.rs`) |
-| `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
+| `src/settings/` | Rune settings window (`--settings`, its own process); edits config.toml with `toml_edit`. The Setups tab is `setups/`: the editor's state (`model.rs`), the layout canvas and its drags (`canvas.rs`), the pages (`view.rs`), saving, capture and restore (`io.rs`), and the sample data for the `--scene setups*` previews (`samples.rs`) |
 | `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |
 | `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), window search ranking (`windows.rs`), command mode's catalog (`commands.rs`) and its power, audio and Wi-Fi actions (`control.rs`), Rune UI (`ui.rs`) |
