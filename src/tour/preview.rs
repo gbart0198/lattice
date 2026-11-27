@@ -52,8 +52,9 @@ static SCENES: &[Scene] = &[
     ("files", |t| open_at(t, 8)),
     ("commands", |t| open_at(t, 9)),
     ("windows", |t| open_at(t, 10)),
-    ("launcher-close", |t| open_at(t, 11)),
-    ("finish", |t| t.step = 12),
+    ("setups", |t| open_at(t, 11)),
+    ("launcher-close", |t| open_at(t, 12)),
+    ("finish", |t| t.step = 13),
 ];
 
 /// A step that points at the launcher, with the launcher drawn open.
@@ -200,11 +201,12 @@ fn bar(p: &Palette) -> El {
 /// The launcher as it looks in the mode a step talks about (by its eyebrow).
 fn launcher_box(p: &Palette, mode: &str) -> El {
     let r = LAUNCHER;
-    let (query, rows): (&str, [&str; 6]) = match mode {
-        "Files" => ("f notes", ["notes.md", "Notes", "meeting-notes.txt", "notes-2026.docx", "release-notes.md", "Notes (Archive)"]),
-        "Commands" => ("> layout", ["Layout: Dwindle", "Layout: Master", "Layout: Monocle", "Toggle floating", "Retile", "Reload config"]),
-        "Windows" => ("", ["Windows Terminal", "Spotify", "Discord", "Firefox", "Settings", "README.md - Visual Studio Code"]),
-        _ => ("vs", ["Visual Studio Code", "Windows Terminal", "Spotify", "Discord", "Firefox", "Settings"]),
+    let (query, rows): (&str, &[&str]) = match mode {
+        "Setups" => ("workspaces", &["Dev", "Deep work", "Writing", "Streaming"]),
+        "Files" => ("f notes", &["notes.md", "Notes", "meeting-notes.txt", "notes-2026.docx", "release-notes.md", "Notes (Archive)"]),
+        "Commands" => ("> layout", &["Layout: Dwindle", "Layout: Master", "Layout: Monocle", "Toggle floating", "Retile", "Reload config"]),
+        "Windows" => ("", &["Windows Terminal", "Spotify", "Discord", "Firefox", "Settings", "README.md - Visual Studio Code"]),
+        _ => ("vs", &["Visual Studio Code", "Windows Terminal", "Spotify", "Discord", "Firefox", "Settings"]),
     };
     let list = rows.iter().enumerate().fold(col().px(8.0).py(8.0), |c, (i, name)| {
         c.child(
