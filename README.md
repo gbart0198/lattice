@@ -21,6 +21,9 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   running, else lattice's own background index of your user folder.
 - **Window search** (Win+J): fuzzy-search the titles and apps of every open window, on every
   workspace and monitor, most recently used first. Enter switches straight to it.
+- **Command mode**: type `>` and a space in the launcher to run commands: layouts, workspaces,
+  float, close, reload, and system ones (lock, sleep, restart, shut down, sign out, audio
+  output, Wi-Fi).
 - **Settings window** (Win+Alt+Comma) for everything above.
 - **Guided tour**: on the first start, a spotlight walks you over your real desktop (the bar,
   workspaces, layouts, the launcher) and waits for you to try each key. Replay it with
@@ -276,6 +279,25 @@ Enter flips back to the previous window, as Alt+Tab does. Enter switches to the 
 workspace and focuses it (restoring it if it's minimized). In the app search, `w` and a space
 does the same (`window_prefix` in `[launcher]`); Backspace on an empty field goes back to apps.
 
+Type `>` and a space for command mode (`command_prefix` in `[launcher]`). The list is fuzzy
+matched like the app search, and arguments are part of each command's name, so `> move 3`
+finds "Move window to workspace 3", `> layout mono` finds "Layout: Monocle" and `> ws 2` finds
+"Go to workspace 2". Enter runs the highlighted one. The commands:
+
+- lattice: Layout: Dwindle / Master / Monocle, Toggle floating, Toggle fullscreen, Close
+  window, Go to workspace N, Move window to workspace N (and follow it), Retile, Reload
+  config, Open settings, Open config file, Quit lattice. Window commands act on the window
+  you were in before opening the launcher.
+- System: Lock, Sleep, Hibernate (only when hibernation is enabled), Restart, Shut down, Sign
+  out. **Restart, Shut down and Sign out take a second Enter**: the first only asks, and the
+  row says what the next one does (Escape or moving the selection cancels). Apps still get to
+  ask about unsaved work; nothing is forced.
+- Audio output: one entry per playback device ("Audio output: Headphones"), which makes it the
+  default for everything, as Windows' sound settings do.
+- Wi-Fi: Turn Wi-Fi on / off, and "Connect to Wi-Fi: <name>" for each saved network (the ones
+  in range when Windows lets lattice see them, which on Windows 11 needs location access for
+  desktop apps; otherwise every saved network is listed).
+
 ### Default keybinds
 
 | Keys | Action |
@@ -350,7 +372,7 @@ soundtrack.
 | `src/settings.rs` | Rune settings window; edits config.toml with `toml_edit` |
 | `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |
-| `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), window search ranking (`windows.rs`), Rune UI (`ui.rs`) |
+| `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), window search ranking (`windows.rs`), command mode's catalog (`commands.rs`) and its power, audio and Wi-Fi actions (`control.rs`), Rune UI (`ui.rs`) |
 | `src/sysinfo.rs` | CPU, memory, battery and clock |
 | `src/config.rs` | Config file, keybind and command parsing |
 | `build.rs` | Draws the app icon and embeds it in the exe |

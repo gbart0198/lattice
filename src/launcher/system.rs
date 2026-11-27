@@ -350,6 +350,11 @@ pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
     Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
 }
 
+/// The foreground window (0 for none).
+pub fn foreground() -> isize {
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
 /// Whether `hwnd` is the foreground window.
 pub fn is_foreground(hwnd: isize) -> bool {
     unsafe { GetForegroundWindow().0 as isize == hwnd }

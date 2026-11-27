@@ -103,6 +103,11 @@ file_prefix = "f"
 # Window search (the `window-search` command, super+j): every open window on every workspace
 # and monitor, most recently used first; Enter switches to it. Or type this prefix and a space.
 window_prefix = "w"
+# Command mode: type this prefix and a space ("> move 3", "> sleep") to run lattice commands
+# (layouts, workspaces, float, close, reload, ...) and system ones (lock, sleep, restart,
+# shut down, sign out, audio output, Wi-Fi). Restart, shut down and sign out ask for a
+# second Enter.
+command_prefix = ">"
 # Enter and Ctrl+Enter on a file, and on a folder. Actions:
 #   "open"       open with the default app (a folder: in Explorer)
 #   "reveal"     open the containing folder with the item selected

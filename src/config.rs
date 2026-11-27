@@ -187,6 +187,8 @@ pub struct Launcher {
     pub file_prefix: String,
     /// Typed before a space to search open windows instead of apps.
     pub window_prefix: String,
+    /// Typed before a space to run commands (layouts, workspaces, power, audio, Wi-Fi).
+    pub command_prefix: String,
     /// What Enter and Ctrl+Enter do with a file, and with a folder: "open", "reveal",
     /// "copy-path" or "exec <command line>" (with {path}, {dir}, {name}).
     pub file_enter: String,
@@ -207,6 +209,7 @@ impl Default for Launcher {
             max_results: 8,
             file_prefix: "f".into(),
             window_prefix: "w".into(),
+            command_prefix: ">".into(),
             file_enter: "open".into(),
             file_ctrl_enter: "reveal".into(),
             folder_enter: "open".into(),
