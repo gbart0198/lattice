@@ -327,6 +327,11 @@ pub fn run(cfg: Config) {
                 Item::Ipc(req) => {
                     use crate::ipc::{Op, query_json};
                     match req.op {
+                        // A setup that doesn't exist is the one command a script can
+                        // name wrong that parses fine, so it's refused here (exit 1).
+                        Op::Msg(Command::RestoreSetup(name)) if config::find_setup(&wm.config().setups, &name).is_none() => {
+                            req.reply.send(Err(format!("no setup called '{name}'")));
+                        }
                         Op::Msg(c) => {
                             wm.command(c);
                             req.reply.send(Ok(serde_json::Value::Null));

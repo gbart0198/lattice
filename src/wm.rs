@@ -16,6 +16,7 @@ use crate::config::{self, AnimStyle, Command, Config, Dir, NewWindow, WsTarget};
 use crate::events;
 use crate::ipc;
 use crate::layout::{self, LayoutKind, Params, Rect};
+use crate::setups;
 use crate::shared::{self, BarModel, WsInfo};
 use crate::win::{self, Hwnd, MonitorInfo};
 
@@ -106,7 +107,25 @@ pub struct Wm {
     events: events::Tracker,
     events_dirty: bool,
     pending_events: Vec<events::Event>,
+    /// The setup being restored, while it waits for apps it started.
+    restore: Option<Restore>,
 }
+
+/// A setup being restored: where its apps go, and which windows fill each spot. Apps
+/// it started take their spot when their window opens, until `until`.
+struct Restore {
+    name: String,
+    slots: Vec<setups::Slot>,
+    filled: Vec<Option<Hwnd>>,
+    /// Each workspace's saved split ratios. Retiling forgets ratios past the last split, so
+    /// they're put back as each window arrives.
+    /// By (workspace, monitor).
+    splits: HashMap<(usize, usize), Vec<f32>>,
+    until: Instant,
+}
+
+/// How long a restore waits for the apps it started to open a window.
+const RESTORE_WAIT: Duration = Duration::from_secs(60);
 
 /// What a directional search can land on: a window, or an empty monitor.
 #[derive(Clone, Copy)]
@@ -136,6 +155,7 @@ impl Wm {
             events: events::Tracker::default(),
             events_dirty: false,
             pending_events: Vec::new(),
+            restore: None,
             cfg,
         };
         wm.build_workspaces();
@@ -144,6 +164,7 @@ impl Wm {
         wm.focused_monitor = wm.monitor_index_at(win::cursor_pos());
         wm.retile(wm.active);
         wm.publish();
+        wm.publish_setups();
         wm
     }
 
@@ -271,12 +292,19 @@ impl Wm {
             floating |= r.float;
             repaint |= r.repaint;
         }
+        // A window of an app a setup is starting takes its spot there (not a splash
+        // screen: those float, and close again).
+        let claim = if runtime && !floating { self.claim_slot(hwnd, &c.exe) } else { None };
         // Every window of a pinned app goes there, splash screens and updaters included (they
         // open hidden on that workspace); you stay where you are.
-        let ws = config::rule_workspace(&self.cfg.rules, &c.exe, &c.class, &c.title)
-            .map(|n| self.ws_index(n))
+        let ws = claim
+            .map(|(ws, _)| ws)
+            .or_else(|| config::rule_workspace(&self.cfg.rules, &c.exe, &c.class, &c.title).map(|n| self.ws_index(n)))
             .unwrap_or(self.active);
-        let mon = mon.unwrap_or(self.focused_monitor);
+        let mon = match claim {
+            Some((_, m)) => m,
+            None => mon.unwrap_or(self.focused_monitor),
+        };
         let minimized = win::is_minimized(hwnd);
         log::info!(
             "manage {hwnd:#x} '{}' ({}, {}) -> ws {} monitor {}{}",
@@ -302,6 +330,10 @@ impl Wm {
                 self.center_floating(hwnd);
             }
         }
+        if claim.is_some() {
+            log::info!("{hwnd:#x} ({}) takes its place in setup '{}'", self.windows[&hwnd].exe, self.restore.as_ref().map_or("", |r| r.name.as_str()));
+            self.arrange_restored();
+        }
         self.retile(ws);
         self.publish();
         true
@@ -315,6 +347,13 @@ impl Wm {
         self.pending_show.remove(&hwnd);
         self.hidden.remove(&hwnd);
         shared::mark_hidden(hwnd, false);
+        // A window that filled a setup's spot (a splash screen, the first window of
+        // an app that opens another) gives it up while the restore still waits.
+        if let Some(r) = self.restore.as_mut() {
+            for f in r.filled.iter_mut().filter(|f| **f == Some(hwnd)) {
+                *f = None;
+            }
+        }
         let ws = &mut self.workspaces[w.ws];
         ws.windows.retain(|x| *x != hwnd);
         if ws.fullscreen == Some(hwnd) {
@@ -1026,6 +1065,7 @@ impl Wm {
                 self.apply_changed_assignments(&old_rules);
                 self.retile(self.active);
                 self.publish();
+                self.publish_setups();
                 log::info!("config reloaded");
             }
             Command::Exec(line) => spawn(&line),
@@ -1045,6 +1085,8 @@ impl Wm {
             }
             Command::Settings => open_settings(),
             Command::Tour => crate::tour::start(),
+            Command::RestoreSetup(name) => self.restore_setup(&name),
+            Command::SetupPicker => crate::launcher::toggle_setups(self.launcher_area()),
             Command::OpenConfig => open_config(),
             Command::Quit => self.quit = true,
         }
@@ -1124,6 +1166,189 @@ impl Wm {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Setups (`setups.rs`)
+
+    /// The primary monitor's index: setups tile there.
+    fn primary_monitor(&self) -> usize {
+        self.monitors.iter().position(|m| m.info.primary).unwrap_or(0)
+    }
+
+    /// Each connected monitor's tiling area, left to right.
+    fn tiling_areas(&self) -> Vec<Rect> {
+        (0..self.monitors.len()).map(|m| self.tiling_area(m)).collect()
+    }
+
+    /// Restores the setup `name`: open windows of its apps move into place, the others
+    /// are started (their windows take their spots as they open, see `claim_slot`), each of its
+    /// workspaces gets its layout, and the first one comes on screen.
+    fn restore_setup(&mut self, name: &str) {
+        let Some(setup) = config::find_setup(&self.cfg.setups, name).cloned() else {
+            log::warn!("restore-setup: no setup called '{name}'");
+            return;
+        };
+        self.cleanup();
+        // Most recently used first: of two open windows of an app, the one you were last in
+        // is the one that moves.
+        let mut open: Vec<(Hwnd, &Window)> = self.windows.iter().filter(|(_, w)| !w.floating).map(|(h, w)| (*h, w)).collect();
+        open.sort_by_key(|(_, w)| std::cmp::Reverse(w.focused_at));
+        let place = |h: Hwnd, ws: usize| self.workspaces[ws].windows.iter().position(|x| *x == h).unwrap_or(usize::MAX);
+        let open_ref: Vec<setups::OpenWindow> = open
+            .iter()
+            .map(|(h, w)| setups::OpenWindow { hwnd: *h, exe: w.exe.as_str(), ws: w.ws, mon: w.mon, place: place(*h, w.ws) })
+            .collect();
+        let (connected, primary) = (self.monitors.len().max(1), self.primary_monitor());
+        let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n), connected, primary);
+        log::info!(
+            "restoring setup '{}': {} in place, starting {}",
+            setup.name, plan.claims.len(), plan.launch.len()
+        );
+        let placed = setups::placed(&setup, |n| self.ws_index(n), connected, primary);
+        let mut missing: Vec<usize> = placed.iter().filter(|p| p.folded && !p.entry.apps.is_empty()).filter_map(|p| p.entry.monitor).collect();
+        missing.sort_unstable();
+        missing.dedup();
+        if !missing.is_empty() {
+            log::info!(
+                "setup '{}' is for {} monitors and {connected} are connected: the apps of monitor {missing:?} go on the primary",
+                setup.name,
+                setups::monitor_count(&setup)
+            );
+        }
+        self.finish_animations();
+        let g = self.cfg.general.clone();
+        let mut saved_splits = HashMap::new();
+        let mut laid_out = Vec::new();
+        for p in &placed {
+            let (w, i, mon) = (p.entry, p.ws, p.mon);
+            let ws = &mut self.workspaces[i];
+            // The layout is the workspace's, on every monitor: its first entry sets it.
+            if !laid_out.contains(&i) {
+                laid_out.push(i);
+                ws.layout = w.layout.unwrap_or(g.layout);
+                ws.master_ratio = w.master_ratio.unwrap_or(g.master_ratio).clamp(0.1, 0.9);
+                ws.split_ratio = g.split_ratio;
+                ws.fullscreen = None;
+            }
+            if p.splits {
+                let splits: Vec<f32> = w.splits.iter().map(|r| r.clamp(0.1, 0.9)).collect();
+                ws.splits.insert(mon, splits.clone());
+                saved_splits.insert((i, mon), splits);
+            }
+        }
+        let mut filled = vec![None; plan.slots.len()];
+        for &(i, h) in &plan.claims {
+            filled[i] = Some(h);
+            let to = plan.slots[i].ws;
+            if self.windows[&h].ws != to {
+                // Into place without sliding: the workspace switch below shows the result.
+                let anim = self.cfg.animations.enabled;
+                self.cfg.animations.enabled = false;
+                self.move_window_to_ws(h, to, to == self.active);
+                self.cfg.animations.enabled = anim;
+            }
+            let mon = plan.slots[i].mon;
+            let w = self.windows.get_mut(&h).expect("claimed window is managed");
+            if w.mon != mon {
+                w.mon = mon;
+                self.workspaces[to].mon_focus.retain(|_, x| *x != h);
+            }
+        }
+        for &i in &plan.launch {
+            spawn(&plan.slots[i].run);
+        }
+        let first = plan.slots.first().map(|s| s.ws);
+        let first_window = plan.slots.iter().zip(&filled).find(|(s, _)| Some(s.ws) == first).and_then(|(_, f)| *f);
+        self.restore = Some(Restore {
+            name: setup.name.clone(),
+            slots: plan.slots,
+            filled,
+            splits: saved_splits,
+            until: Instant::now() + RESTORE_WAIT,
+        });
+        self.arrange_restored();
+        if let Some(ws) = first {
+            if let Some(h) = first_window {
+                self.workspaces[ws].last_focus = Some(h);
+            }
+            if ws != self.active {
+                self.show_workspace(ws);
+            } else {
+                self.retile(ws);
+            }
+            self.focus_active_workspace();
+        }
+        self.retile(self.active);
+        self.publish();
+    }
+
+    /// A spot of the setup being restored for a new window of `exe`, which takes it:
+    /// returns the spot's workspace and monitor.
+    fn claim_slot(&mut self, hwnd: Hwnd, exe: &str) -> Option<(usize, usize)> {
+        let r = self.restore.as_mut()?;
+        if Instant::now() > r.until {
+            self.restore = None;
+            return None;
+        }
+        let i = r.slots.iter().zip(&r.filled).position(|(s, f)| f.is_none() && s.exe.eq_ignore_ascii_case(exe))?;
+        r.filled[i] = Some(hwnd);
+        Some((r.slots[i].ws, r.slots[i].mon))
+    }
+
+    /// Puts the restored windows first on their workspaces, in the saved order.
+    fn arrange_restored(&mut self) {
+        let Some(r) = &self.restore else { return };
+        let mut by_ws: HashMap<usize, Vec<(usize, Hwnd)>> = HashMap::new();
+        for (s, f) in r.slots.iter().zip(&r.filled) {
+            if let Some(h) = f.filter(|h| self.windows.get(h).is_some_and(|w| w.ws == s.ws)) {
+                by_ws.entry(s.ws).or_default().push((s.order, h));
+            }
+        }
+        let saved: Vec<((usize, usize), Vec<f32>)> =
+            r.splits.iter().filter(|((ws, _), _)| by_ws.contains_key(ws)).map(|(k, v)| (*k, v.clone())).collect();
+        for ((ws, mon), splits) in saved {
+            self.workspaces[ws].splits.insert(mon, splits);
+        }
+        for (ws, mut list) in by_ws {
+            list.sort_by_key(|(order, _)| *order);
+            let first: Vec<Hwnd> = list.into_iter().map(|(_, h)| h).collect();
+            self.workspaces[ws].windows = setups::arrange(&self.workspaces[ws].windows, &first);
+            self.retile(ws);
+        }
+    }
+
+    /// Hands the launcher's picker the setups, with a thumbnail of each workspace (all its
+    /// monitors).
+    fn publish_setups(&self) {
+        let d = setups::Defaults::from(&self.cfg.general);
+        let (connected, primary) = (self.tiling_areas(), self.primary_monitor());
+        let entries = self
+            .cfg
+            .setups
+            .iter()
+            .map(|s| crate::launcher::SetupEntry {
+                name: s.name.clone(),
+                key: s.key.clone().unwrap_or_default(),
+                detail: {
+                    // Made for more monitors than are connected: say where the rest go.
+                    let count = setups::monitor_count(s);
+                    if count > 1 && count > connected.len() {
+                        format!("For {count} monitors, {} connected (the rest go on the primary)  \u{b7}  {}", connected.len(), setups::summary(s))
+                    } else {
+                        setups::summary(s)
+                    }
+                },
+                workspaces: {
+                    let areas = setups::monitor_areas(setups::monitor_count(s), &connected, primary);
+                    setups::numbers(&s.workspaces)
+                        .into_iter()
+                        .map(|n| crate::launcher::SetupThumb { number: n, thumb: setups::ws_thumb(s, n, &areas, primary, &d) })
+                        .collect()
+                },
+            })
+            .collect();
+        crate::launcher::set_setups(entries);
     }
 
     // -----------------------------------------------------------------------------------------

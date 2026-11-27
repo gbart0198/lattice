@@ -108,6 +108,9 @@ window_prefix = "w"
 # shut down, sign out, audio output, Wi-Fi). Restart, shut down and sign out ask for a
 # second Enter.
 command_prefix = ">"
+# Setups: type this word (or "setups") on its own to pick one to restore (see [[setup]]
+# below). The `setup-picker` command opens the picker directly. Empty turns the words off.
+setups_keyword = "workspaces"
 # Enter and Ctrl+Enter on a file, and on a folder. Actions:
 #   "open"       open with the default app (a folder: in Explorer)
 #   "reveal"     open the containing folder with the item selected
@@ -257,3 +260,26 @@ float = true
 "super+alt+comma" = "settings"
 "super+ctrl+comma" = "open-config"
 "super+shift+slash" = "tour"
+
+# Setups: a named set of apps, the workspaces they go on, and each workspace's layout.
+# Restoring one moves the apps that are open into place, starts the ones that aren't (with
+# `run`, or the exe), and switches to its first workspace. Restore it with its `key`,
+# `lattice msg restore-setup Dev`, or by typing "workspaces" in the launcher. The settings
+# window's Setups tab edits them with a drag-and-drop layout editor. Each [[setup.workspace]]
+# is one monitor of a workspace: `monitor` counts from the left (from 1), and none is the
+# primary; `monitors` says how many the setup is for. A monitor that isn't connected puts its
+# apps on the primary. Apps tile in `apps` order; `splits` (dwindle) and `master_ratio`
+# (master) are optional.
+# [[setup]]
+# name = "Dev"
+# key = "super+alt+1"
+# monitors = 2
+# [[setup.workspace]]
+# number = 1
+# layout = "dwindle"
+# splits = [0.6]
+# apps = [{ exe = "Code.exe", run = "code" }, { exe = "WindowsTerminal.exe", run = "wt" }]
+# [[setup.workspace]]
+# number = 1
+# monitor = 2
+# apps = [{ exe = "msedge.exe" }]

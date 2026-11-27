@@ -229,6 +229,8 @@ fn shortcut(s: &Tour) -> El {
             .child(text(step.done).wrap().shrink().font(TextStyle::new(13.0, 550.0)).color(p.fg));
     }
     let waits = s.live && step.wait != Wait::Next;
+    // A word to type in the launcher ("workspaces") rather than keys to press.
+    let typed = matches!(step.keys, [w] if w.chars().count() > 1 && w.chars().all(|c| c.is_ascii_lowercase()));
     row()
         .key("try")
         .gap(10.0)
@@ -239,7 +241,7 @@ fn shortcut(s: &Tour) -> El {
         .fill(p.fg.alpha(0.05))
         .border(1.0, if waits { p.accent.alpha(0.35) } else { p.fg.alpha(0.06) })
         .child(
-            text(if waits { "TRY IT" } else { "SHORTCUT" })
+            text(if waits { "TRY IT" } else if typed { "TYPE" } else { "SHORTCUT" })
                 .font(TextStyle::new(10.0, 750.0))
                 .color(if waits { p.accent } else { p.fg.alpha(0.45) }),
         )
