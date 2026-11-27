@@ -433,14 +433,7 @@ fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
             .gap(space::S2)
             .items_center()
             .child(canvas(s, p, &entry(0), d, 0, true))
-            .child(
-                row()
-                    .key("monitor-dots")
-                    .gap(space::S2)
-                    .center_y()
-                    .child(el().key("dot-0").size(18.0, 6.0).radius(3.0).fill(p.accent))
-                    .child(add_monitor_button(p, 1)),
-            );
+            .child(monitor_dots(s, p));
     }
     let pitch = SLIDE_W + SLIDE_GAP;
     // As tall as the tallest monitor's canvas.
@@ -467,9 +460,28 @@ fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
         }
         strip = strip.child(slide);
     }
-    let mut dots = row().key("monitor-dots").gap(2.0).center_y();
+    col()
+        .key("carousel")
+        .w_full()
+        .gap(space::S1)
+        .items_center()
+        .child(row().key("carousel-view").w_full().h(tall + 8.0).justify_center().center_y().clip_fade_linear(28.0, 0.0, 28.0, 0.0).child(strip))
+        .child(monitor_dots(s, p))
+}
+
+/// A dot for each monitor (click to show it), the one shown long and in the middle, and the
+/// "+" after them. The row slides with the carousel to keep the shown dot centred.
+fn monitor_dots(s: &S, p: &P) -> El {
+    const GAP: f32 = 2.0;
+    const PLUS_GAP: f32 = 8.0;
+    const PLUS: f32 = 22.0;
+    let (n, mon) = (s.ed.count(), s.ed.mon);
+    let width = |m: usize| 8.0 + if m == mon { 18.0 } else { 6.0 };
+    let total: f32 = (0..n).map(width).sum::<f32>() + GAP * n as f32 + PLUS_GAP + PLUS;
+    let center = (0..mon).map(|m| width(m) + GAP).sum::<f32>() + width(mon) / 2.0;
+    let mut dots = row().key("monitor-dots").gap(GAP).center_y().motion(SLIDE).offset(total / 2.0 - center, 0.0);
     for m in 0..n {
-        let on = m == ed.mon;
+        let on = m == mon;
         dots = dots.child(
             el().key(format!("dot-{m}"))
                 .px(4.0).py(4.0)
@@ -480,13 +492,7 @@ fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
                 .child(el().size(if on { 18.0 } else { 6.0 }, 6.0).radius(3.0).motion(SLIDE).fill(if on { p.accent } else { p.t.text_secondary.alpha(0.4) })),
         );
     }
-    col()
-        .key("carousel")
-        .w_full()
-        .gap(space::S1)
-        .items_center()
-        .child(row().key("carousel-view").w_full().h(tall + 8.0).justify_center().center_y().clip_fade_linear(28.0, 0.0, 28.0, 0.0).child(strip))
-        .child(dots.child(add_monitor_button(p, n).ml(space::S2)))
+    dots.child(add_monitor_button(p, n).ml(PLUS_GAP))
 }
 
 /// A workspace drawn small in a `bw` × `bh` box: its monitors side by side as they're
