@@ -159,6 +159,16 @@ float = true
 # exe = "Discord.exe"
 # workspace = 3
 
+# Hooks: run a command line when something happens. `on` is an event, a list of them, or "*".
+# Events: startup, config-reloaded, workspace-changed, layout-changed, focus-changed,
+# window-opened, window-closed, window-moved, monitor-changed, display-changed.
+# The command runs through `cmd /C` with LATTICE_EVENT and LATTICE_<FIELD> environment
+# variables set, and gets the event as one line of JSON on stdin. Fields and examples are in
+# the README's "Scripting" section; `lattice msg`, `query` and `subscribe` are there too.
+# [[hook]]
+# on = "workspace-changed"
+# run = "echo %LATTICE_PREVIOUS_WORKSPACE% to %LATTICE_WORKSPACE% >> %TEMP%\\lattice-ws.log"
+
 # Keybinds: "<modifiers>+<key>" = "<command>"
 # Modifiers: super (Windows key), shift, ctrl, alt.
 # Keys: a-z 0-9 f1-f24 return space tab escape backspace delete left right up down

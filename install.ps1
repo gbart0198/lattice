@@ -5,7 +5,8 @@
 .DESCRIPTION
   - builds the release executable (skip with -NoBuild)
   - stops a running lattice cleanly (its hidden windows come back)
-  - copies lattice.exe to %LOCALAPPDATA%\Programs\lattice
+  - copies lattice.exe to %LOCALAPPDATA%\Programs\lattice, with lattice.com for terminals
+  - adds that folder to your PATH, for `lattice msg`, `lattice query` and `lattice subscribe`
   - adds a Start menu shortcut and an "Apps > Installed apps" entry
   - with -Autostart, starts lattice when you sign in
   - starts the installed lattice
@@ -30,15 +31,16 @@ $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\latti
 # 1. Build.
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $src 'target' }
 $built = Join-Path $target 'release\lattice.exe'
+$builtConsole = Join-Path $target 'release\lattice-console.exe'
 if (-not $NoBuild) {
     Write-Host 'Building lattice (release)...'
     Push-Location $src
     # cargo reports progress on stderr, which Windows PowerShell would treat as an error.
     $ErrorActionPreference = 'Continue'
-    try { cmd /c "cargo build --release --bin lattice 2>&1" | Out-Host; if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' } }
+    try { cmd /c "cargo build --release --bin lattice --bin lattice-console 2>&1" | Out-Host; if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' } }
     finally { Pop-Location; $ErrorActionPreference = 'Stop' }
 }
-if (-not (Test-Path $built)) { throw "No build found at $built" }
+foreach ($f in $built, $builtConsole) { if (-not (Test-Path $f)) { throw "No build found at $f" } }
 
 # 2. Stop a running lattice the clean way: closing its bar restores every hidden window.
 Add-Type @"
@@ -68,6 +70,23 @@ foreach ($p in @(Get-Process lattice -ErrorAction SilentlyContinue)) {
 # 3. Install files.
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item $built $exe -Force
+# The terminal's `lattice` (src/bin/lattice-console.rs): Windows runs .com before .exe.
+Copy-Item $builtConsole (Join-Path $dest 'lattice.com') -Force
+# The user PATH, raw: read and written as REG_EXPAND_SZ so entries like %USERPROFILE%\bin keep
+# working ([Environment]::SetEnvironmentVariable would expand them for good).
+function Get-UserPath { (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
+function Set-UserPath($value) {
+    Set-ItemProperty 'HKCU:\Environment' Path $value -Type ExpandString
+    # Tell Explorer, so terminals opened from now on see it.
+    Add-Type -Namespace LatticeEnv -Name Native -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, UIntPtr w, string l, uint f, uint t, out UIntPtr r);'
+    $r = [UIntPtr]::Zero
+    [void][LatticeEnv.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r)
+}
+$userPath = Get-UserPath
+if (-not (($userPath -split ';') | Where-Object { $_.TrimEnd('\') -ieq $dest })) {
+    Set-UserPath ((@($userPath, $dest) | Where-Object { $_ }) -join ';')
+    Write-Host "Added $dest to your PATH (open a new terminal to use ``lattice msg``)."
+}
 Copy-Item (Join-Path $src 'uninstall.ps1') (Join-Path $dest 'uninstall.ps1') -Force
 Copy-Item (Join-Path $src 'README.md') (Join-Path $dest 'README.md') -Force -ErrorAction SilentlyContinue
 

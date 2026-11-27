@@ -25,6 +25,9 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   float, close, reload, and system ones (lock, sleep, restart, shut down, sign out, audio
   output, Wi-Fi).
 - **Settings window** (Win+Alt+Comma) for everything above.
+- **Scripting**: `lattice msg` runs any command from a terminal or script, `lattice query`
+  prints workspaces, windows and monitors as JSON, and `[[hook]]` entries run your commands
+  when you switch workspace, focus or open a window, and more. See [Scripting](#scripting).
 - **Guided tour**: on the first start, a spotlight walks you over your real desktop (the bar,
   workspaces, layouts, the launcher and its file, command and window searches) and waits for you to try each key. Replay it with
   Win+Shift+/.
@@ -34,7 +37,8 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
 Download `lattice-setup-<version>.exe` from the
 [latest release](https://github.com/gbart0198/lattice/releases/latest) and run it. It installs
 for your account only (no admin rights) to `%LOCALAPPDATA%\Programs\lattice`, adds a Start
-menu entry, and can start lattice when you sign in. Run a newer setup to upgrade: it quits the
+menu entry, puts the [`lattice` command](#command-line) on your PATH, and can start lattice
+when you sign in. Run a newer setup to upgrade: it quits the
 running lattice cleanly first. Uninstall from **Settings > Apps > Installed apps**.
 
 The installer isn't code-signed yet, so SmartScreen may warn about it: choose
@@ -109,8 +113,9 @@ $env:CARGO_TARGET_DIR = "C:\lt"; cargo run --release
 ```
 
 The installer builds the release version and copies it to `%LOCALAPPDATA%\Programs\lattice`,
-so no admin rights are needed. It also adds a Start menu shortcut and an entry under
-**Settings > Apps > Installed apps**. Re-run it after pulling or changing the code to update
+so no admin rights are needed. It also adds a Start menu shortcut, an entry under
+**Settings > Apps > Installed apps**, and that folder to your PATH for the
+[`lattice` command](#command-line). Re-run it after pulling or changing the code to update
 the installed copy: it stops the running lattice cleanly first.
 
 If PowerShell refuses to run the script, allow local scripts for your account once:
@@ -331,6 +336,141 @@ of h/j/k/l.
 
 Mouse: drag a tiled window onto another to swap them, or onto another monitor to move it there.
 
+## Scripting
+
+You can drive lattice from outside in two ways. The `lattice` command sends commands to the
+running window manager, asks it what's where, and streams events as they happen. `[[hook]]`
+entries in `config.toml` run your own commands when something changes. Between them you can
+build a status line, rearrange windows from a script, or react to a workspace switch.
+
+### Command line
+
+The installer puts lattice's folder on your PATH, so a new terminal has `lattice` (it runs
+`lattice.com`, a small console front end that waits for `lattice.exe` and passes back its
+output and exit code). These commands talk to the copy that's already running:
+
+| Command | What it does |
+|---|---|
+| `lattice msg <command>` | Runs one command, as if you'd pressed its keybind |
+| `lattice query <what>` | Prints JSON: `workspaces`, `windows`, `monitors`, `focused`, or `state` for all four |
+| `lattice subscribe [event...]` | Prints one JSON line per event until lattice exits or you press Ctrl+C. Name events to get only those |
+
+```powershell
+lattice msg workspace 3
+lattice msg move-to-workspace-silent 2
+lattice msg exec wt.exe -d C:\src
+lattice msg exec notepad "C:\notes\to do.txt"
+lattice query focused
+(lattice query windows | ConvertFrom-Json) | Where-Object exe -eq 'Code.exe'
+lattice subscribe workspace-changed focus-changed
+```
+
+`lattice msg` takes the same commands as keybinds. Its words are joined back into one command
+line, and a word with spaces in it keeps its quotes, as with the file path above. You can also
+pass the whole line as one quoted argument (`lattice msg "workspace 3"`), which is used as
+written.
+
+| Command | Effect |
+|---|---|
+| `focus left\|right\|up\|down` | Focus the window that way (crosses monitors) |
+| `move-window left\|right\|up\|down` | Swap the window that way, or move it to the next monitor |
+| `workspace N\|next\|prev` | Switch workspace |
+| `move-to-workspace N\|next\|prev` | Move the focused window there and follow it |
+| `move-to-workspace-silent N\|next\|prev` | Move the focused window there and stay |
+| `focus-monitor next\|prev` / `move-to-monitor next\|prev` | Focus the next monitor / move the window there |
+| `layout dwindle\|master\|monocle\|next` | Set or cycle the active workspace's layout |
+| `resize left\|right\|up\|down [amount]` | Expand the window that way (`amount`: share of the split, default 0.05) |
+| `toggle-float` / `toggle-fullscreen` / `close` | Act on the focused window |
+| `retile` / `reload` / `quit` | Re-tile everything / reload the config / quit lattice |
+| `exec <command line>` | Start a program, as the Run dialog would |
+| `launcher` / `window-search` / `settings` / `open-config` / `tour` | Open those windows |
+
+Commands go through the same queue as your keypresses, in order, so a `query` straight after a
+`msg` sees its result. `exec` starts the program from lattice, with lattice's environment and
+working folder, not your terminal's.
+
+**What queries return.** Workspaces are numbered from 1, as `workspace N` takes them. Monitors
+are numbered from 0, left to right. Window handles (`hwnd`) are decimal numbers; `lattice
+--list` prints the same handles in hex. Rectangles are
+`{"x", "y", "width", "height"}` in physical pixels.
+
+- `workspaces`: one object per workspace: `index`, `active`, `layout`, `windows` (how many),
+  `monitors` (which monitors hold its windows), `focused` (the window last focused there) and
+  `fullscreen` (a handle, or `null`).
+- `windows`: every window lattice manages, by workspace and then tiling order: `hwnd`, `title`,
+  `exe`, `class`, `workspace`, `monitor`, `floating`, `minimized`, `fullscreen`, `focused` and
+  `rect`.
+- `monitors`: `index`, `primary`, `focused`, `rect`, `work_area` (without the taskbar) and
+  `scale` (1.5 means 150%).
+- `focused`: `workspace`, `monitor`, `layout` and `window` (the focused window's object as in
+  `windows`, or `null`).
+- `state`: `{"workspaces", "windows", "monitors", "focused"}` in one go.
+
+**Exit codes.** 0 on success, 1 if lattice isn't running or refused the request (the reason goes
+to stderr), and 2 for a mistake in the arguments, such as an unknown command or query. A
+lattice running as administrator only takes requests from an elevated terminal.
+
+### Hook events
+
+A `[[hook]]` runs a command line every time one of its events happens:
+
+```toml
+[[hook]]
+on = "workspace-changed"
+run = "powershell -NoProfile -File %USERPROFILE%\\scripts\\on-workspace.ps1"
+
+[[hook]]
+on = ["window-opened", "window-closed"]
+run = "echo %LATTICE_EVENT% %LATTICE_EXE% >> %TEMP%\\lattice-windows.log"
+```
+
+`on` is one event name, a list of them, or `"*"` for every event. `run` goes through
+`cmd /C`, so `%VARIABLES%`, `&&` and `>>` work. Nothing flashes up: hooks run without a
+console window. They run in the background, each on its own, so a slow script never holds up
+tiling; lattice doesn't wait for one to finish before starting the next. A hook gets its event
+two ways:
+
+- as environment variables: `LATTICE_EVENT` with the event name, and `LATTICE_<FIELD>` for each
+  field of that event in the table below (`LATTICE_WORKSPACE`, `LATTICE_EXE`, ...), and no
+  others. `true`/`false` stay as words. In `cmd`, a variable that isn't set prints as its own
+  name (`%LATTICE_LAYOUT%`), so a hook on several events should read only the fields they share.
+- as one line of JSON on stdin, the same object `lattice subscribe` prints:
+  `{"event": "workspace-changed", "workspace": 2, "previous_workspace": 1}`.
+
+Hooks are checked when the config loads: a misspelled event is reported in the log and only
+that hook is skipped. Reloading the config (Win+Shift+R) picks up changed hooks. When a hook
+exits with an error, the log says so. A hook that runs `lattice msg` triggers events of its
+own, so take care not to set off the same hook in a loop.
+
+| Event | When | Fields |
+|---|---|---|
+| `startup` | lattice has started and tiled your windows | `workspace`, `version` |
+| `config-reloaded` | The config was reloaded (Win+Shift+R, or saving in settings) | none |
+| `workspace-changed` | You switched workspace | `workspace`, `previous_workspace` |
+| `layout-changed` | The layout of the workspace on screen changed | `workspace`, `layout`, `previous_layout` |
+| `focus-changed` | Another managed window got the focus | the window's fields |
+| `window-opened` | lattice started managing a window | the window's fields |
+| `window-closed` | A window closed, or lattice stopped managing it | the window's fields, as they last were |
+| `window-moved` | A window went to another workspace or monitor | the window's fields, `previous_workspace`, `previous_monitor` |
+| `monitor-changed` | The focus moved to another monitor | `monitor`, `previous_monitor`, `workspace` |
+| `display-changed` | Monitors were added, removed, moved or resized | `monitors` (how many there are now) |
+
+A window's fields are `hwnd`, `title`, `exe`, `class`, `workspace`, `monitor` and `floating`,
+numbered as in queries.
+
+A few things to know about timing:
+
+- lattice compares its state before and after each burst of activity, so one action reports
+  each change once. Switching workspace with a keybind gives `workspace-changed`, then
+  `focus-changed` for the window you land on.
+- Focus changes wait 100 ms for the focus to settle: Alt+Tabbing past five windows reports
+  only the one you stop on. Focus passing briefly through the bar or the launcher and back
+  isn't reported.
+- Within one burst, windows opening, closing and moving come first, then workspace, layout,
+  display and monitor changes, then focus.
+- Changing a window's title doesn't count as an event; query `windows` when you need the
+  current titles.
+
 ## How workspaces work
 
 A workspace spans all your monitors. Each window belongs to one workspace and to one monitor
@@ -362,6 +502,9 @@ soundtrack.
 | File | Role |
 |---|---|
 | `src/main.rs` | Startup, single-instance check, crash safety, CLI modes |
+| `src/ipc.rs` | `lattice msg`, `query` and `subscribe`: the `WM_COPYDATA` protocol, both ends, and the JSON state queries return |
+| `src/events.rs` | Script events: diffs WM snapshots into events, runs `[[hook]]` commands and feeds subscribers from its own thread |
+| `src/bin/lattice-console.rs` | `lattice.com`, the console front end that lets terminals wait for `lattice.exe` |
 | `src/hooks.rs` | Keyboard hook (on its own thread), WinEvent hooks, the WM thread's message loop and control window |
 | `src/wm.rs` | State machine: windows, workspaces, monitors, commands, events |
 | `src/layout.rs` | Pure layout math (unit-tested) |
@@ -375,7 +518,7 @@ soundtrack.
 | `src/icon.rs` | Extracts app icons for the bar |
 | `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), window search ranking (`windows.rs`), command mode's catalog (`commands.rs`) and its power, audio and Wi-Fi actions (`control.rs`), Rune UI (`ui.rs`) |
 | `src/sysinfo.rs` | CPU, memory, battery and clock |
-| `src/config.rs` | Config file, keybind and command parsing |
+| `src/config.rs` | Config file, keybind, command and hook parsing |
 | `build.rs` | Draws the app icon and embeds it in the exe |
 | `src/bin/teaser.rs` | The teaser video: Rune animation plus synthesized soundtrack |
 

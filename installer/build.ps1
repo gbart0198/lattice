@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Needs Inno Setup 6 (winget install JRSoftware.InnoSetup) on top of the normal build tools.
-  Pass -NoBuild to package an existing target\release\lattice.exe.
+  Pass -NoBuild to package an existing target\release\lattice.exe and lattice-console.exe.
 #>
 param([switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
 $exe = Join-Path $target 'release\lattice.exe'
+$console = Join-Path $target 'release\lattice-console.exe'
 $version = (Select-String -Path (Join-Path $root 'Cargo.toml') -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
 
 if (-not $NoBuild) {
@@ -21,10 +22,10 @@ if (-not $NoBuild) {
     # stderr, which Windows PowerShell would treat as an error.
     Push-Location $root
     $ErrorActionPreference = 'Continue'
-    try { & cargo build --release --bin lattice 2>&1 | ForEach-Object { "$_" } | Out-Host; if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' } }
+    try { & cargo build --release --bin lattice --bin lattice-console 2>&1 | ForEach-Object { "$_" } | Out-Host; if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' } }
     finally { Pop-Location; $ErrorActionPreference = 'Stop' }
 }
-if (-not (Test-Path $exe)) { throw "No build found at $exe" }
+foreach ($f in $exe, $console) { if (-not (Test-Path $f)) { throw "No build found at $f" } }
 
 $iscc = @(
     (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source,
@@ -38,7 +39,7 @@ if (-not $iscc) { throw 'Inno Setup 6 not found. Install it with: winget install
 $icon = Get-ChildItem (Join-Path $target 'release\build\lattice-*\out\lattice.ico') -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-$isccArgs = @("/DAppVersion=$version", "/DExePath=$exe", "/O$(Join-Path $root 'dist')")
+$isccArgs = @("/DAppVersion=$version", "/DExePath=$exe", "/DConsolePath=$console", "/O$(Join-Path $root 'dist')")
 if ($icon) { $isccArgs += "/DIconPath=$($icon.FullName)" }
 & $iscc @isccArgs (Join-Path $PSScriptRoot 'lattice.iss')
 if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }

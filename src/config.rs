@@ -23,6 +23,9 @@ pub struct Config {
     pub animations: Animations,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// `[[hook]]` tables: commands run when something happens (see `events.rs`).
+    #[serde(default, rename = "hook", alias = "hooks")]
+    pub hooks: Vec<Hook>,
     #[serde(default = "default_keybinds")]
     pub keybinds: BTreeMap<String, String>,
 }
@@ -255,6 +258,31 @@ impl Rule {
             .as_ref()
             .is_none_or(|t| title.to_lowercase().contains(&t.to_lowercase()));
         eq(&self.exe, exe) && eq(&self.class, class) && title_ok
+    }
+}
+
+/// `[[hook]]`: run a command line when an event happens. `on` is one event name, a list of
+/// them, or "*" for all. Names are checked when the hooks are installed (`events::compile`),
+/// so one bad hook is reported and skipped instead of failing the whole config.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Hook {
+    pub on: HookOn,
+    pub run: String,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum HookOn {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl HookOn {
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            HookOn::One(s) => vec![s.as_str()],
+            HookOn::Many(v) => v.iter().map(String::as_str).collect(),
+        }
     }
 }
 
@@ -604,6 +632,29 @@ mod tests {
         let style_only = toml::from_str::<Config>("[animations]\nenabled = true").unwrap();
         assert_eq!(style_only.animations.active(), Some(AnimStyle::Fancy));
         assert!(toml::from_str::<Config>("[animations]\nstyle = \"wobbly\"").is_err());
+    }
+
+    #[test]
+    fn hooks_parse() {
+        assert!(Config::default().hooks.is_empty());
+        let cfg = toml::from_str::<Config>(
+            r#"
+            [[hook]]
+            on = "workspace-changed"
+            run = "echo hi"
+            [[hook]]
+            on = ["window-opened", "window-closed"]
+            run = "echo two"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.hooks.len(), 2);
+        assert_eq!(cfg.hooks[0].on.names(), ["workspace-changed"]);
+        assert_eq!(cfg.hooks[1].on.names(), ["window-opened", "window-closed"]);
+        assert_eq!(cfg.hooks[1].run, "echo two");
+        let plural = toml::from_str::<Config>("[[hooks]]\non = \"*\"\nrun = \"x\"").unwrap();
+        assert_eq!(plural.hooks.len(), 1);
+        assert!(toml::from_str::<Config>("[[hook]]\non = \"startup\"").is_err(), "run is required");
     }
 
     #[test]

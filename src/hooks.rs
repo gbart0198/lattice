@@ -24,6 +24,8 @@ use crate::wm::{Event, Wm};
 enum Item {
     Event(Event),
     Command(Command),
+    /// From `lattice msg` / `lattice query` (`ipc.rs`): answered once handled.
+    Ipc(crate::ipc::Request),
 }
 
 thread_local! {
@@ -221,6 +223,14 @@ unsafe extern "system" fn display_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         push(Item::Command(Command::Reload));
         return LRESULT(0);
     }
+    if msg == WM_COPYDATA {
+        match crate::ipc::receive(wp, lp) {
+            crate::ipc::Received::Queue(req) => push(Item::Ipc(req)),
+            crate::ipc::Received::Handled => {}
+            crate::ipc::Received::NotOurs => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+        }
+        return LRESULT(1);
+    }
     if msg == WM_CLOSE {
         push(Item::Command(Command::Quit));
         return LRESULT(0);
@@ -271,6 +281,7 @@ pub fn run(cfg: Config) {
         shared::set_wm_thread(GetCurrentThreadId());
     }
     install_keymap(&cfg);
+    crate::events::set_hooks(&cfg.hooks);
     spawn_keyboard_thread();
     create_display_listener();
 
@@ -290,6 +301,7 @@ pub fn run(cfg: Config) {
         .collect();
 
     let mut wm = Wm::new(cfg);
+    wm.start_events();
     log::info!("lattice running");
 
     let mut msg = MSG::default();
@@ -312,6 +324,18 @@ pub fn run(cfg: Config) {
             match item {
                 Item::Event(e) => wm.event(e),
                 Item::Command(c) => wm.command(c),
+                Item::Ipc(req) => {
+                    use crate::ipc::{Op, query_json};
+                    match req.op {
+                        Op::Msg(c) => {
+                            wm.command(c);
+                            req.reply.send(Ok(serde_json::Value::Null));
+                        }
+                        Op::Query(q) => req.reply.send(Ok(query_json(&wm.state(true), q))),
+                        // Answered by `ipc::receive`; never queued.
+                        Op::Subscribe => {}
+                    }
+                }
             }
             if wm.reload_keymap {
                 wm.reload_keymap = false;
@@ -329,6 +353,7 @@ pub fn run(cfg: Config) {
         // Once per batch, not per item: a drag queues dozens of location changes, and a
         // workspace switch hides and shows every window on two workspaces.
         wm.update_border();
+        wm.emit_events();
         shared::flush_hidden();
     }
 
