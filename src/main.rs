@@ -17,6 +17,7 @@ mod ipc;
 mod launcher;
 mod layout;
 mod logger;
+mod persist;
 mod shared;
 mod settings;
 mod setups;
