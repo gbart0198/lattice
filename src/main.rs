@@ -19,6 +19,7 @@ mod layout;
 mod logger;
 mod shared;
 mod settings;
+mod setups;
 mod sysinfo;
 mod tour;
 mod update;
@@ -53,6 +54,8 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-previ
   --animation-preview SCENE [fast]  play an animation (move, swap, workspace, fullscreen,
                   minimize) over demo windows in the middle of the screen, then exit. Uses the
                   fancy style unless `fast` is given; touches no other window
+  --launcher-preview  show the launcher's setup picker over sample data (debug
+                  builds: add --snap out.png --scene setups)
   --update-preview  show the update notice with a made-up release (changes nothing)
   --launcher-bench  open and dismiss the launcher on its own and print how long each open and
                   keystroke takes (takes the focus while it runs). --cycles N (8), --gap MS
@@ -60,7 +63,8 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-previ
   --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
 
 Scripting a running lattice:
-  msg COMMAND     run a command as a keybind would (`lattice msg workspace 3`)
+  msg COMMAND     run a command as a keybind would (`lattice msg workspace 3`,
+                  `lattice msg restore-setup Dev` for a setup)
   query WHAT      print JSON: workspaces, windows, monitors, focused, or state (all of them)
   subscribe [EVENT...]  print one JSON line per event (all, or the ones named) until Ctrl+C
                   Events: startup, config-reloaded, workspace-changed, layout-changed,
@@ -153,6 +157,10 @@ fn launcher_options(cfg: &config::Config) -> launcher::Options {
         commands: launcher::CommandOptions {
             prefix: cfg.launcher.command_prefix.trim().to_string(),
             host: launcher_commands(cfg.general.workspaces),
+        },
+        setups: launcher::SetupOptions {
+            keyword: cfg.launcher.setups_keyword.trim().to_string(),
+            restore: std::sync::Arc::new(|name| shared::send_command(config::Command::RestoreSetup(name))),
         },
     }
 }
@@ -319,6 +327,11 @@ fn main() {
         let opts = launcher_options(&config::load());
         let ms = std::time::Duration::from_millis;
         launcher::bench(opts, num("--cycles", 8) as usize, ms(num("--gap", 1000)), ms(num("--settle", 250)));
+        return;
+    }
+    if has("--launcher-preview") {
+        // The launcher alone over sample setups (`--scene setups`), for screenshots.
+        launcher::preview(launcher_options(&config::load()));
         return;
     }
     if has("--animation-preview") {

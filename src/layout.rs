@@ -192,6 +192,55 @@ pub fn resize_target(kind: LayoutKind, area: Rect, n: usize, k: usize, p: &Param
     }
 }
 
+/// A boundary between tiles that a ratio sets: dragging it changes `target`. The ratio is where
+/// the seam sits across `region` (its width when `vertical`, else its height).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seam {
+    pub target: ResizeTarget,
+    pub vertical: bool,
+    pub region: Rect,
+    pub ratio: f32,
+}
+
+impl Seam {
+    /// The ratio that puts the seam at `pos` (an x for a vertical seam, else a y).
+    pub fn ratio_at(&self, pos: f32) -> f32 {
+        let (start, len) = if self.vertical { (self.region.x, self.region.w) } else { (self.region.y, self.region.h) };
+        ((pos - start as f32) / len.max(1) as f32).clamp(0.1, 0.9)
+    }
+
+    /// Where the seam is: an x for a vertical seam, else a y.
+    pub fn pos(&self) -> f32 {
+        if self.vertical {
+            self.region.x as f32 + self.region.w as f32 * self.ratio
+        } else {
+            self.region.y as f32 + self.region.h as f32 * self.ratio
+        }
+    }
+}
+
+/// Every seam of `n` tiles laid out by `tile`, in the area gaps leave (each seam runs down the
+/// middle of the gap between its tiles). Monocle has none.
+pub fn seams(kind: LayoutKind, area: Rect, n: usize, p: &Params) -> Vec<Seam> {
+    let inner = p.inner(area);
+    match kind {
+        LayoutKind::Monocle => Vec::new(),
+        LayoutKind::Master if n >= 2 => vec![Seam { target: ResizeTarget::Master, vertical: true, region: inner, ratio: p.ratio }],
+        LayoutKind::Master => Vec::new(),
+        LayoutKind::Dwindle => {
+            let mut out = Vec::new();
+            let mut rest = inner;
+            for i in 0..n.saturating_sub(1) {
+                let vertical = rest.w > rest.h;
+                let ratio = p.split_ratio(i);
+                out.push(Seam { target: ResizeTarget::Split(i), vertical, region: rest, ratio });
+                rest = split(rest, ratio, vertical).1;
+            }
+            out
+        }
+    }
+}
+
 /// Moves a ratio's boundary `amount` toward `dir`: right/down grows the first half.
 pub fn nudge(ratio: f32, dir: Dir, amount: f32) -> f32 {
     let d = if matches!(dir, Dir::Right | Dir::Down) { amount } else { -amount };
@@ -283,6 +332,24 @@ mod tests {
         // Window 3's top edge is split 1 (not split 2, which is vertical), its bottom split 3.
         assert_eq!(target(LayoutKind::Dwindle, 5, 3, Dir::Up), Some(Split(1)));
         assert_eq!(target(LayoutKind::Dwindle, 5, 3, Dir::Down), Some(Split(3)));
+    }
+
+    #[test]
+    fn seams_follow_the_tiles() {
+        let p = Params { splits: &[0.6], ..P };
+        let s = seams(LayoutKind::Dwindle, WIDE, 3, &p);
+        assert_eq!(s.len(), 2);
+        assert!(s[0].vertical && !s[1].vertical);
+        let tiles = tile(LayoutKind::Dwindle, WIDE, 3, &p);
+        assert_eq!(s[0].pos(), tiles[0].right() as f32);
+        assert_eq!(s[1].pos(), tiles[1].bottom() as f32);
+        assert_eq!(s[1].region, Rect::new(600, 0, 400, 500));
+        assert_eq!(s[0].ratio_at(250.0), 0.25);
+        assert_eq!(s[0].ratio_at(-50.0), 0.1, "clamped");
+        let m = seams(LayoutKind::Master, WIDE, 3, &Params { ratio: 0.55, ..P });
+        assert_eq!(m, vec![Seam { target: ResizeTarget::Master, vertical: true, region: WIDE, ratio: 0.55 }]);
+        assert!(seams(LayoutKind::Master, WIDE, 1, &P).is_empty());
+        assert!(seams(LayoutKind::Monocle, WIDE, 3, &P).is_empty());
     }
 
     #[test]

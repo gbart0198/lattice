@@ -458,6 +458,17 @@ impl Client {
     }
 }
 
+/// One request to the running lattice from another of our own programs (the settings window):
+/// `op` is "msg" or "query". Waits up to 5 s for the answer; blocks, so not on a UI thread.
+pub fn request(op: &str, arg: &str) -> Result<Value, String> {
+    let client = Client::connect()?;
+    match client.call(op, arg, Duration::from_secs(5)) {
+        Waited::Got(r) => r,
+        Waited::TimedOut => Err("lattice didn't answer in time".into()),
+        Waited::Gone => Err("lattice exited before answering".into()),
+    }
+}
+
 /// `lattice msg` arguments back into one command line: a single argument is used as given;
 /// several are joined, quoting any that hold spaces (the shell took their quotes off).
 pub fn join_args(args: &[String]) -> String {

@@ -47,7 +47,7 @@ fn launcher_steps_sit_between_opening_and_closing_it() {
             assert!(open < i && i <= close, "step {i} ({}) points at the launcher outside it", s.title);
         }
     }
-    for mode in ["Apps", "Files", "Commands", "Windows"] {
+    for mode in ["Apps", "Files", "Commands", "Windows", "Setups"] {
         assert!(STEPS[open..close].iter().any(|s| s.eyebrow == mode), "no {mode} step");
     }
 }

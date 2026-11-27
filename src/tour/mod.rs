@@ -1,6 +1,6 @@
 //! The product tour: a guided walk over the real desktop. A dimmed, click-through overlay cuts a
 //! glowing spotlight around one thing at a time (the bar's workspaces, the layout button, the
-//! focused window, the launcher and its app, file, command and window searches) and a card
+//! focused window, the launcher and its app, file, command, window and setup searches) and a card
 //! beside it says what it is. Steps that teach a key wait for you to press it ("Press Win+2")
 //! and move on when lattice reports it happened; every step also has a Next button.
 //!
@@ -200,6 +200,18 @@ pub const STEPS: &[Step] = &[
                flips back to the last one.",
         keys: &["Win", "J"],
         keys_label: "search open windows",
+        wait: Wait::Next,
+        done: "",
+    },
+    Step {
+        anchor: Some(Anchor::Launcher),
+        eyebrow: "Setups",
+        title: "Your whole desk in one go",
+        body: "Save a set of apps with their workspaces, monitors and layout, like Dev: editor and terminal \
+               on 1, browser on 2. Restoring it opens what isn't running and puts everything in place. Make \
+               them on the Setups tab in Settings.",
+        keys: &["workspaces"],
+        keys_label: "pick a setup to restore",
         wait: Wait::Next,
         done: "",
     },

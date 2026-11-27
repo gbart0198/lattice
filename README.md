@@ -206,6 +206,87 @@ apply to new windows and to windows already open when lattice starts; when you s
 open windows move only if their app's rule is new or changed, so a window you moved by hand
 stays put.
 
+### Setups
+
+A setup is a set of apps, the workspaces they go on, and how each of those workspaces is
+laid out. Say "Dev": the editor and a terminal side by side on workspace 1, the browser on 2,
+Slack on 3. Restoring it moves the apps that are already open into place, starts the ones
+that aren't, gives each workspace its layout and split sizes, and switches you to its first
+workspace. Apps it starts take their spot as their window opens (for up to a minute), so a
+slow app still lands in the right place.
+
+Make and edit them on the **Setups** tab of the settings window. It lists your setups;
+**New setup** starts an empty one, **Save what's open as a setup** makes one from the windows
+you have open, and clicking one opens it:
+
+- Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
+- A card for each workspace the setup uses shows that workspace's layout and the apps it puts
+  there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
+- A setup is laid out for one or more monitors: **+ Add monitor** and **Remove monitor** (which
+  takes that monitor's apps with it) change how many; a new setup starts with the monitors you
+  have. A workspace spans them all and each tiles its own windows, so the editor is a carousel:
+  the monitor you're editing in the middle, the others either side to click or step to with
+  ‹ ›.
+- The layout editor shows that monitor as lattice will tile it, one box per app. Drag a box
+  onto another to swap them. Drag the gap between two boxes to resize them; the split shows as
+  a percentage while you drag. Pick dwindle, master or monocle (for the whole workspace, as in
+  lattice).
+- **+ Add app** lists the programs you have open (or "Other program…" to type one in). It
+  drops in exactly where a new window would: after the selected box with `new_window =
+  "after_focused"`, else at the end.
+- Click a box and the strip under the editor edits it: its program, the command line that
+  starts it, which workspace and monitor it's on, or remove it.
+- **Restore** saves and restores it right away; **‹ Setups** goes back to the list.
+
+Restore one with its shortcut, by typing `workspaces` or `setups` in the launcher (a picker
+with a thumbnail of each layout; type to filter, Enter to restore), with the `setup-picker`
+command, or from a script: `lattice msg restore-setup Dev`. They're stored as `[[setup]]`
+tables at the end of the config:
+
+```toml
+[[setup]]
+name = "Dev"
+key = "super+alt+1"
+monitors = 2
+
+[[setup.workspace]]
+number = 1
+monitor = 1
+layout = "dwindle"
+splits = [0.6]
+apps = [
+  { exe = "Code.exe", run = "code" },
+  { exe = "WindowsTerminal.exe", run = "wt" },
+]
+
+# The browser on the second monitor (from the left) of workspace 1.
+[[setup.workspace]]
+number = 1
+monitor = 2
+apps = [{ exe = "msedge.exe" }]
+
+[[setup.workspace]]
+number = 2
+apps = [{ exe = "slack.exe" }]
+```
+
+Each `[[setup.workspace]]` is one monitor of a workspace: `monitor` counts from the left, as
+`lattice query monitors` lists them (but from 1), and leaving it out means your primary
+monitor. `monitors = N` on the `[[setup]]` says how many it's laid out for (by default the
+highest `monitor` it names). `splits` are that monitor's; `layout` and `master_ratio` are the
+workspace's.
+
+A one-monitor setup always goes on your primary monitor, however many you have. One made for
+more monitors than are connected still restores: the apps of a missing monitor join your
+primary's, after its own, and the launcher's picker says so.
+
+Windows are matched by `exe`, the program's file name (as `lattice --list` shows it). An open
+window already where it goes stays there, and one already on the right monitor stays on it;
+otherwise the one you used last moves.
+`run` is the command line that starts the app (`run` defaults to `exe`). Some apps start
+through another program: Discord's own shortcut runs `Update.exe --processStart Discord.exe`,
+so use that as `run` with `exe = "Discord.exe"`.
+
 ### The bar
 
 The bar shows your workspaces with the icons of the apps on each. Set `app_display` to
@@ -284,6 +365,10 @@ an empty search they're listed most recently used first, the one you're in last,
 Enter flips back to the previous window, as Alt+Tab does. Enter switches to the window's
 workspace and focuses it (restoring it if it's minimized). In the app search, `w` and a space
 does the same (`window_prefix` in `[launcher]`); Backspace on an empty field goes back to apps.
+
+Type `workspaces` (or `setups`) to pick a [setup](#setups) to restore: each one with a
+thumbnail of its layouts, what's in it and its shortcut. Keep typing to filter, Enter restores.
+The word is `setups_keyword` in `[launcher]`.
 
 Type `>` and a space for command mode (`command_prefix` in `[launcher]`). The list is fuzzy
 matched like the app search, and arguments are part of each command's name, so `> move 3`
@@ -384,7 +469,8 @@ written.
 | `focus-window <hwnd>` | Focus that window, switching to its workspace |
 | `retile` / `reload` / `quit` | Re-tile everything / reload the config / quit lattice |
 | `exec <command line>` | Start a program, as the Run dialog would |
-| `launcher` / `window-search` / `settings` / `open-config` / `tour` | Open those windows |
+| `restore-setup <name>` | Restore a [setup](#setups) (any case; quotes are optional) |
+| `launcher` / `window-search` / `setup-picker` / `settings` / `open-config` / `tour` | Open those windows (`setup-picker`: the launcher's setup picker) |
 
 **Naming a window.** Commands marked `[hwnd]` act on the focused window, or on the window
 whose handle you give, as `lattice query windows` prints it (`0x` hex works too). A handle
@@ -542,5 +628,9 @@ soundtrack.
 - A window that runs as administrator can be moved only if lattice is also elevated.
 - Resizing tiled windows with the mouse isn't supported yet: they snap back. Use Win+= and
   Win+− instead.
+- Setups match apps by program file name, so they can't tell apart two windows of a Store app
+  (all are `ApplicationFrameHost.exe`). Monitors are numbered by position, so after you
+  rearrange your displays a setup's monitor 2 may be a different screen; with fewer monitors
+  than a setup was made for, the missing ones' apps share the primary.
 - Apps with a large minimum size can't shrink to small tiles and overflow them. Spread windows
   across monitors or workspaces, or use the `master` layout.
