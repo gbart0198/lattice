@@ -332,10 +332,14 @@ pub fn run(cfg: Config) {
                         Op::Msg(Command::RestoreSetup(name)) if config::find_setup(&wm.config().setups, &name).is_none() => {
                             req.reply.send(Err(format!("no setup called '{name}'")));
                         }
-                        Op::Msg(c) => {
-                            wm.command(c);
-                            req.reply.send(Ok(serde_json::Value::Null));
-                        }
+                        // So is a window lattice doesn't manage (`close 1234`).
+                        Op::Msg(c) => match wm.check_command(&c) {
+                            Ok(()) => {
+                                wm.command(c);
+                                req.reply.send(Ok(serde_json::Value::Null));
+                            }
+                            Err(e) => req.reply.send(Err(e)),
+                        },
                         Op::Query(q) => req.reply.send(Ok(query_json(&wm.state(true), q))),
                         // Answered by `ipc::receive`; never queued.
                         Op::Subscribe => {}

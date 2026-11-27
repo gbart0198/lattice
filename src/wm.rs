@@ -255,6 +255,23 @@ impl Wm {
         self.windows.contains_key(&fg).then_some(fg)
     }
 
+    /// The window a command acts on: the one it names (if lattice manages it), else the
+    /// focused one.
+    fn target_window(&self, named: Option<Hwnd>) -> Option<Hwnd> {
+        match named {
+            Some(h) => self.windows.contains_key(&h).then_some(h),
+            None => self.focused_window(),
+        }
+    }
+
+    /// Why a command from `lattice msg` can't run: it names a window lattice doesn't manage.
+    pub fn check_command(&self, cmd: &Command) -> Result<(), String> {
+        match cmd.window() {
+            Some(h) if !self.windows.contains_key(&h) => Err(format!("lattice doesn't manage a window {h} (see `lattice query windows`)")),
+            _ => Ok(()),
+        }
+    }
+
     /// A rule's 1-based workspace number as an index, clamped to the workspaces there are.
     fn ws_index(&self, n: usize) -> usize {
         n.saturating_sub(1).min(self.workspaces.len() - 1)
@@ -974,15 +991,18 @@ impl Wm {
                 let ws = self.resolve(t);
                 self.switch_to_workspace(ws);
             }
-            Command::MoveToWorkspace { target, follow } => {
+            Command::MoveToWorkspace { target, follow, window } => {
                 let to = self.resolve(target);
-                let Some(h) = self.focused_window() else { return };
+                let Some(h) = self.target_window(window) else { return };
                 let mon = self.windows[&h].mon;
+                // A window named by hwnd may not be the one you're in: moving it silently
+                // leaves your focus alone.
+                let had_focus = self.focused_window() == Some(h);
                 self.move_window_to_ws(h, to, follow);
                 if follow {
                     self.switch_to_workspace(to);
                     self.focus(h);
-                } else {
+                } else if had_focus {
                     self.focus_monitor_window(mon);
                 }
                 self.publish();
@@ -1008,18 +1028,19 @@ impl Wm {
                 self.publish();
             }
             Command::ResizeDir(dir, amount) => self.resize_dir(dir, amount),
-            Command::ToggleFloat => {
-                let Some(h) = self.focused_window() else { return };
+            Command::ToggleFloat(window) => {
+                let Some(h) = self.target_window(window) else { return };
                 let w = self.windows.get_mut(&h).unwrap();
                 w.floating = !w.floating;
                 let (ws, floating) = (w.ws, w.floating);
-                if floating {
+                // One on a hidden workspace keeps its spot until it's back on screen.
+                if floating && ws == self.active {
                     self.center_floating(h);
                 }
                 self.retile(ws);
             }
-            Command::ToggleFullscreen => {
-                let Some(h) = self.focused_window() else { return };
+            Command::ToggleFullscreen(window) => {
+                let Some(h) = self.target_window(window) else { return };
                 let ws = self.windows[&h].ws;
                 let w = &mut self.workspaces[ws];
                 w.fullscreen = if w.fullscreen == Some(h) { None } else { Some(h) };
@@ -1028,7 +1049,13 @@ impl Wm {
                 }
                 self.retile(ws);
             }
-            Command::Close => {
+            Command::Close(Some(h)) => {
+                // Only a window lattice manages: a stale handle can't close something else.
+                if self.windows.contains_key(&h) {
+                    win::close(h);
+                }
+            }
+            Command::Close(None) => {
                 let fg = win::foreground();
                 if self.windows.contains_key(&fg) || win::candidate(fg).is_some() {
                     win::close(fg);
