@@ -375,15 +375,29 @@ written.
 | `focus left\|right\|up\|down` | Focus the window that way (crosses monitors) |
 | `move-window left\|right\|up\|down` | Swap the window that way, or move it to the next monitor |
 | `workspace N\|next\|prev` | Switch workspace |
-| `move-to-workspace N\|next\|prev` | Move the focused window there and follow it |
-| `move-to-workspace-silent N\|next\|prev` | Move the focused window there and stay |
+| `move-to-workspace N\|next\|prev [hwnd]` | Move the window there and follow it |
+| `move-to-workspace-silent N\|next\|prev [hwnd]` | Move the window there and stay |
 | `focus-monitor next\|prev` / `move-to-monitor next\|prev` | Focus the next monitor / move the window there |
 | `layout dwindle\|master\|monocle\|next` | Set or cycle the active workspace's layout |
 | `resize left\|right\|up\|down [amount]` | Expand the window that way (`amount`: share of the split, default 0.05) |
-| `toggle-float` / `toggle-fullscreen` / `close` | Act on the focused window |
+| `toggle-float [hwnd]` / `toggle-fullscreen [hwnd]` / `close [hwnd]` | Act on the window |
+| `focus-window <hwnd>` | Focus that window, switching to its workspace |
 | `retile` / `reload` / `quit` | Re-tile everything / reload the config / quit lattice |
 | `exec <command line>` | Start a program, as the Run dialog would |
 | `launcher` / `window-search` / `settings` / `open-config` / `tour` | Open those windows |
+
+**Naming a window.** Commands marked `[hwnd]` act on the focused window, or on the window
+whose handle you give, as `lattice query windows` prints it (`0x` hex works too). A handle
+lattice doesn't manage fails with exit code 1 and changes nothing, so a script can't close the
+wrong window by accident. Moving a window you named with `move-to-workspace-silent` leaves
+your focus where it is.
+
+```powershell
+# Close every Edge window on workspace 7
+lattice query windows | ConvertFrom-Json |
+  Where-Object { $_.exe -eq 'msedge.exe' -and $_.workspace -eq 7 } |
+  ForEach-Object { lattice msg close $_.hwnd }
+```
 
 Commands go through the same queue as your keypresses, in order, so a `query` straight after a
 `msg` sees its result. `exec` starts the program from lattice, with lattice's environment and

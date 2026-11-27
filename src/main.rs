@@ -175,15 +175,15 @@ fn launcher_commands(workspaces: usize) -> Vec<launcher::HostCommand> {
         let title = format!("Layout: {}{}", name[..1].to_uppercase(), &name[1..]);
         out.push(cmd(title, "Tile this workspace with it", &[], false, Command::Layout(Some(kind))));
     }
-    out.push(cmd("Toggle floating".into(), "Float the window, or tile it again", &["float"], true, Command::ToggleFloat));
-    out.push(cmd("Toggle fullscreen".into(), "Fill the tiling area with the window", &[], true, Command::ToggleFullscreen));
-    out.push(cmd("Close window".into(), "Close the focused window", &["kill"], true, Command::Close));
+    out.push(cmd("Toggle floating".into(), "Float the window, or tile it again", &["float"], true, Command::ToggleFloat(None)));
+    out.push(cmd("Toggle fullscreen".into(), "Fill the tiling area with the window", &[], true, Command::ToggleFullscreen(None)));
+    out.push(cmd("Close window".into(), "Close the focused window", &["kill"], true, Command::Close(None)));
     for n in 1..=workspaces {
         out.push(cmd(format!("Go to workspace {n}"), "Switch workspace", &[], false, Command::Workspace(WsTarget::Index(n - 1))));
     }
     for n in 1..=workspaces {
         let target = WsTarget::Index(n - 1);
-        out.push(cmd(format!("Move window to workspace {n}"), "And follow it there", &["send"], true, Command::MoveToWorkspace { target, follow: true }));
+        out.push(cmd(format!("Move window to workspace {n}"), "And follow it there", &["send"], true, Command::MoveToWorkspace { target, follow: true, window: None }));
     }
     out.push(cmd("Retile".into(), "Re-adopt windows and lay them out again", &[], false, Command::Retile));
     out.push(cmd("Reload config".into(), "Read config.toml again", &[], false, Command::Reload));

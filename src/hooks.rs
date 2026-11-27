@@ -327,10 +327,13 @@ pub fn run(cfg: Config) {
                 Item::Ipc(req) => {
                     use crate::ipc::{Op, query_json};
                     match req.op {
-                        Op::Msg(c) => {
-                            wm.command(c);
-                            req.reply.send(Ok(serde_json::Value::Null));
-                        }
+                        Op::Msg(c) => match wm.check_command(&c) {
+                            Ok(()) => {
+                                wm.command(c);
+                                req.reply.send(Ok(serde_json::Value::Null));
+                            }
+                            Err(e) => req.reply.send(Err(e)),
+                        },
                         Op::Query(q) => req.reply.send(Ok(query_json(&wm.state(true), q))),
                         // Answered by `ipc::receive`; never queued.
                         Op::Subscribe => {}

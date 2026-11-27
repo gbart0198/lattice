@@ -384,15 +384,17 @@ pub enum Command {
     Focus(Dir),
     MoveWindow(Dir),
     Workspace(WsTarget),
-    MoveToWorkspace { target: WsTarget, follow: bool },
+    /// `window`: the window to move (`lattice msg`, by hwnd); `None` is the focused one.
+    MoveToWorkspace { target: WsTarget, follow: bool, window: Option<crate::win::Hwnd> },
     FocusMonitor(i32),
     MoveToMonitor(i32),
     Layout(Option<LayoutKind>),
     /// Expand the focused window toward a side by a ratio step (see `layout::resize_target`).
     ResizeDir(Dir, f32),
-    ToggleFloat,
-    ToggleFullscreen,
-    Close,
+    /// These three act on the given window (`lattice msg`, by hwnd), else the focused one.
+    ToggleFloat(Option<crate::win::Hwnd>),
+    ToggleFullscreen(Option<crate::win::Hwnd>),
+    Close(Option<crate::win::Hwnd>),
     Retile,
     Reload,
     Exec(String),
@@ -400,7 +402,8 @@ pub enum Command {
     Launcher,
     /// Show or hide the launcher searching every open window.
     WindowSearch,
-    /// Switch to this window, its workspace and monitor (sent by the launcher, not bindable).
+    /// Switch to this window, its workspace and monitor (sent by the launcher and
+    /// `lattice msg focus-window <hwnd>`; a keybind has no window to name).
     FocusWindow(crate::win::Hwnd),
     /// Hand the launcher the window list (sent by it, for the window prefix; not bindable).
     ListWindows,
@@ -411,6 +414,39 @@ pub enum Command {
     /// Start the product tour, or end the one showing.
     Tour,
     Quit,
+}
+
+impl Command {
+    /// The window a command names explicitly, if any (`close 1234`): lattice refuses the
+    /// command when it doesn't manage that window.
+    pub fn window(&self) -> Option<crate::win::Hwnd> {
+        match self {
+            Command::MoveToWorkspace { window, .. } | Command::ToggleFloat(window) | Command::ToggleFullscreen(window) | Command::Close(window) => *window,
+            Command::FocusWindow(h) => Some(*h),
+            _ => None,
+        }
+    }
+}
+
+/// A window handle as `lattice query windows` prints it (decimal), or in hex (`0x1a2b`, as
+/// `lattice --list` and the log print it).
+fn parse_hwnd(s: &str) -> Result<crate::win::Hwnd, String> {
+    let n = match s.strip_prefix("0x") {
+        Some(hex) => crate::win::Hwnd::from_str_radix(hex, 16).ok(),
+        None => s.parse::<crate::win::Hwnd>().ok(),
+    };
+    n.filter(|h| *h > 0).ok_or_else(|| format!("bad window handle '{s}' (use an hwnd from `lattice query windows`)"))
+}
+
+/// An optional window handle: none given means the focused window.
+fn parse_opt_hwnd(s: &str) -> Result<Option<crate::win::Hwnd>, String> {
+    if s.is_empty() { Ok(None) } else { parse_hwnd(s).map(Some) }
+}
+
+/// `move-to-workspace N [hwnd]`.
+fn parse_move_to_ws(arg: &str, follow: bool) -> Result<Command, String> {
+    let (ws, window) = arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
+    Ok(Command::MoveToWorkspace { target: parse_ws(ws)?, follow, window: parse_opt_hwnd(window.trim())? })
 }
 
 fn parse_dir(s: &str) -> Result<Dir, String> {
@@ -452,8 +488,8 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "focus" => Command::Focus(parse_dir(&arg)?),
         "move-window" | "move" | "swap" => Command::MoveWindow(parse_dir(&arg)?),
         "workspace" => Command::Workspace(parse_ws(&arg)?),
-        "move-to-workspace" => Command::MoveToWorkspace { target: parse_ws(&arg)?, follow: true },
-        "move-to-workspace-silent" => Command::MoveToWorkspace { target: parse_ws(&arg)?, follow: false },
+        "move-to-workspace" => parse_move_to_ws(&arg, true)?,
+        "move-to-workspace-silent" => parse_move_to_ws(&arg, false)?,
         "focus-monitor" => Command::FocusMonitor(parse_step(&arg)?),
         "move-to-monitor" => Command::MoveToMonitor(parse_step(&arg)?),
         "layout" => Command::Layout(match arg.as_str() {
@@ -468,9 +504,10 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
                 a => a.parse::<f32>().ok().filter(|a| *a > 0.0).ok_or_else(|| format!("bad resize amount '{a}'"))?,
             })
         }
-        "toggle-float" | "togglefloating" => Command::ToggleFloat,
-        "toggle-fullscreen" | "fullscreen" => Command::ToggleFullscreen,
-        "close" | "kill" => Command::Close,
+        "toggle-float" | "togglefloating" => Command::ToggleFloat(parse_opt_hwnd(&arg)?),
+        "toggle-fullscreen" | "fullscreen" => Command::ToggleFullscreen(parse_opt_hwnd(&arg)?),
+        "close" | "kill" => Command::Close(parse_opt_hwnd(&arg)?),
+        "focus-window" => Command::FocusWindow(parse_hwnd(&arg)?),
         "retile" => Command::Retile,
         "reload" => Command::Reload,
         "launcher" | "launch" => Command::Launcher,
@@ -612,6 +649,29 @@ mod tests {
         assert_eq!(parse_command("windows"), Ok(Some(Command::WindowSearch)));
         let cfg = Config::default();
         assert_eq!(build_keymap(&cfg).get(&parse_chord("super+j").unwrap()), Some(&Command::WindowSearch));
+    }
+
+    #[test]
+    fn window_targets() {
+        assert_eq!(parse_command("close"), Ok(Some(Command::Close(None))));
+        assert_eq!(parse_command("close 1234"), Ok(Some(Command::Close(Some(1234)))));
+        assert_eq!(parse_command("kill 0x4D2"), Ok(Some(Command::Close(Some(1234)))));
+        assert_eq!(parse_command("toggle-float 99"), Ok(Some(Command::ToggleFloat(Some(99)))));
+        assert_eq!(parse_command("fullscreen"), Ok(Some(Command::ToggleFullscreen(None))));
+        assert_eq!(parse_command("focus-window 77"), Ok(Some(Command::FocusWindow(77))));
+        assert_eq!(
+            parse_command("move-to-workspace-silent 7 0x10"),
+            Ok(Some(Command::MoveToWorkspace { target: WsTarget::Index(6), follow: false, window: Some(16) }))
+        );
+        assert_eq!(
+            parse_command("move-to-workspace next"),
+            Ok(Some(Command::MoveToWorkspace { target: WsTarget::Next, follow: true, window: None }))
+        );
+        assert_eq!(parse_command("close 1234").unwrap().unwrap().window(), Some(1234));
+        assert_eq!(parse_command("close").unwrap().unwrap().window(), None);
+        for bad in ["focus-window", "focus-window abc", "close 0", "close -5", "close 0xzz", "move-to-workspace 2 nope"] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
