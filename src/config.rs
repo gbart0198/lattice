@@ -26,6 +26,9 @@ pub struct Config {
     /// `[[hook]]` tables: commands run when something happens (see `events.rs`).
     #[serde(default, rename = "hook", alias = "hooks")]
     pub hooks: Vec<Hook>,
+    /// `[[setup]]` tables: saved workspaces (see `setups.rs`).
+    #[serde(default, rename = "setup", alias = "setups")]
+    pub setups: Vec<Setup>,
     #[serde(default = "default_keybinds")]
     pub keybinds: BTreeMap<String, String>,
 }
@@ -192,6 +195,8 @@ pub struct Launcher {
     pub window_prefix: String,
     /// Typed before a space to run commands (layouts, workspaces, power, audio, Wi-Fi).
     pub command_prefix: String,
+    /// Typed on its own to pick a saved workspace to restore; empty turns it off.
+    pub setups_keyword: String,
     /// What Enter and Ctrl+Enter do with a file, and with a folder: "open", "reveal",
     /// "copy-path" or "exec <command line>" (with {path}, {dir}, {name}).
     pub file_enter: String,
@@ -213,6 +218,7 @@ impl Default for Launcher {
             file_prefix: "f".into(),
             window_prefix: "w".into(),
             command_prefix: ">".into(),
+            setups_keyword: "workspaces".into(),
             file_enter: "open".into(),
             file_ctrl_enter: "reveal".into(),
             folder_enter: "open".into(),
@@ -284,6 +290,56 @@ impl HookOn {
             HookOn::Many(v) => v.iter().map(String::as_str).collect(),
         }
     }
+}
+
+/// `[[setup]]`: a saved workspace. Restoring it puts these apps on these workspaces, in this
+/// order and layout, starting any that aren't running.
+#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Setup {
+    pub name: String,
+    /// A key chord that restores it, like a keybind ("super+alt+1").
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default, rename = "workspace", alias = "workspaces")]
+    pub workspaces: Vec<SetupWorkspace>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct SetupWorkspace {
+    /// 1-based, as `workspace N` takes it.
+    pub number: usize,
+    #[serde(default)]
+    pub layout: Option<LayoutKind>,
+    /// Dwindle's split ratios by position; missing ones use `general.split_ratio`.
+    #[serde(default)]
+    pub splits: Vec<f32>,
+    /// The master layout's column share; missing uses `general.master_ratio`.
+    #[serde(default)]
+    pub master_ratio: Option<f32>,
+    /// In tiling order.
+    #[serde(default)]
+    pub apps: Vec<SetupApp>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct SetupApp {
+    /// The program's file name, which its windows are matched by ("Code.exe").
+    pub exe: String,
+    /// The command line that starts it when it isn't running; empty runs `exe`.
+    #[serde(default)]
+    pub run: String,
+}
+
+impl SetupApp {
+    pub fn command_line(&self) -> &str {
+        if self.run.trim().is_empty() { self.exe.trim() } else { self.run.trim() }
+    }
+}
+
+/// The saved workspace called `name` (any case).
+pub fn find_setup<'a>(setups: &'a [Setup], name: &str) -> Option<&'a Setup> {
+    let name = name.trim();
+    setups.iter().find(|s| s.name.trim().eq_ignore_ascii_case(name))
 }
 
 /// The workspace (1-based, as written) the first matching rule with `workspace` pins a window to.
@@ -410,6 +466,10 @@ pub enum Command {
     OpenConfig,
     /// Start the product tour, or end the one showing.
     Tour,
+    /// Restore the saved workspace with this name.
+    RestoreSetup(String),
+    /// Show the launcher's saved-workspace picker.
+    SetupPicker,
     Quit,
 }
 
@@ -440,6 +500,11 @@ fn parse_step(s: &str) -> Result<i32, String> {
         "prev" | "previous" => Ok(-1),
         _ => Err(format!("expected next|prev, got '{s}'")),
     }
+}
+
+/// A name as typed, without the quotes around it (`"Deep work"`).
+fn unquote(s: &str) -> &str {
+    s.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(s).trim()
 }
 
 pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
@@ -478,6 +543,13 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "settings" => Command::Settings,
         "tour" => Command::Tour,
         "open-config" | "edit-config" => Command::OpenConfig,
+        "restore-workspace" | "setup" => {
+            if rest.is_empty() {
+                return Err("restore-workspace needs the saved workspace's name".into());
+            }
+            Command::RestoreSetup(unquote(rest).to_string())
+        }
+        "workspace-picker" | "setups" | "saved-workspaces" => Command::SetupPicker,
         "quit" | "exit" => Command::Quit,
         "exec" => {
             if rest.is_empty() {
@@ -569,7 +641,8 @@ pub fn parse_chord(s: &str) -> Result<(u8, u32), String> {
     Ok((mods, key))
 }
 
-/// Chord -> command table used by the keyboard hook.
+/// Chord -> command table used by the keyboard hook. A saved workspace's own `key` wins over
+/// a keybind on the same chord.
 pub fn build_keymap(cfg: &Config) -> HashMap<(u8, u32), Command> {
     let mut map = HashMap::new();
     for (chord, cmd) in &cfg.keybinds {
@@ -580,6 +653,17 @@ pub fn build_keymap(cfg: &Config) -> HashMap<(u8, u32), Command> {
             }
             Ok((_, None)) => {}
             Err(e) => log::error!("keybind \"{chord}\" = \"{cmd}\": {e}"),
+        }
+    }
+    for setup in &cfg.setups {
+        let Some(key) = setup.key.as_deref().map(str::trim).filter(|k| !k.is_empty()) else { continue };
+        match parse_chord(key) {
+            Ok(c) => {
+                if let Some(old) = map.insert(c, Command::RestoreSetup(setup.name.clone())) {
+                    log::warn!("saved workspace \"{}\": {key} was bound to {old:?}; the saved workspace wins", setup.name);
+                }
+            }
+            Err(e) => log::error!("saved workspace \"{}\" key: {e}", setup.name),
         }
     }
     map
@@ -655,6 +739,45 @@ mod tests {
         let plural = toml::from_str::<Config>("[[hooks]]\non = \"*\"\nrun = \"x\"").unwrap();
         assert_eq!(plural.hooks.len(), 1);
         assert!(toml::from_str::<Config>("[[hook]]\non = \"startup\"").is_err(), "run is required");
+    }
+
+    #[test]
+    fn setups_parse_and_bind() {
+        let cfg = toml::from_str::<Config>(
+            r#"
+            [keybinds]
+            "super+alt+d" = "close"
+            [[setup]]
+            name = "Dev"
+            key = "super+alt+d"
+            [[setup.workspace]]
+            number = 1
+            layout = "master"
+            master_ratio = 0.6
+            apps = [{ exe = "Code.exe", run = "code" }, { exe = "WindowsTerminal.exe", run = "wt" }]
+            [[setup.workspace]]
+            number = 2
+            apps = [{ exe = "msedge.exe" }]
+            "#,
+        )
+        .unwrap();
+        let s = &cfg.setups[0];
+        assert_eq!(s.workspaces.len(), 2);
+        assert_eq!(s.workspaces[0].layout, Some(LayoutKind::Master));
+        assert_eq!(s.workspaces[0].apps[1].command_line(), "wt");
+        assert_eq!(s.workspaces[1].apps[0].command_line(), "msedge.exe", "run defaults to the exe");
+        assert_eq!(s.workspaces[1].layout, None);
+        assert_eq!(find_setup(&cfg.setups, " dev ").map(|s| s.name.as_str()), Some("Dev"));
+        let map = build_keymap(&cfg);
+        assert_eq!(map.get(&parse_chord("super+alt+d").unwrap()), Some(&Command::RestoreSetup("Dev".into())));
+    }
+
+    #[test]
+    fn setup_commands() {
+        assert_eq!(parse_command("restore-workspace Deep Work"), Ok(Some(Command::RestoreSetup("Deep Work".into()))));
+        assert_eq!(parse_command("setup \"Dev\""), Ok(Some(Command::RestoreSetup("Dev".into()))));
+        assert!(parse_command("restore-workspace").is_err());
+        assert_eq!(parse_command("workspace-picker"), Ok(Some(Command::SetupPicker)));
     }
 
     #[test]

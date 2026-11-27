@@ -1,0 +1,291 @@
+//! Saved workspaces (`[[setup]]` in the config): a named set of apps, the workspaces they go on,
+//! their tiling order and each workspace's layout. Restoring one (`restore-workspace NAME`, its
+//! own key, or the launcher's picker) moves the apps that are open into place and starts the rest;
+//! their windows are put where they belong as they appear (`wm.rs`).
+//!
+//! Pure logic only: which open window fills which spot (`plan`), the picker's thumbnails, and
+//! the edits the settings window's layout editor makes (`insert_index`, `set_ratio`, ...), which
+//! follow the rules lattice itself tiles by, so what you build there is what you get.
+
+use crate::config::{NewWindow, Setup, SetupWorkspace};
+use crate::layout::{self, LayoutKind, Params, Rect};
+
+/// One app of a saved workspace: where it goes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slot {
+    /// Workspace index (0-based).
+    pub ws: usize,
+    /// Position in that workspace's tiling order.
+    pub order: usize,
+    pub exe: String,
+    pub run: String,
+}
+
+/// What restoring a setup does.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Plan {
+    pub slots: Vec<Slot>,
+    /// Open windows that fill a slot: (slot index, window).
+    pub claims: Vec<(usize, isize)>,
+    /// Slots with no open window: their app is started.
+    pub launch: Vec<usize>,
+}
+
+/// An open window as `plan` sees it: (handle, exe file name, workspace index).
+pub type OpenWindow<'a> = (isize, &'a str, usize);
+
+/// Matches the setup's apps to open windows of the same program. A window already on the
+/// right workspace is taken first, so restoring a setup that's in place changes nothing;
+/// then any other one, in the order given (most recently used first gives the window you
+/// were last in). `ws_index` turns a 1-based workspace number into an index.
+pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usize) -> Plan {
+    let mut slots = Vec::new();
+    for w in &setup.workspaces {
+        let ws = ws_index(w.number);
+        for (order, app) in w.apps.iter().enumerate() {
+            if app.exe.trim().is_empty() {
+                continue;
+            }
+            slots.push(Slot { ws, order, exe: app.exe.trim().to_string(), run: app.command_line().to_string() });
+        }
+    }
+    let mut taken = vec![false; open.len()];
+    let mut filled: Vec<Option<isize>> = vec![None; slots.len()];
+    for same_ws in [true, false] {
+        for (i, slot) in slots.iter().enumerate() {
+            if filled[i].is_some() {
+                continue;
+            }
+            let found = open.iter().enumerate().position(|(j, (_, exe, ws))| {
+                !taken[j] && exe.eq_ignore_ascii_case(&slot.exe) && (!same_ws || *ws == slot.ws)
+            });
+            if let Some(j) = found {
+                taken[j] = true;
+                filled[i] = Some(open[j].0);
+            }
+        }
+    }
+    let claims = filled.iter().enumerate().filter_map(|(i, h)| Some((i, (*h)?))).collect();
+    let launch = filled.iter().enumerate().filter(|(_, h)| h.is_none()).map(|(i, _)| i).collect();
+    Plan { slots, claims, launch }
+}
+
+/// `order` with the windows in `first` moved to the front in that order; the rest keep theirs.
+pub fn arrange(order: &[isize], first: &[isize]) -> Vec<isize> {
+    let mut out: Vec<isize> = first.iter().copied().filter(|h| order.contains(h)).collect();
+    out.extend(order.iter().copied().filter(|h| !first.contains(h)));
+    out
+}
+
+/// A saved workspace's layout, filling in what it leaves out from `[general]`.
+pub fn workspace_layout(w: &SetupWorkspace, default: LayoutKind) -> LayoutKind {
+    w.layout.unwrap_or(default)
+}
+
+/// Tiles of a setup workspace in an area of the given size: where `tile` would put its apps.
+pub fn tiles(w: &SetupWorkspace, area: Rect, defaults: &Defaults) -> Vec<Rect> {
+    layout::tile(workspace_layout(w, defaults.layout), area, w.apps.len(), &params(w, defaults, 1.0))
+}
+
+/// The tiling settings a preview needs from `[general]`.
+#[derive(Clone, Copy, Debug)]
+pub struct Defaults {
+    pub layout: LayoutKind,
+    pub split_ratio: f32,
+    pub master_ratio: f32,
+    pub gaps_inner: i32,
+    pub gaps_outer: i32,
+    pub new_window: NewWindow,
+}
+
+impl Defaults {
+    pub fn from(g: &crate::config::General) -> Self {
+        Defaults {
+            layout: g.layout,
+            split_ratio: g.split_ratio,
+            master_ratio: g.master_ratio,
+            gaps_inner: g.gaps_inner,
+            gaps_outer: g.gaps_outer,
+            new_window: g.new_window,
+        }
+    }
+}
+
+/// Layout parameters for a setup workspace, gaps scaled by `scale` (a preview is smaller than
+/// the screen).
+pub fn params<'a>(w: &'a SetupWorkspace, d: &Defaults, scale: f32) -> Params<'a> {
+    let kind = workspace_layout(w, d.layout);
+    Params {
+        gaps_inner: (d.gaps_inner as f32 * scale).round() as i32,
+        gaps_outer: (d.gaps_outer as f32 * scale).round() as i32,
+        ratio: if kind == LayoutKind::Master { w.master_ratio.unwrap_or(d.master_ratio) } else { d.split_ratio },
+        splits: &w.splits,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Editing (the settings window's layout editor)
+
+/// Where a new app goes among `len`, the way lattice places a new window: after the `selected`
+/// one (the editor's stand-in for the focused window) with `new_window = "after_focused"`, else
+/// at the end. Split ratios stay with their positions, as on a live workspace.
+pub fn insert_index(len: usize, selected: Option<usize>, new_window: NewWindow) -> usize {
+    match (new_window, selected) {
+        (NewWindow::AfterFocused, Some(i)) if i < len => i + 1,
+        _ => len,
+    }
+}
+
+/// Forgets ratios past the last split of `apps` tiles, as lattice does when a window goes.
+pub fn forget_splits(splits: &mut Vec<f32>, apps: usize) {
+    splits.truncate(apps.saturating_sub(1));
+}
+
+/// Sets the ratio a seam stands for (see `layout::seams`), rounded to a percent.
+pub fn set_ratio(splits: &mut Vec<f32>, master: &mut Option<f32>, target: layout::ResizeTarget, ratio: f32, default_split: f32) {
+    let ratio = (ratio.clamp(0.1, 0.9) * 100.0).round() / 100.0;
+    match target {
+        layout::ResizeTarget::Master => *master = Some(ratio),
+        layout::ResizeTarget::Split(i) => {
+            if splits.len() <= i {
+                splits.resize(i + 1, default_split);
+            }
+            splits[i] = ratio;
+        }
+    }
+}
+
+/// The short name an app goes by in previews: the exe without ".exe".
+pub fn app_label(exe: &str) -> String {
+    let exe = exe.trim();
+    let stem = exe.len().checked_sub(4).filter(|&n| exe[n..].eq_ignore_ascii_case(".exe")).map_or(exe, |n| &exe[..n]);
+    if stem.is_empty() { "app".into() } else { stem.to_string() }
+}
+
+/// The command line that starts the program at `path`, quoted when it has spaces.
+pub fn run_for_path(path: &str) -> String {
+    if path.contains(' ') { format!("\"{path}\"") } else { path.to_string() }
+}
+
+/// A short description of a setup: "1: Code, Terminal · 2: msedge".
+pub fn summary(s: &Setup) -> String {
+    let mut parts = Vec::new();
+    for w in &s.workspaces {
+        if w.apps.is_empty() {
+            continue;
+        }
+        let names: Vec<String> = w.apps.iter().map(|a| app_label(&a.exe)).collect();
+        parts.push(format!("{}: {}", w.number, names.join(", ")));
+    }
+    if parts.is_empty() { "No apps yet".into() } else { parts.join("  ·  ") }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SetupApp;
+
+    fn app(exe: &str) -> SetupApp {
+        SetupApp { exe: exe.into(), run: String::new() }
+    }
+
+    fn ws(number: usize, apps: &[&str]) -> SetupWorkspace {
+        SetupWorkspace { number, layout: None, splits: Vec::new(), master_ratio: None, apps: apps.iter().map(|a| app(a)).collect() }
+    }
+
+    fn dev() -> Setup {
+        Setup {
+            name: "Dev".into(),
+            key: None,
+            workspaces: vec![ws(1, &["Code.exe", "WindowsTerminal.exe"]), ws(2, &["msedge.exe"]), ws(3, &["slack.exe"])],
+        }
+    }
+
+    #[test]
+    fn plan_claims_open_windows_and_launches_the_rest() {
+        // Edge is open twice (one already on workspace 2), Code once on 5; nothing else runs.
+        let open = [(10, "msedge.exe", 0), (11, "Code.exe", 4), (12, "msedge.exe", 1), (13, "notepad.exe", 0)];
+        let p = plan(&dev(), &open, |n| n - 1);
+        assert_eq!(p.slots.len(), 4);
+        assert_eq!(p.slots[1], Slot { ws: 0, order: 1, exe: "WindowsTerminal.exe".into(), run: "WindowsTerminal.exe".into() });
+        // The Edge already on workspace 2 stays; Code comes over from 5.
+        assert_eq!(p.claims, vec![(0, 11), (2, 12)]);
+        assert_eq!(p.launch, vec![1, 3]);
+    }
+
+    #[test]
+    fn plan_prefers_windows_already_in_place() {
+        // Two Code slots on different workspaces; the window on workspace 2 must not be taken
+        // by the first slot just because it comes first.
+        let s = Setup { workspaces: vec![ws(1, &["Code.exe"]), ws(2, &["code.exe"])], ..dev() };
+        let open = [(1, "Code.exe", 1), (2, "Code.exe", 6)];
+        assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 2), (1, 1)]);
+        // One window for two slots: the other one is launched.
+        let p = plan(&s, &open[..1], |n| n - 1);
+        assert_eq!((p.claims, p.launch), (vec![(1, 1)], vec![0]));
+    }
+
+    #[test]
+    fn arrange_puts_setup_windows_first() {
+        assert_eq!(arrange(&[5, 6, 7, 8], &[8, 6]), vec![8, 6, 5, 7]);
+        assert_eq!(arrange(&[5], &[9, 5]), vec![5], "only windows that are there");
+    }
+
+    #[test]
+    fn inserting_follows_new_window() {
+        let mut w = ws(1, &["a.exe", "b.exe", "c.exe"]);
+        let mut add = |sel, nw, exe: &str| {
+            let at = insert_index(w.apps.len(), sel, nw);
+            w.apps.insert(at, app(exe));
+            at
+        };
+        assert_eq!(add(Some(0), NewWindow::AfterFocused, "d.exe"), 1);
+        assert_eq!(add(Some(0), NewWindow::End, "e.exe"), 4);
+        assert_eq!(add(None, NewWindow::AfterFocused, "f.exe"), 5);
+        assert_eq!(add(Some(99), NewWindow::AfterFocused, "g.exe"), 6);
+        let names: Vec<&str> = w.apps.iter().map(|a| a.exe.as_str()).collect();
+        assert_eq!(names, ["a.exe", "d.exe", "b.exe", "c.exe", "e.exe", "f.exe", "g.exe"]);
+    }
+
+    #[test]
+    fn inserted_tile_matches_live_tiling() {
+        // A dwindle workspace with a tuned first split: adding a third app halves the second
+        // tile, exactly as a third window opening there would.
+        let d = Defaults { layout: LayoutKind::Dwindle, split_ratio: 0.5, master_ratio: 0.55, gaps_inner: 0, gaps_outer: 0, new_window: NewWindow::End };
+        let area = Rect::new(0, 0, 1000, 500);
+        let mut w = ws(1, &["a.exe", "b.exe"]);
+        set_ratio(&mut w.splits, &mut w.master_ratio, layout::ResizeTarget::Split(0), 0.7, d.split_ratio);
+        let at = insert_index(w.apps.len(), Some(1), d.new_window);
+        w.apps.insert(at, app("c.exe"));
+        let live = layout::tile(LayoutKind::Dwindle, area, 3, &Params { gaps_inner: 0, gaps_outer: 0, ratio: 0.5, splits: &[0.7] });
+        assert_eq!(tiles(&w, area, &d), live);
+        assert_eq!(live[0], Rect::new(0, 0, 700, 500));
+    }
+
+    #[test]
+    fn removing_forgets_unused_ratios() {
+        let mut splits = vec![0.6, 0.3];
+        forget_splits(&mut splits, 2);
+        assert_eq!(splits, vec![0.6]);
+        forget_splits(&mut splits, 0);
+        assert!(splits.is_empty());
+    }
+
+    #[test]
+    fn ratios_are_set_and_rounded() {
+        let (mut splits, mut master) = (Vec::new(), None);
+        set_ratio(&mut splits, &mut master, layout::ResizeTarget::Split(2), 0.333, 0.5);
+        assert_eq!(splits, vec![0.5, 0.5, 0.33]);
+        set_ratio(&mut splits, &mut master, layout::ResizeTarget::Master, 0.97, 0.5);
+        assert_eq!(master, Some(0.9));
+    }
+
+    #[test]
+    fn labels_and_summaries() {
+        assert_eq!(app_label("Code.exe"), "Code");
+        assert_eq!(app_label("SLACK.EXE"), "SLACK");
+        assert_eq!(app_label("x"), "x");
+        assert_eq!(run_for_path(r"C:\Program Files\x\x.exe"), r#""C:\Program Files\x\x.exe""#);
+        assert_eq!(summary(&dev()), "1: Code, WindowsTerminal  ·  2: msedge  ·  3: slack");
+    }
+}

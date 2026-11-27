@@ -13,8 +13,10 @@ use crate::config::{self, Config};
 use crate::update;
 use crate::win;
 
+mod setups_tab;
+
 const TITLE: &str = "lattice settings";
-const TABS: [&str; 5] = ["General", "Apps", "Bar", "Border", "Keybinds"];
+const TABS: [&str; 6] = ["General", "Apps", "Workspaces", "Bar", "Border", "Keybinds"];
 const LAYOUTS: [&str; 3] = ["dwindle", "master", "monocle"];
 const NEW_WINDOW: [&str; 2] = ["after_focused", "end"];
 const APP_DISPLAY: [&str; 3] = ["icons", "names", "both"];
@@ -94,6 +96,8 @@ struct S {
     // [keybinds]
     binds: Vec<Bind>,
     next_id: u64,
+    // [[setup]]: saved workspaces
+    ed: setups_tab::Editor,
     // UI
     update: update::Status,
     update_gen: u64,
@@ -186,6 +190,7 @@ fn init() -> S {
             .map(|(i, (k, v))| Bind { id: i as u64, chord: TextEdit::new(k), command: TextEdit::new(v) })
             .collect(),
         next_id: n,
+        ed: setups_tab::Editor::load(&cfg),
         update: update::Status::Unknown,
         update_gen: 0,
         status: String::new(),
@@ -428,6 +433,8 @@ fn save(s: &mut S) -> Result<String, String> {
     }
 
     write_assignments(&mut doc, &s.apps)?;
+    setups_tab::validate(s)?;
+    setups_tab::write(&mut doc, &s.ed.list);
 
     // Make sure what we write is a config lattice accepts before touching the file.
     let out = doc.to_string();
@@ -666,13 +673,15 @@ fn update_row(s: &S, p: &P) -> El {
 }
 
 fn setup(_s: &mut S, wake: rune::Waker) {
+    setups_tab::set_waker(wake.clone());
     update::set_waker(wake);
 }
 
 fn poll(s: &mut S, _t: f64, _tx: &mut Tx) -> bool {
+    let setups = setups_tab::poll(s);
     let g = update::GEN.load(std::sync::atomic::Ordering::SeqCst);
     if g == s.update_gen {
-        return false;
+        return setups;
     }
     s.update_gen = g;
     s.update = update::status();
@@ -779,7 +788,7 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
     vec![
         col().key("kb-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize left|right|up|down [amount], toggle-float, toggle-fullscreen, close, launcher, window-search, settings, open-config, reload, quit, exec <program>.".to_string())
+            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize left|right|up|down [amount], toggle-float, toggle-fullscreen, close, launcher, window-search, workspace-picker, restore-workspace <name>, settings, open-config, reload, quit, exec <program>.".to_string())
                 .w_full()
                 .wrap()
                 .font(TextStyle::new(11.5, 400.0))
@@ -943,8 +952,9 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
     let body = match s.tab {
         0 => general_tab(s, &p),
         1 => apps_tab(s, &p),
-        2 => bar_tab(s, &p, &mut overlays),
-        3 => border_tab(s, &p),
+        2 => setups_tab::tab(s, &p, &mut overlays),
+        3 => bar_tab(s, &p, &mut overlays),
+        4 => border_tab(s, &p),
         _ => keybinds_tab(s, &p),
     };
     let content = col()
@@ -1047,15 +1057,44 @@ pub fn run() {
                 s.tab = 1;
                 s.apps.push(Assign { id: 9000, origin: None, exe: TextEdit::new("Discord.exe"), title: TextEdit::new(""), ws: 3 });
             }),
-            ("bar", |s: &mut S| s.tab = 2),
-            ("border", |s: &mut S| s.tab = 3),
-            ("keybinds", |s: &mut S| s.tab = 4),
-            ("fonts", |s: &mut S| {
+            ("workspaces", |s: &mut S| {
                 s.tab = 2;
+                setups_tab::sample(s);
+            }),
+            ("workspaces-drag", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_drag(s);
+            }),
+            ("workspaces-resize", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_resize(s);
+            }),
+            ("workspaces-master", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_master(s);
+            }),
+            ("workspaces-add", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_add(s);
+            }),
+            ("workspaces-empty", |s: &mut S| {
+                s.tab = 2;
+                s.ed.list.clear();
+                s.ed.sel = None;
+            }),
+            ("bar", |s: &mut S| s.tab = 3),
+            ("border", |s: &mut S| s.tab = 4),
+            ("keybinds", |s: &mut S| s.tab = 5),
+            ("fonts", |s: &mut S| {
+                s.tab = 3;
                 s.font_picker.step(rune_kit::ComboboxEvent::Toggle { current: Some(DEFAULT_FONT_ID) });
             }),
             ("segoe", |s: &mut S| {
-                s.tab = 2;
+                s.tab = 3;
                 s.font = "Segoe UI".into();
             }),
         ],

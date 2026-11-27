@@ -10,6 +10,9 @@
 //!
 //! Command mode, entered with the command prefix (">"), lists commands to run. The ones that
 //! end the session take a second Enter, the row asking for it in between.
+//!
+//! Typing the setups keyword ("workspaces") opens the saved-workspace picker: each one with a
+//! thumbnail of its layouts and its key; Enter restores it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
@@ -25,7 +28,7 @@ use super::files::{FileActions, FileHit, Results, Searcher, Source};
 use super::rank::{self, History};
 use super::system::{App, Icon};
 use super::windows::{self, WindowEntry, WindowHit};
-use super::{Job, Style, WindowSearch};
+use super::{Job, SetupEntry, SetupOptions, Style, WindowSearch};
 
 const HEADER: f32 = 60.0;
 const SECTION: f32 = 30.0;
@@ -68,6 +71,7 @@ enum Mode {
     Files,
     Windows,
     Commands,
+    Setups,
 }
 
 /// File mode's parts, from the launcher's options.
@@ -119,10 +123,23 @@ pub struct State {
     command_hits: Vec<(usize, Vec<usize>)>,
     /// The key of a command that was asked to confirm and waits for its second Enter.
     armed: Option<String>,
+    setups: SetupOptions,
+    setup_list: Vec<SetupEntry>,
+    /// (index into `setup_list`, matched byte offsets in its name).
+    setup_hits: Vec<(usize, Vec<usize>)>,
+    /// The picker was entered by typing the keyword (Backspace takes its last letter back).
+    setups_by_keyword: bool,
 }
 
 impl State {
-    pub(super) fn new(history: History, jobs: Sender<Job>, files: Files, windows: WindowSearch, commands: CommandOptions) -> Self {
+    pub(super) fn new(
+        history: History,
+        jobs: Sender<Job>,
+        files: Files,
+        windows: WindowSearch,
+        commands: CommandOptions,
+        setups: SetupOptions,
+    ) -> Self {
         State {
             query: focused_edit(),
             mode: Mode::Apps,
@@ -152,6 +169,10 @@ impl State {
             catalog: Vec::new(),
             command_hits: Vec::new(),
             armed: None,
+            setups,
+            setup_list: super::setups(),
+            setup_hits: Vec::new(),
+            setups_by_keyword: false,
         }
     }
 
@@ -186,6 +207,14 @@ impl State {
             self.query.replace_text(rest.clone());
             self.query.set_caret(rest.len());
             (self.windows.list)();
+        }
+        if self.mode == Mode::Apps
+            && let Some(rest) = strip_keyword(&self.query.text, &self.setups.keyword)
+        {
+            let rest = rest.to_string();
+            self.enter_setups(true);
+            self.query.replace_text(rest.clone());
+            self.query.set_caret(rest.len());
         }
         if self.mode == Mode::Apps
             && let Some(rest) = strip_mode_prefix(&self.query.text, &self.commands.prefix)
@@ -224,6 +253,49 @@ impl State {
         let prefix = self.commands.prefix.clone();
         self.query.replace_text(prefix.clone());
         self.query.set_caret(prefix.len());
+        self.refresh();
+    }
+
+    fn enter_setups(&mut self, by_keyword: bool) {
+        self.mode = Mode::Setups;
+        self.setups_by_keyword = by_keyword;
+        self.setup_list = super::setups();
+    }
+
+    /// Types `text` into the field (previews).
+    pub fn set_query(&mut self, text: &str) {
+        self.query.replace_text(text.to_string());
+        self.query.set_caret(text.len());
+        self.refresh();
+    }
+
+    pub fn in_setups(&self) -> bool {
+        self.mode == Mode::Setups
+    }
+
+    /// The saved-workspace picker with an empty field (the host's picker command).
+    pub fn show_setups(&mut self, by_keyword: bool) {
+        self.query = focused_edit();
+        self.enter_setups(by_keyword);
+        self.refresh();
+    }
+
+    /// The host's saved workspaces changed (a config reload).
+    pub fn setups_listed(&mut self, list: Vec<SetupEntry>) {
+        self.setup_list = list;
+        if self.mode == Mode::Setups {
+            self.refresh();
+        }
+    }
+
+    /// Back to app search, the field holding the keyword less its last letter, as if
+    /// Backspace took it.
+    fn leave_setups(&mut self) {
+        let mut text = if self.setups_by_keyword { self.setups.keyword.clone() } else { String::new() };
+        text.pop();
+        self.mode = Mode::Apps;
+        self.query.replace_text(text.clone());
+        self.query.set_caret(text.len());
         self.refresh();
     }
 
@@ -338,6 +410,10 @@ impl State {
                 self.command_hits = commands::rank(self.query.text.trim(), &self.catalog, max_results());
                 self.selected = 0;
             }
+            Mode::Setups => {
+                self.setup_hits = rank_setups(self.query.text.trim(), &self.setup_list, max_results());
+                self.selected = 0;
+            }
         }
     }
 
@@ -386,13 +462,13 @@ impl State {
             Mode::Files => self.file_hits.iter().map(|h| h.path.clone()).collect(),
             // All of them, not just the shown rows: they arrive with the list, never fetched again.
             Mode::Windows => self.window_list.iter().filter_map(|w| Some(w.icon.as_ref()?.id())).collect(),
-            Mode::Commands => HashSet::new(),
+            Mode::Commands | Mode::Setups => HashSet::new(),
         };
         for id in &on_screen {
             if self.mode != Mode::Windows && self.requested.insert(id.clone()) {
                 let job = match self.mode {
                     Mode::Apps => Job::Icon(id.clone()),
-                    Mode::Files | Mode::Windows | Mode::Commands => Job::FileIcon(id.clone()),
+                    Mode::Files | Mode::Windows | Mode::Commands | Mode::Setups => Job::FileIcon(id.clone()),
                 };
                 let _ = self.jobs.send(job);
             }
@@ -412,6 +488,7 @@ impl State {
             Mode::Files => self.file_hits.len(),
             Mode::Windows => self.window_hits.len(),
             Mode::Commands => self.command_hits.len(),
+            Mode::Setups => self.setup_hits.len(),
         }
     }
 
@@ -454,6 +531,12 @@ impl State {
                 self.reset();
                 tx.close_window();
             }
+            Mode::Setups => {
+                let Some(&(i, _)) = self.setup_hits.get(index) else { return };
+                (self.setups.restore)(self.setup_list[i].name.clone());
+                self.reset();
+                tx.close_window();
+            }
         }
     }
 
@@ -465,6 +548,35 @@ impl State {
         self.reset();
         tx.close_window();
     }
+}
+
+/// The filter after the setups keyword: "" for the keyword alone, the rest after "keyword ".
+fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    if keyword.is_empty() {
+        return None;
+    }
+    if text.eq_ignore_ascii_case(keyword) {
+        return Some("");
+    }
+    strip_mode_prefix(text, keyword)
+}
+
+/// Saved workspaces matching `query` by name (best first), else by what's in them; an empty
+/// query lists them all in order.
+fn rank_setups(query: &str, list: &[SetupEntry], limit: usize) -> Vec<(usize, Vec<usize>)> {
+    let mut scored: Vec<(i32, usize, Vec<usize>)> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            if let Some(m) = rank::fuzzy(query, &e.name) {
+                return Some((m.score, i, m.positions));
+            }
+            rank::fuzzy(query, &e.detail).map(|m| (m.score - 40, i, Vec::new()))
+        })
+        .collect();
+    scored.sort_by_key(|&(score, ..)| std::cmp::Reverse(score));
+    scored.truncate(limit);
+    scored.into_iter().map(|(_, i, p)| (i, p)).collect()
 }
 
 /// The text after "<prefix> " if `text` starts with it (prefix case-insensitive).
@@ -522,8 +634,9 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Backspace if s.mode == Mode::Files && s.query.text.is_empty() => s.leave_files(),
         Key::Backspace if s.mode == Mode::Windows && s.query.text.is_empty() => s.leave_windows(),
         Key::Backspace if s.mode == Mode::Commands && s.query.text.is_empty() => s.leave_commands(),
+        Key::Backspace if s.mode == Mode::Setups && s.query.text.is_empty() => s.leave_setups(),
         Key::Escape if s.armed.is_some() => s.armed = None,
-        Key::Escape if s.mode == Mode::Windows && !s.query.text.is_empty() => {
+        Key::Escape if matches!(s.mode, Mode::Windows | Mode::Setups) && !s.query.text.is_empty() => {
             s.query = focused_edit();
             s.refresh();
         }
@@ -556,6 +669,7 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
         Mode::Files => ("Search files and folders", "Search files and folders…"),
         Mode::Windows => ("Search windows", "Search open windows…"),
         Mode::Commands => ("Run a command", "Run a command…"),
+        Mode::Setups => ("Pick a saved workspace", "Restore a saved workspace…"),
         Mode::Apps => ("Search apps", "Search apps…"),
     };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0))
@@ -583,6 +697,9 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
     if s.mode == Mode::Commands {
         header = header.child(chip("Commands", command_glyph(t.accent), t));
     }
+    if s.mode == Mode::Setups {
+        header = header.child(chip("Workspaces", setups_glyph(t.accent), t));
+    }
     let header = header.child(field);
 
     let body = if files {
@@ -591,6 +708,8 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
         window_body(s, t)
     } else if s.mode == Mode::Commands {
         command_body(s, t)
+    } else if s.mode == Mode::Setups {
+        setup_body(s, t)
     } else if !s.scanned {
         message("Finding your apps…", t)
     } else if s.hits.is_empty() {
@@ -802,6 +921,138 @@ fn command_row(s: &State, i: usize, entry: &Entry, positions: &[usize], t: &Styl
         .child(kind)
 }
 
+fn setup_body(s: &State, t: &Style) -> El {
+    if s.setup_list.is_empty() {
+        return col()
+            .w_full()
+            .grow(1.0)
+            .center()
+            .gap(6.0)
+            .child(text("No saved workspaces yet").font(TextStyle::new(14.5, 550.0)).color(t.foreground))
+            .child(text("Make one in Settings › Workspaces").font(TextStyle::new(12.5, 450.0)).color(t.muted));
+    }
+    if s.setup_hits.is_empty() {
+        return message(&format!("No saved workspaces match \u{201c}{}\u{201d}", s.query.text.trim()), t);
+    }
+    let n = s.setup_list.len();
+    let section = row()
+        .w_full()
+        .h(SECTION)
+        .px(20.0)
+        .center_y()
+        .child(text("Saved workspaces").font(TextStyle::new(12.0, 600.0)).color(t.muted))
+        .child(spacer())
+        .child(text(if n == 1 { "1 saved".to_string() } else { format!("{n} saved") }).font(TextStyle::new(11.5, 500.0)).color(t.muted.alpha(0.8)));
+    let list = s
+        .setup_hits
+        .iter()
+        .enumerate()
+        .fold(col().w_full().px(LIST_PAD).gap(0.0), |list, (i, (entry, positions))| {
+            list.child(setup_row(s, i, &s.setup_list[*entry], positions, t))
+        });
+    col().w_full().grow(1.0).pt(LIST_PAD).child(section).child(list)
+}
+
+/// Thumbnail size: a little screen.
+const THUMB_W: f32 = 46.0;
+const THUMB_H: f32 = 28.0;
+
+/// A workspace's layout in miniature: the screen, its tiles, and the workspace's number.
+fn thumb(th: &super::SetupThumb, on: bool, t: &Style) -> El {
+    let mut screen = el()
+        .size(THUMB_W, THUMB_H)
+        .radius(5.0)
+        .fill(t.background.mix(t.surface, if on { 0.2 } else { 0.6 }))
+        .border(1.0, t.muted.alpha(if on { 0.45 } else { 0.25 }));
+    for (k, r) in th.tiles.iter().enumerate() {
+        // A pixel of gap around each tile, so neighbours read apart.
+        let (x, y) = (r[0] * THUMB_W + 1.5, r[1] * THUMB_H + 1.5);
+        let (w, h) = ((r[2] * THUMB_W - 3.0).max(2.0), (r[3] * THUMB_H - 3.0).max(2.0));
+        let a = if k == 0 { 0.85 } else { 0.5 };
+        screen = screen.child(el().absolute(x, y).size(w, h).radius(2.0).fill(t.accent.alpha(a)));
+    }
+    let badge = row()
+        .h(13.0)
+        .min_w(13.0)
+        .px(3.0)
+        .radius(4.0)
+        .center()
+        .fill(t.background)
+        .child(text(th.number.to_string()).font(TextStyle::new(9.5, 700.0)).color(t.foreground.alpha(0.85)));
+    el().size(THUMB_W + 4.0, THUMB_H + 4.0).child(el().absolute(0.0, 0.0).child(screen)).child(el().absolute(THUMB_W - 9.0, THUMB_H - 9.0).child(badge))
+}
+
+fn setup_row(s: &State, i: usize, entry: &SetupEntry, positions: &[usize], t: &Style) -> El {
+    let on = i == s.selected;
+    let title = text(entry.name.clone())
+        .spans(highlight(&entry.name, positions, t.accent))
+        .font(TextStyle::new(14.0, if on { 550.0 } else { 450.0 }))
+        .color(t.foreground)
+        .truncate();
+    let detail = text(entry.detail.clone()).font(TextStyle::new(11.5, 400.0)).color(t.muted).truncate();
+    // Room for three, so names line up down the list.
+    let mut thumbs = row().gap(4.0).center_y().w(3.0 * (THUMB_W + 4.0) + 8.0);
+    for th in entry.workspaces.iter().take(3) {
+        thumbs = thumbs.child(thumb(th, on, t));
+    }
+    if entry.workspaces.is_empty() {
+        thumbs = thumbs.child(el().size(THUMB_W, THUMB_H).radius(5.0).border(1.0, t.muted.alpha(0.3)));
+    }
+    let right = if on {
+        text("Restore").font(TextStyle::new(12.5, 500.0)).color(t.foreground.alpha(0.7))
+    } else if !entry.key.trim().is_empty() {
+        key_caps(&entry.key, t)
+    } else {
+        text(match entry.workspaces.len() {
+            1 => "1 workspace".to_string(),
+            n => format!("{n} workspaces"),
+        })
+        .font(TextStyle::new(12.5, 500.0))
+        .color(t.muted)
+    };
+    row()
+        .key(format!("setup-{}", entry.name))
+        .role("button")
+        .label(entry.name.clone())
+        .hit()
+        .w_full()
+        .h(ROW)
+        .px(12.0)
+        .gap(14.0)
+        .radius(10.0)
+        .center_y()
+        .fill(if on { t.surface } else { Color::TRANSPARENT })
+        .on_hover(move |s: &mut State| s.selected = i)
+        .on_press_tx(move |s: &mut State, tx| s.activate(i, false, tx))
+        .child(thumbs)
+        .child(col().gap(1.0).grow(1.0).shrink().child(title).child(detail))
+        .child(right)
+}
+
+/// "super+alt+1" as key caps: ⊞ alt 1.
+fn key_caps(chord: &str, t: &Style) -> El {
+    chord.split('+').map(str::trim).filter(|k| !k.is_empty()).fold(row().gap(4.0).center_y(), |r, k| {
+        let label = match k.to_ascii_lowercase().as_str() {
+            "super" | "win" | "mod4" | "meta" => "Win".to_string(),
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            other if other.len() == 1 => other.to_uppercase(),
+            other => other.to_string(),
+        };
+        r.child(
+            row()
+                .h(20.0)
+                .min_w(20.0)
+                .px(6.0)
+                .radius(5.0)
+                .center()
+                .fill(t.surface)
+                .child(text(label).font(TextStyle::new(11.5, 600.0)).color(t.muted)),
+        )
+    })
+}
+
 fn is_walking(source: Source) -> bool {
     matches!(source, Source::Index(st) if st.walking)
 }
@@ -965,6 +1216,10 @@ fn footer(s: &State, t: &Style) -> El {
         if !s.window_hits.is_empty() {
             hints = hints.child(hint("Switch", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
         }
+    } else if s.mode == Mode::Setups {
+        if !s.setup_hits.is_empty() {
+            hints = hints.child(hint("Restore", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
+        }
     } else if !s.hits.is_empty() {
         hints = hints.child(hint("Open", &["↵"], t)).child(hint("Navigate", &["↑", "↓"], t));
     }
@@ -1015,6 +1270,14 @@ fn windows_glyph(c: Color) -> El {
         .child(el().absolute(0.0, 4.0).size(10.0, 8.0).radius(2.0).fill(c))
 }
 
+/// Four tiles: a saved layout.
+fn setups_glyph(c: Color) -> El {
+    el().size(14.0, 12.0)
+        .child(el().absolute(0.0, 0.0).size(8.0, 12.0).radius(1.5).fill(c))
+        .child(el().absolute(9.5, 0.0).size(4.5, 5.25).radius(1.2).fill(c))
+        .child(el().absolute(9.5, 6.75).size(4.5, 5.25).radius(1.2).fill(c))
+}
+
 /// A prompt: a chevron and an underscore.
 fn command_glyph(c: Color) -> El {
     el().size(14.0, 12.0)
@@ -1058,6 +1321,25 @@ mod tests {
         assert_eq!(strip_mode_prefix("f x", ""), None);
         assert_eq!(strip_mode_prefix("> move 3", ">"), Some("move 3"));
         assert_eq!(strip_mode_prefix(">move", ">"), None);
+    }
+
+    #[test]
+    fn setups_keyword() {
+        assert_eq!(strip_keyword("workspaces", "workspaces"), Some(""));
+        assert_eq!(strip_keyword("Workspaces", "workspaces"), Some(""));
+        assert_eq!(strip_keyword("workspaces dev", "workspaces"), Some("dev"));
+        assert_eq!(strip_keyword("workspace", "workspaces"), None);
+        assert_eq!(strip_keyword("workspaces", ""), None);
+    }
+
+    #[test]
+    fn setups_rank_by_name_then_contents() {
+        let e = |name: &str, detail: &str| SetupEntry { name: name.into(), key: String::new(), detail: detail.into(), workspaces: Vec::new() };
+        let list = vec![e("Dev", "1: Code, WindowsTerminal  ·  2: msedge"), e("Writing", "1: WINWORD"), e("Deep work", "1: Obsidian")];
+        let names = |q: &str| rank_setups(q, &list, 8).into_iter().map(|(i, _)| list[i].name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(""), ["Dev", "Writing", "Deep work"]);
+        assert_eq!(names("dev")[0], "Dev");
+        assert_eq!(names("obsidian"), ["Deep work"]);
     }
 
     #[test]

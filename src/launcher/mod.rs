@@ -20,6 +20,9 @@
 //! - `commands`: command mode's catalog and ranking (pure Rust), and `control`, its Windows
 //!   side (power, audio output, Wi-Fi);
 //! - `ui`: the Rune state and view.
+//!
+//! Typing the setups keyword ("workspaces") on its own opens a picker of the host's saved
+//! workspaces ([`set_setups`]); [`toggle_setups`] opens it directly.
 
 mod bench;
 mod commands;
@@ -75,6 +78,76 @@ pub struct Options {
     pub files: FileOptions,
     pub windows: WindowSearch,
     pub commands: CommandOptions,
+    pub setups: SetupOptions,
+}
+
+/// The saved-workspace picker's link to the host.
+#[derive(Clone)]
+pub struct SetupOptions {
+    /// Typed on its own (any case) to open the picker; empty turns that off.
+    pub keyword: String,
+    /// Restores the named setup. Runs on the launcher's UI thread: pass the request on.
+    pub restore: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+impl Default for SetupOptions {
+    fn default() -> Self {
+        SetupOptions { keyword: String::new(), restore: Arc::new(|_| {}) }
+    }
+}
+
+/// A saved workspace, as the picker lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetupEntry {
+    pub name: String,
+    /// The key chord that restores it, as written ("super+alt+1"); empty when none.
+    pub key: String,
+    /// What's in it ("1: Code, Terminal · 2: msedge").
+    pub detail: String,
+    /// Its workspaces that hold apps.
+    pub workspaces: Vec<SetupThumb>,
+}
+
+/// One workspace of a saved workspace, for a thumbnail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetupThumb {
+    pub number: usize,
+    /// Each app's tile as fractions of the screen: [x, y, w, h].
+    pub tiles: Vec<[f32; 4]>,
+}
+
+/// The host's saved workspaces, kept for the picker.
+static SETUPS: Mutex<Vec<SetupEntry>> = Mutex::new(Vec::new());
+
+/// Hands the launcher the saved workspaces (at start and on every config reload). Any thread.
+pub fn set_setups(list: Vec<SetupEntry>) {
+    *SETUPS.lock().unwrap() = list.clone();
+    if let Some(l) = LAUNCHER.get() {
+        l.app.update(move |s, _| s.setups_listed(list));
+    }
+}
+
+pub(crate) fn setups() -> Vec<SetupEntry> {
+    SETUPS.lock().unwrap().clone()
+}
+
+/// Shows the launcher picking a saved workspace, or hides it if it's already doing that.
+/// Any thread.
+pub fn toggle_setups(on: Option<Area>) {
+    let Some(l) = LAUNCHER.get() else { return };
+    if !l.app.is_visible() {
+        show(l, on, None);
+        l.app.update(|s, _| s.show_setups(false));
+    } else {
+        l.app.update(|s, tx| {
+            if s.in_setups() {
+                s.reset();
+                tx.close_window();
+            } else {
+                s.show_setups(false);
+            }
+        });
+    }
 }
 
 /// Window search's link to the host, which owns the windows. Both callbacks run on the
@@ -166,9 +239,10 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
     };
     let ui_windows = opts.windows;
     let ui_commands = opts.commands;
+    let ui_setups = opts.setups;
     let app = App::new(spec)
         .windowless()
-        .init(move || ui::State::new(history, state_jobs, ui_files, ui_windows, ui_commands))
+        .init(move || ui::State::new(history, state_jobs, ui_files, ui_windows, ui_commands, ui_setups))
         .on_focus(ui::on_focus)
         .on_frame_drawn(|_| reveal())
         .on_window(|w| {
@@ -214,6 +288,75 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
     }
     .windows(WindowsWindowOptions::default().tool_window(true).undecorated_shadow(true));
     WindowSpec::from_app("launcher", app).configured_options(options).into()
+}
+
+/// The saved-workspace picker over sample setups, in a window of its own: for headless
+/// previews (`lattice --launcher-preview --snap out.png --scene setups`). Debug builds.
+pub fn preview(opts: Options) {
+    let (jobs, _rx) = mpsc::channel();
+    let height = ui::height(opts.max_results);
+    ui::set_style(opts.style, opts.max_results);
+    let history = rank::History::load(std::env::temp_dir().join("lattice-preview-history.tsv"));
+    let file_history = Arc::new(Mutex::new(rank::History::load(std::env::temp_dir().join("lattice-preview-files.tsv"))));
+    let (searcher, _search_rx) = files::searcher();
+    let ui_files = ui::Files { searcher, history: file_history, prefix: opts.files.prefix.clone(), actions: opts.files.actions.clone() };
+    let (w, c, st) = (opts.windows, opts.commands, opts.setups);
+    set_setups(sample_setups());
+    let spec = AppSpec::<ui::State> {
+        setup: Some(ui::setup),
+        poll: Some(ui::poll),
+        families: opts.families,
+        scenes: &[
+            ("setups", |s: &mut ui::State| s.show_setups(true)),
+            ("setups-filter", |s: &mut ui::State| {
+                s.show_setups(true);
+                s.set_query("deep");
+            }),
+            ("setups-empty", |s: &mut ui::State| {
+                s.setups_listed(Vec::new());
+                s.show_setups(true);
+            }),
+        ],
+        ..AppSpec::new("lattice launcher", (opts.width, height), || unreachable!(), ui::view)
+    };
+    App::new(spec).init(move || ui::State::new(history, jobs, ui_files, w, c, st)).color_scheme(rune::ColorScheme::Dark).run();
+}
+
+fn sample_setups() -> Vec<SetupEntry> {
+    let t = |v: &[[f32; 4]]| v.to_vec();
+    vec![
+        SetupEntry {
+            name: "Dev".into(),
+            key: "super+alt+1".into(),
+            detail: "1: Code, WindowsTerminal, Postman  ·  2: msedge  ·  3: slack".into(),
+            workspaces: vec![
+                SetupThumb { number: 1, tiles: t(&[[0.0, 0.0, 0.62, 1.0], [0.62, 0.0, 0.38, 0.5], [0.62, 0.5, 0.38, 0.5]]) },
+                SetupThumb { number: 2, tiles: t(&[[0.0, 0.0, 1.0, 1.0]]) },
+                SetupThumb { number: 3, tiles: t(&[[0.0, 0.0, 1.0, 1.0]]) },
+            ],
+        },
+        SetupEntry {
+            name: "Deep work".into(),
+            key: "super+alt+2".into(),
+            detail: "1: Obsidian, Spotify, Todoist".into(),
+            workspaces: vec![SetupThumb { number: 1, tiles: t(&[[0.0, 0.0, 0.6, 1.0], [0.6, 0.0, 0.4, 0.5], [0.6, 0.5, 0.4, 0.5]]) }],
+        },
+        SetupEntry {
+            name: "Writing".into(),
+            key: String::new(),
+            detail: "4: WINWORD, msedge".into(),
+            workspaces: vec![SetupThumb { number: 4, tiles: t(&[[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]) }],
+        },
+        SetupEntry {
+            name: "Streaming".into(),
+            key: "super+alt+3".into(),
+            detail: "1: obs64, Discord  ·  2: Spotify".into(),
+            workspaces: vec![
+                SetupThumb { number: 1, tiles: t(&[[0.0, 0.0, 0.7, 1.0], [0.7, 0.0, 0.3, 1.0]]) },
+                SetupThumb { number: 2, tiles: t(&[[0.0, 0.0, 1.0, 1.0]]) },
+            ],
+        },
+    ]
 }
 
 /// Shows the launcher (centred near the top of `on`, else of the monitor under the pointer),
