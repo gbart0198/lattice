@@ -308,9 +308,15 @@ pub struct Setup {
 pub struct SetupWorkspace {
     /// 1-based, as `workspace N` takes it.
     pub number: usize,
+    /// The monitor these apps go on, 1-based from the left (as Windows arranges them); none
+    /// is the primary monitor. A workspace spans every monitor, so a setup can have an entry
+    /// for each monitor of a workspace. A monitor that isn't connected means the primary.
+    #[serde(default)]
+    pub monitor: Option<usize>,
     #[serde(default)]
     pub layout: Option<LayoutKind>,
-    /// Dwindle's split ratios by position; missing ones use `general.split_ratio`.
+    /// Dwindle's split ratios by position (on this monitor); missing ones use
+    /// `general.split_ratio`.
     #[serde(default)]
     pub splits: Vec<f32>,
     /// The master layout's column share; missing uses `general.master_ratio`.

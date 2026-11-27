@@ -112,8 +112,8 @@ pub struct SetupEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetupThumb {
     pub number: usize,
-    /// Each app's tile as fractions of the screen: [x, y, w, h].
-    pub tiles: Vec<[f32; 4]>,
+    /// Its monitors and their tiles.
+    pub thumb: crate::setups::Thumb,
 }
 
 /// The host's setups, kept for the picker.
@@ -323,37 +323,40 @@ pub fn preview(opts: Options) {
 }
 
 fn sample_setups() -> Vec<SetupEntry> {
-    let t = |v: &[[f32; 4]]| v.to_vec();
+    // One screen, or (Streaming) two side by side.
+    let one = [[0.0, 0.0, 1.0, 1.0]];
+    let t = |v: &[[f32; 4]]| crate::setups::Thumb { aspect: 1.9, screens: one.to_vec(), tiles: v.to_vec() };
+    let two = |v: &[[f32; 4]]| crate::setups::Thumb { aspect: 3.8, screens: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]], tiles: v.to_vec() };
     vec![
         SetupEntry {
             name: "Dev".into(),
             key: "super+alt+1".into(),
             detail: "1: Code, WindowsTerminal, Postman  ·  2: msedge  ·  3: slack".into(),
             workspaces: vec![
-                SetupThumb { number: 1, tiles: t(&[[0.0, 0.0, 0.62, 1.0], [0.62, 0.0, 0.38, 0.5], [0.62, 0.5, 0.38, 0.5]]) },
-                SetupThumb { number: 2, tiles: t(&[[0.0, 0.0, 1.0, 1.0]]) },
-                SetupThumb { number: 3, tiles: t(&[[0.0, 0.0, 1.0, 1.0]]) },
+                SetupThumb { number: 1, thumb: t(&[[0.0, 0.0, 0.62, 1.0], [0.62, 0.0, 0.38, 0.5], [0.62, 0.5, 0.38, 0.5]]) },
+                SetupThumb { number: 2, thumb: t(&[[0.0, 0.0, 1.0, 1.0]]) },
+                SetupThumb { number: 3, thumb: t(&[[0.0, 0.0, 1.0, 1.0]]) },
             ],
         },
         SetupEntry {
             name: "Deep work".into(),
             key: "super+alt+2".into(),
             detail: "1: Obsidian, Spotify, Todoist".into(),
-            workspaces: vec![SetupThumb { number: 1, tiles: t(&[[0.0, 0.0, 0.6, 1.0], [0.6, 0.0, 0.4, 0.5], [0.6, 0.5, 0.4, 0.5]]) }],
+            workspaces: vec![SetupThumb { number: 1, thumb: t(&[[0.0, 0.0, 0.6, 1.0], [0.6, 0.0, 0.4, 0.5], [0.6, 0.5, 0.4, 0.5]]) }],
         },
         SetupEntry {
             name: "Writing".into(),
             key: String::new(),
             detail: "4: WINWORD, msedge".into(),
-            workspaces: vec![SetupThumb { number: 4, tiles: t(&[[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]) }],
+            workspaces: vec![SetupThumb { number: 4, thumb: t(&[[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]) }],
         },
         SetupEntry {
             name: "Streaming".into(),
             key: "super+alt+3".into(),
-            detail: "1: obs64, Discord  ·  2: Spotify".into(),
+            detail: "1: obs64, Chrome, Discord  ·  2: Spotify".into(),
             workspaces: vec![
-                SetupThumb { number: 1, tiles: t(&[[0.0, 0.0, 0.7, 1.0], [0.7, 0.0, 0.3, 1.0]]) },
-                SetupThumb { number: 2, tiles: t(&[[0.0, 0.0, 1.0, 1.0]]) },
+                SetupThumb { number: 1, thumb: two(&[[0.0, 0.0, 0.35, 1.0], [0.35, 0.0, 0.15, 1.0], [0.5, 0.0, 0.5, 1.0]]) },
+                SetupThumb { number: 2, thumb: t(&[[0.0, 0.0, 1.0, 1.0]]) },
             ],
         },
     ]

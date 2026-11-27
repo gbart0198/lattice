@@ -119,7 +119,8 @@ struct Restore {
     filled: Vec<Option<Hwnd>>,
     /// Each workspace's saved split ratios. Retiling forgets ratios past the last split, so
     /// they're put back as each window arrives.
-    splits: HashMap<usize, Vec<f32>>,
+    /// By (workspace, monitor).
+    splits: HashMap<(usize, usize), Vec<f32>>,
     until: Instant,
 }
 
@@ -297,9 +298,13 @@ impl Wm {
         // Every window of a pinned app goes there, splash screens and updaters included (they
         // open hidden on that workspace); you stay where you are.
         let ws = claim
+            .map(|(ws, _)| ws)
             .or_else(|| config::rule_workspace(&self.cfg.rules, &c.exe, &c.class, &c.title).map(|n| self.ws_index(n)))
             .unwrap_or(self.active);
-        let mon = if claim.is_some() { self.primary_monitor() } else { mon.unwrap_or(self.focused_monitor) };
+        let mon = match claim {
+            Some((_, m)) => m,
+            None => mon.unwrap_or(self.focused_monitor),
+        };
         let minimized = win::is_minimized(hwnd);
         log::info!(
             "manage {hwnd:#x} '{}' ({}, {}) -> ws {} monitor {}{}",
@@ -1171,6 +1176,12 @@ impl Wm {
         self.monitors.iter().position(|m| m.info.primary).unwrap_or(0)
     }
 
+    /// A setup's monitor (1-based from the left; none for the primary) as an index. One that
+    /// isn't connected is the primary.
+    fn setup_monitor(&self, m: Option<usize>) -> usize {
+        m.and_then(|n| n.checked_sub(1)).filter(|i| *i < self.monitors.len()).unwrap_or_else(|| self.primary_monitor())
+    }
+
     /// Restores the setup `name`: open windows of its apps move into place, the others
     /// are started (their windows take their spots as they open, see `claim_slot`), each of its
     /// workspaces gets its layout, and the first one comes on screen.
@@ -1182,30 +1193,36 @@ impl Wm {
         self.cleanup();
         // Most recently used first: of two open windows of an app, the one you were last in
         // is the one that moves.
-        let mut open: Vec<(Hwnd, String, usize, u64)> =
-            self.windows.iter().filter(|(_, w)| !w.floating).map(|(h, w)| (*h, w.exe.clone(), w.ws, w.focused_at)).collect();
-        open.sort_by_key(|o| std::cmp::Reverse(o.3));
+        let mut open: Vec<(Hwnd, &Window)> = self.windows.iter().filter(|(_, w)| !w.floating).map(|(h, w)| (*h, w)).collect();
+        open.sort_by_key(|(_, w)| std::cmp::Reverse(w.focused_at));
         let place = |h: Hwnd, ws: usize| self.workspaces[ws].windows.iter().position(|x| *x == h).unwrap_or(usize::MAX);
-        let open_ref: Vec<setups::OpenWindow> = open.iter().map(|(h, exe, ws, _)| (*h, exe.as_str(), *ws, place(*h, *ws))).collect();
-        let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n));
+        let open_ref: Vec<setups::OpenWindow> = open
+            .iter()
+            .map(|(h, w)| setups::OpenWindow { hwnd: *h, exe: w.exe.as_str(), ws: w.ws, mon: w.mon, place: place(*h, w.ws) })
+            .collect();
+        let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n), |m| self.setup_monitor(m));
         log::info!(
             "restoring setup '{}': {} in place, starting {}",
             setup.name, plan.claims.len(), plan.launch.len()
         );
         self.finish_animations();
-        let primary = self.primary_monitor();
         let g = self.cfg.general.clone();
         let mut saved_splits = HashMap::new();
+        let mut laid_out = Vec::new();
         for w in &setup.workspaces {
-            let i = self.ws_index(w.number);
+            let (i, mon) = (self.ws_index(w.number), self.setup_monitor(w.monitor));
             let ws = &mut self.workspaces[i];
-            ws.layout = w.layout.unwrap_or(g.layout);
-            ws.master_ratio = w.master_ratio.unwrap_or(g.master_ratio).clamp(0.1, 0.9);
-            ws.split_ratio = g.split_ratio;
+            // The layout is the workspace's, on every monitor: its first entry sets it.
+            if !laid_out.contains(&i) {
+                laid_out.push(i);
+                ws.layout = w.layout.unwrap_or(g.layout);
+                ws.master_ratio = w.master_ratio.unwrap_or(g.master_ratio).clamp(0.1, 0.9);
+                ws.split_ratio = g.split_ratio;
+                ws.fullscreen = None;
+            }
             let splits: Vec<f32> = w.splits.iter().map(|r| r.clamp(0.1, 0.9)).collect();
-            ws.splits.insert(primary, splits.clone());
-            ws.fullscreen = None;
-            saved_splits.insert(i, splits);
+            ws.splits.insert(mon, splits.clone());
+            saved_splits.insert((i, mon), splits);
         }
         let mut filled = vec![None; plan.slots.len()];
         for &(i, h) in &plan.claims {
@@ -1218,9 +1235,10 @@ impl Wm {
                 self.move_window_to_ws(h, to, to == self.active);
                 self.cfg.animations.enabled = anim;
             }
+            let mon = plan.slots[i].mon;
             let w = self.windows.get_mut(&h).expect("claimed window is managed");
-            if w.mon != primary {
-                w.mon = primary;
+            if w.mon != mon {
+                w.mon = mon;
                 self.workspaces[to].mon_focus.retain(|_, x| *x != h);
             }
         }
@@ -1253,8 +1271,8 @@ impl Wm {
     }
 
     /// A spot of the setup being restored for a new window of `exe`, which takes it:
-    /// returns the spot's workspace.
-    fn claim_slot(&mut self, hwnd: Hwnd, exe: &str) -> Option<usize> {
+    /// returns the spot's workspace and monitor.
+    fn claim_slot(&mut self, hwnd: Hwnd, exe: &str) -> Option<(usize, usize)> {
         let r = self.restore.as_mut()?;
         if Instant::now() > r.until {
             self.restore = None;
@@ -1262,7 +1280,7 @@ impl Wm {
         }
         let i = r.slots.iter().zip(&r.filled).position(|(s, f)| f.is_none() && s.exe.eq_ignore_ascii_case(exe))?;
         r.filled[i] = Some(hwnd);
-        Some(r.slots[i].ws)
+        Some((r.slots[i].ws, r.slots[i].mon))
     }
 
     /// Puts the restored windows first on their workspaces, in the saved order.
@@ -1274,10 +1292,10 @@ impl Wm {
                 by_ws.entry(s.ws).or_default().push((s.order, h));
             }
         }
-        let saved: Vec<(usize, Vec<f32>)> = by_ws.keys().filter_map(|ws| Some((*ws, r.splits.get(ws)?.clone()))).collect();
-        let primary = self.primary_monitor();
-        for (ws, splits) in saved {
-            self.workspaces[ws].splits.insert(primary, splits);
+        let saved: Vec<((usize, usize), Vec<f32>)> =
+            r.splits.iter().filter(|((ws, _), _)| by_ws.contains_key(ws)).map(|(k, v)| (*k, v.clone())).collect();
+        for ((ws, mon), splits) in saved {
+            self.workspaces[ws].splits.insert(mon, splits);
         }
         for (ws, mut list) in by_ws {
             list.sort_by_key(|(order, _)| *order);
@@ -1287,11 +1305,11 @@ impl Wm {
         }
     }
 
-    /// Hands the launcher's picker the setups, with a thumbnail of each workspace.
+    /// Hands the launcher's picker the setups, with a thumbnail of each workspace (all its
+    /// monitors).
     fn publish_setups(&self) {
         let d = setups::Defaults::from(&self.cfg.general);
-        let area = if self.monitors.is_empty() { Rect::new(0, 0, 1920, 1080) } else { self.tiling_area(self.primary_monitor()) };
-        let local = Rect::new(0, 0, area.w, area.h);
+        let area = |m: Option<usize>| if self.monitors.is_empty() { Rect::new(0, 0, 1920, 1080) } else { self.tiling_area(self.setup_monitor(m)) };
         let entries = self
             .cfg
             .setups
@@ -1300,16 +1318,11 @@ impl Wm {
                 name: s.name.clone(),
                 key: s.key.clone().unwrap_or_default(),
                 detail: setups::summary(s),
-                workspaces: s
-                    .workspaces
-                    .iter()
-                    .filter(|w| !w.apps.is_empty())
-                    .map(|w| crate::launcher::SetupThumb {
-                        number: w.number,
-                        tiles: setups::tiles(w, local, &d)
-                            .into_iter()
-                            .map(|r| [r.x as f32 / area.w as f32, r.y as f32 / area.h as f32, r.w as f32 / area.w as f32, r.h as f32 / area.h as f32])
-                            .collect(),
+                workspaces: setups::numbers(&s.workspaces)
+                    .into_iter()
+                    .map(|n| {
+                        let entries: Vec<&config::SetupWorkspace> = s.workspaces.iter().filter(|w| w.number == n).collect();
+                        crate::launcher::SetupThumb { number: n, thumb: setups::thumb(&entries, area, &d) }
                     })
                     .collect(),
             })

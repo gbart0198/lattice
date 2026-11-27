@@ -973,15 +973,25 @@ const THUMB_H: f32 = 28.0;
 
 /// A workspace's layout in miniature: the screen, its tiles, and the workspace's number.
 fn thumb(th: &super::SetupThumb, on: bool, t: &Style) -> El {
-    let mut screen = el()
-        .size(THUMB_W, THUMB_H)
-        .radius(5.0)
-        .fill(t.background.mix(t.surface, if on { 0.2 } else { 0.6 }))
-        .border(1.0, t.muted.alpha(if on { 0.45 } else { 0.25 }));
-    for (k, r) in th.tiles.iter().enumerate() {
+    // The monitors it uses, side by side as they're arranged, fitted into the box.
+    let tb = &th.thumb;
+    let (bw, bh) = crate::setups::fit(tb.aspect, THUMB_W, THUMB_H);
+    let (ox, oy) = ((THUMB_W - bw) / 2.0, (THUMB_H - bh) / 2.0);
+    let mut screen = el().size(THUMB_W, THUMB_H);
+    for r in &tb.screens {
+        // A pixel between monitors.
+        screen = screen.child(
+            el().absolute(ox + r[0] * bw, oy + r[1] * bh)
+                .size((r[2] * bw - 1.0).max(2.0), (r[3] * bh).max(2.0))
+                .radius(4.0)
+                .fill(t.background.mix(t.surface, if on { 0.2 } else { 0.6 }))
+                .border(1.0, t.muted.alpha(if on { 0.45 } else { 0.25 })),
+        );
+    }
+    for (k, r) in tb.tiles.iter().enumerate() {
         // A pixel of gap around each tile, so neighbours read apart.
-        let (x, y) = (r[0] * THUMB_W + 1.5, r[1] * THUMB_H + 1.5);
-        let (w, h) = ((r[2] * THUMB_W - 3.0).max(2.0), (r[3] * THUMB_H - 3.0).max(2.0));
+        let (x, y) = (ox + r[0] * bw + 1.5, oy + r[1] * bh + 1.5);
+        let (w, h) = ((r[2] * bw - 3.0).max(2.0), (r[3] * bh - 3.0).max(2.0));
         let a = if k == 0 { 0.85 } else { 0.5 };
         screen = screen.child(el().absolute(x, y).size(w, h).radius(2.0).fill(t.accent.alpha(a)));
     }

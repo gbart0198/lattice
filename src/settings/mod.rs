@@ -434,7 +434,7 @@ fn save(s: &mut S) -> Result<String, String> {
 
     write_assignments(&mut doc, &s.apps)?;
     setups_tab::validate(s)?;
-    setups_tab::write(&mut doc, &s.ed.list);
+    setups_tab::write(&mut doc, &s.ed);
 
     // Make sure what we write is a config lattice accepts before touching the file.
     let out = doc.to_string();
@@ -1080,6 +1080,11 @@ pub fn run() {
                 s.tab = 2;
                 setups_tab::sample(s);
                 setups_tab::sample_add(s);
+            }),
+            ("workspaces-monitor", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_monitor(s);
             }),
             ("workspaces-list", |s: &mut S| {
                 s.tab = 2;

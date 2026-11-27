@@ -24,6 +24,8 @@ use crate::setups::{self, Defaults};
 
 /// The canvas's width in logical pixels; its height follows the screen's shape.
 const CANVAS_W: f32 = 640.0;
+/// The tallest it gets (a portrait monitor is fitted into this).
+const CANVAS_MAX_H: f32 = 400.0;
 /// How wide the grab area of a seam is.
 const SEAM: f32 = 14.0;
 /// Pointer travel before a press on a window counts as a drag.
@@ -39,8 +41,11 @@ pub struct AppEdit {
     pub run: TextEdit,
 }
 
+/// A setup's apps on one monitor of one workspace (a `[[setup.workspace]]` entry).
 pub struct WsEdit {
     pub number: usize,
+    /// The monitor (0-based, left to right), resolved: an entry without one is the primary's.
+    pub monitor: usize,
     pub layout: Option<LayoutKind>,
     pub splits: Vec<f32>,
     pub master_ratio: Option<f32>,
@@ -52,6 +57,27 @@ pub struct SetupEdit {
     pub name: TextEdit,
     pub key: TextEdit,
     pub workspaces: Vec<WsEdit>,
+}
+
+/// A monitor as the editor draws it: its tiling area on the desktop, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Screen {
+    pub area: Rect,
+}
+
+/// The monitors, left to right as lattice numbers them, and which is the primary. The bar is
+/// on the primary only, so its tiling area starts below it.
+fn screens(cfg: &config::Config) -> (Vec<Screen>, usize) {
+    let monitors = crate::win::monitors();
+    let primary = monitors.iter().position(|m| m.primary).unwrap_or(0);
+    let screens: Vec<Screen> = monitors
+        .iter()
+        .map(|m| {
+            let bar = if m.primary && cfg.bar.enabled { (cfg.bar.height * m.scale).round() as i32 } else { 0 };
+            Screen { area: Rect::new(m.work.x, m.work.y + bar, m.work.w.max(1), (m.work.h - bar).max(1)) }
+        })
+        .collect();
+    if screens.is_empty() { (vec![Screen { area: Rect::new(0, 0, 1920, 1040) }], 0) } else { (screens, primary) }
 }
 
 /// A window being dragged on the canvas.
@@ -70,8 +96,9 @@ pub struct Editor {
     pub list: Vec<SetupEdit>,
     /// The setup being edited.
     pub sel: Option<usize>,
-    /// The workspace shown on the canvas (1-based).
+    /// The workspace shown on the canvas (1-based), and the monitor of it (0-based).
     pub ws: usize,
+    pub mon: usize,
     /// The selected window: the editor's stand-in for the focused one.
     pub tile: Option<usize>,
     pub drag: Option<TileDrag>,
@@ -82,25 +109,34 @@ pub struct Editor {
     pub picker: ComboboxState,
     /// The "Add workspace" menu.
     pub ws_picker: ComboboxState,
-    /// The primary monitor's tiling area, in pixels: the canvas has its shape.
-    pub screen: (i32, i32),
+    /// The monitors: the canvas has the shape of the one shown.
+    pub screens: Vec<Screen>,
+    pub primary: usize,
     pub next_id: u64,
     pub capturing: bool,
 }
 
 impl Editor {
     pub fn load(cfg: &config::Config) -> Self {
+        let (screens, primary) = screens(cfg);
+        Self::load_on(cfg, screens, primary)
+    }
+
+    /// Loads the setups as on these monitors.
+    pub fn load_on(cfg: &config::Config, screens: Vec<Screen>, primary: usize) -> Self {
         let mut ed = Editor {
             list: Vec::new(),
             sel: None,
             ws: 1,
+            mon: primary,
             tile: None,
             drag: None,
             seam: None,
             seam_undo: (Vec::new(), None),
             picker: ComboboxState::default(),
             ws_picker: ComboboxState::default(),
-            screen: primary_area(cfg),
+            screens,
+            primary,
             next_id: 1,
             capturing: false,
         };
@@ -124,6 +160,7 @@ impl Editor {
             .iter()
             .map(|w| WsEdit {
                 number: w.number,
+                monitor: w.monitor.and_then(|m| m.checked_sub(1)).unwrap_or(self.primary),
                 layout: w.layout,
                 splits: w.splits.clone(),
                 master_ratio: w.master_ratio,
@@ -133,10 +170,11 @@ impl Editor {
         SetupEdit { id: self.id(), name: TextEdit::new(s.name.clone()), key: TextEdit::new(s.key.clone().unwrap_or_default()), workspaces }
     }
 
-    /// Opens setup `i`, showing its first workspace with apps.
+    /// Opens setup `i`, showing its first workspace with apps (on its first monitor with apps).
     fn select(&mut self, i: usize) {
         self.sel = Some(i);
-        self.ws = self.list[i].workspaces.iter().find(|w| !w.apps.is_empty()).map_or(1, |w| w.number);
+        let first = self.list[i].workspaces.iter().find(|w| !w.apps.is_empty()).map(|w| (w.number, w.monitor));
+        (self.ws, self.mon) = first.unwrap_or((1, self.primary));
         self.tile = None;
         self.drag = None;
         self.seam = None;
@@ -152,11 +190,55 @@ impl Editor {
         self.ws_picker.close();
     }
 
-    /// Shows workspace `n`, adding it (empty) if the setup doesn't use it yet.
+    /// Shows workspace `n` (on its first monitor with apps), adding it (empty) if the setup
+    /// doesn't use it yet.
     fn show_ws(&mut self, n: usize) {
         self.ws = n;
+        self.mon = self.setup().and_then(|s| s.workspaces.iter().find(|w| w.number == n && !w.apps.is_empty())).map_or(self.primary, |w| w.monitor);
         self.tile = None;
         self.shown_or_add();
+    }
+
+    /// Shows monitor `m` of the workspace on the canvas.
+    fn show_mon(&mut self, m: usize) {
+        self.mon = m;
+        self.tile = None;
+    }
+
+    /// The tiling area of monitor `m`; one that isn't connected is drawn as the primary.
+    fn area(&self, m: usize) -> Rect {
+        self.screens.get(m).or(self.screens.get(self.primary)).map_or(Rect::new(0, 0, 1920, 1040), |s| s.area)
+    }
+
+    /// The canvas for the monitor shown.
+    fn canvas(&self) -> Canvas {
+        let a = self.area(self.mon);
+        Canvas::new((a.w, a.h))
+    }
+
+    /// Monitors to pick from for the workspace shown: the connected ones, and any others its
+    /// entries name. Empty with one monitor.
+    fn monitors(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = (0..self.screens.len()).collect();
+        if let Some(setup) = self.setup() {
+            for w in setup.workspaces.iter().filter(|w| w.number == self.ws && (!w.apps.is_empty() || w.monitor == self.mon)) {
+                if !out.contains(&w.monitor) {
+                    out.push(w.monitor);
+                }
+            }
+        }
+        if out.len() < 2 { Vec::new() } else { out }
+    }
+
+    /// Gives the shown workspace's other monitors its layout and master ratio, which lattice
+    /// keeps per workspace.
+    fn sync_siblings(&mut self) {
+        let (ws, mon) = (self.ws, self.mon);
+        let Some(setup) = self.sel.and_then(|i| self.list.get_mut(i)) else { return };
+        let Some((layout, master)) = setup.workspaces.iter().find(|w| w.number == ws && w.monitor == mon).map(|w| (w.layout, w.master_ratio)) else { return };
+        for w in setup.workspaces.iter_mut().filter(|w| w.number == ws) {
+            (w.layout, w.master_ratio) = (layout, master);
+        }
     }
 
     /// Workspace numbers with a card: those with apps, and the one shown.
@@ -166,7 +248,9 @@ impl Editor {
         if !out.contains(&self.ws) {
             out.push(self.ws);
         }
+        // One card a workspace, however many monitors it has apps on.
         out.sort_unstable();
+        out.dedup();
         out
     }
 
@@ -174,25 +258,27 @@ impl Editor {
         self.list.get(self.sel?)
     }
 
-    /// The workspace on the canvas, if the setup has it.
+    /// The workspace and monitor on the canvas, if the setup has it.
     fn shown(&self) -> Option<&WsEdit> {
-        self.setup()?.workspaces.iter().find(|w| w.number == self.ws)
+        self.setup()?.workspaces.iter().find(|w| w.number == self.ws && w.monitor == self.mon)
     }
 
     fn shown_mut(&mut self) -> Option<&mut WsEdit> {
-        let ws = self.ws;
-        self.list.get_mut(self.sel?)?.workspaces.iter_mut().find(|w| w.number == ws)
+        let (ws, mon) = (self.ws, self.mon);
+        self.list.get_mut(self.sel?)?.workspaces.iter_mut().find(|w| w.number == ws && w.monitor == mon)
     }
 
-    /// The workspace on the canvas, added to the setup if it isn't there yet.
+    /// The workspace and monitor on the canvas, added to the setup if it isn't there yet
+    /// (with the layout the workspace has on its other monitors).
     fn shown_or_add(&mut self) -> Option<&mut WsEdit> {
-        let ws = self.ws;
+        let (ws, mon) = (self.ws, self.mon);
         let setup = self.list.get_mut(self.sel?)?;
-        if !setup.workspaces.iter().any(|w| w.number == ws) {
-            setup.workspaces.push(WsEdit { number: ws, layout: None, splits: Vec::new(), master_ratio: None, apps: Vec::new() });
-            setup.workspaces.sort_by_key(|w| w.number);
+        if !setup.workspaces.iter().any(|w| w.number == ws && w.monitor == mon) {
+            let (layout, master_ratio) = setup.workspaces.iter().find(|w| w.number == ws).map_or((None, None), |w| (w.layout, w.master_ratio));
+            setup.workspaces.push(WsEdit { number: ws, monitor: mon, layout, splits: Vec::new(), master_ratio, apps: Vec::new() });
+            setup.workspaces.sort_by_key(|w| (w.number, w.monitor));
         }
-        setup.workspaces.iter_mut().find(|w| w.number == ws)
+        setup.workspaces.iter_mut().find(|w| w.number == ws && w.monitor == mon)
     }
 
     /// Adds an app to the shown workspace where lattice would put a new window, and selects it.
@@ -214,33 +300,30 @@ impl Editor {
         self.tile = None;
     }
 
-    /// Moves app `i` of the shown workspace to the end of workspace `to`, as move-to-workspace
-    /// moves a window, and follows it there.
+    /// Moves app `i` of the shown workspace to the end of workspace `to` on the same monitor,
+    /// as move-to-workspace moves a window, and follows it there.
     fn move_to(&mut self, i: usize, to: usize) {
+        self.move_app(i, to, self.mon);
+    }
+
+    /// Moves app `i` to the end of the same workspace on monitor `mon`, and follows it there.
+    fn move_to_monitor(&mut self, i: usize, mon: usize) {
+        self.move_app(i, self.ws, mon);
+    }
+
+    fn move_app(&mut self, i: usize, ws: usize, mon: usize) {
         let Some(w) = self.shown_mut() else { return };
-        if i >= w.apps.len() || to == w.number {
+        if i >= w.apps.len() || (ws, mon) == (w.number, w.monitor) {
             return;
         }
         let app = w.apps.remove(i);
         setups::forget_splits(&mut w.splits, w.apps.len());
-        self.ws = to;
+        (self.ws, self.mon) = (ws, mon);
         if let Some(t) = self.shown_or_add() {
             t.apps.push(app);
             let n = t.apps.len();
             self.tile = Some(n - 1);
         }
-    }
-}
-
-fn primary_area(cfg: &config::Config) -> (i32, i32) {
-    let monitors = crate::win::monitors();
-    let m = monitors.iter().find(|m| m.primary).or(monitors.first());
-    match m {
-        Some(m) => {
-            let bar = if cfg.bar.enabled { (cfg.bar.height * m.scale).round() as i32 } else { 0 };
-            (m.work.w.max(1), (m.work.h - bar).max(1))
-        }
-        None => (1920, 1040),
     }
 }
 
@@ -256,9 +339,11 @@ fn defaults(s: &S) -> Defaults {
     }
 }
 
+/// An entry as config (its monitor always written out, 1-based).
 fn to_config(w: &WsEdit) -> SetupWorkspace {
     SetupWorkspace {
         number: w.number,
+        monitor: Some(w.monitor + 1),
         layout: w.layout,
         splits: w.splits.clone(),
         master_ratio: w.master_ratio,
@@ -276,10 +361,28 @@ struct Canvas {
 }
 
 impl Canvas {
+    /// A screen of this size fitted into the canvas's room (a portrait monitor is narrower).
     fn new(screen: (i32, i32)) -> Self {
-        let scale = CANVAS_W / screen.0 as f32;
-        Canvas { w: CANVAS_W, h: (screen.1 as f32 * scale).round(), scale, screen: Rect::new(0, 0, screen.0, screen.1) }
+        let scale = (CANVAS_W / screen.0 as f32).min(CANVAS_MAX_H / screen.1 as f32);
+        Canvas {
+            w: (screen.0 as f32 * scale).round(),
+            h: (screen.1 as f32 * scale).round(),
+            scale,
+            screen: Rect::new(0, 0, screen.0, screen.1),
+        }
     }
+}
+
+/// A workspace of `setup` drawn small: every monitor it has apps on.
+fn ws_thumb(ed: &Editor, setup: &SetupEdit, n: usize, d: &Defaults) -> setups::Thumb {
+    let entries: Vec<SetupWorkspace> = setup.workspaces.iter().filter(|w| w.number == n && !w.apps.is_empty()).map(to_config).collect();
+    let refs: Vec<&SetupWorkspace> = entries.iter().collect();
+    if refs.is_empty() {
+        // An empty workspace: the shown monitor, blank.
+        let a = ed.area(ed.mon);
+        return setups::Thumb { aspect: a.w as f32 / a.h as f32, screens: vec![[0.0, 0.0, 1.0, 1.0]], tiles: Vec::new() };
+    }
+    setups::thumb(&refs, |m| ed.area(m.map_or(ed.primary, |m| m - 1)), d)
 }
 
 /// Where each app's tile is drawn on the canvas, as (x, y, w, h). Monocle stacks every window on
@@ -367,8 +470,10 @@ pub fn validate(s: &S) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes the setups as `[[setup]]` tables, replacing the ones there.
-pub fn write(doc: &mut DocumentMut, list: &[SetupEdit]) {
+/// Writes the setups as `[[setup]]` tables, replacing the ones there. An entry on the primary
+/// monitor leaves `monitor` out.
+pub fn write(doc: &mut DocumentMut, ed: &Editor) {
+    let list = &ed.list;
     doc.remove("setup");
     doc.remove("setups");
     if list.is_empty() {
@@ -378,7 +483,7 @@ pub fn write(doc: &mut DocumentMut, list: &[SetupEdit]) {
     for (i, s) in list.iter().enumerate() {
         let mut t = toml_edit::Table::new();
         if i == 0 {
-            t.decor_mut().set_prefix("\n# Setups: apps, the workspaces they go on, and their layout. Restore one with its key,\n# `lattice msg restore-setup NAME`, or \"workspaces\" in the launcher. The settings\n# window's Workspaces tab edits them (and rewrites this part of the file).\n");
+            t.decor_mut().set_prefix("\n# Setups: apps, the workspaces they go on, and their layout. Restore one with its key,\n# `lattice msg restore-setup NAME`, or \"workspaces\" in the launcher. The settings\n# window's Setups tab edits them (and rewrites this part of the file).\n");
         }
         t["name"] = toml_edit::value(s.name.text.trim());
         let key = s.key.text.trim();
@@ -389,6 +494,9 @@ pub fn write(doc: &mut DocumentMut, list: &[SetupEdit]) {
         for w in s.workspaces.iter().filter(|w| !w.apps.is_empty()) {
             let mut wt = toml_edit::Table::new();
             wt["number"] = toml_edit::value(w.number as i64);
+            if w.monitor != ed.primary {
+                wt["monitor"] = toml_edit::value(w.monitor as i64 + 1);
+            }
             if let Some(l) = w.layout {
                 wt["layout"] = toml_edit::value(l.name());
             }
@@ -447,6 +555,8 @@ fn wake() {
 
 struct CapturedWs {
     number: usize,
+    /// None: lattice didn't say (the primary).
+    monitor: Option<usize>,
     layout: Option<LayoutKind>,
     apps: Vec<(String, String)>,
 }
@@ -473,15 +583,21 @@ fn parse_capture(v: &serde_json::Value) -> Result<Vec<CapturedWs>, String> {
         let path = w["hwnd"].as_i64().map(|h| crate::win::exe_path(h as isize)).unwrap_or_default();
         let run = if path.is_empty() { String::new() } else { setups::run_for_path(&path) };
         let number = number as usize;
-        if out.last().is_none_or(|c| c.number != number) {
-            let layout = v["workspaces"]
-                .as_array()
-                .and_then(|l| l.iter().find(|x| x["index"].as_u64() == Some(number as u64)))
-                .and_then(|x| x["layout"].as_str())
-                .and_then(LayoutKind::parse);
-            out.push(CapturedWs { number, layout, apps: Vec::new() });
-        }
-        out.last_mut().expect("just pushed").apps.push((exe.to_string(), run));
+        let monitor = w["monitor"].as_u64().map(|m| m as usize);
+        // Windows come by workspace in tiling order; each monitor of a workspace is an entry.
+        let i = match out.iter().position(|c| c.number == number && c.monitor == monitor) {
+            Some(i) => i,
+            None => {
+                let layout = v["workspaces"]
+                    .as_array()
+                    .and_then(|l| l.iter().find(|x| x["index"].as_u64() == Some(number as u64)))
+                    .and_then(|x| x["layout"].as_str())
+                    .and_then(LayoutKind::parse);
+                out.push(CapturedWs { number, monitor, layout, apps: Vec::new() });
+                out.len() - 1
+            }
+        };
+        out[i].apps.push((exe.to_string(), run));
     }
     if out.is_empty() {
         return Err("No tiled windows to save".into());
@@ -522,7 +638,8 @@ pub fn poll(s: &mut S) -> bool {
                 let mut setup = SetupEdit { id, name: TextEdit::new(name.clone()), key: TextEdit::new(""), workspaces: Vec::new() };
                 for c in wss {
                     let apps = c.apps.iter().map(|(exe, run)| s.ed.app(exe, run)).collect();
-                    setup.workspaces.push(WsEdit { number: c.number, layout: c.layout, splits: Vec::new(), master_ratio: None, apps });
+                    let monitor = c.monitor.unwrap_or(s.ed.primary);
+                    setup.workspaces.push(WsEdit { number: c.number, monitor, layout: c.layout, splits: Vec::new(), master_ratio: None, apps });
                 }
                 s.ed.list.push(setup);
                 let i = s.ed.list.len() - 1;
@@ -624,7 +741,7 @@ fn list_section(s: &S, p: &P) -> El {
                 .radius(8.0)
                 .hover(p.t.text.alpha(0.05))
                 .on_press(move |s: &mut S| s.ed.select(i))
-                .child(mini_screens(&preview, s, p))
+                .child(mini_screens(setup, s, p))
                 .child(col().gap(2.0).grow(1.0).shrink().child(title).child(detail))
                 .child(right),
         );
@@ -700,15 +817,15 @@ impl SetupPreview {
 }
 
 /// Up to three little screens with each workspace's tiles.
-fn mini_screens(pv: &SetupPreview, s: &S, p: &P) -> El {
+fn mini_screens(setup: &SetupEdit, s: &S, p: &P) -> El {
     let d = defaults(s);
-    let c = Canvas::new(s.ed.screen);
     let mut r = row().gap(4.0).center_y().w(3.0 * 40.0 + 8.0);
-    for w in pv.setup.workspaces.iter().take(3) {
-        r = r.child(mini_screen(w, &d, &c, 40.0, p));
+    let numbers: Vec<usize> = setups::numbers(&setup.workspaces.iter().map(to_config).collect::<Vec<_>>());
+    for &n in numbers.iter().take(3) {
+        r = r.child(mini_thumb(&ws_thumb(&s.ed, setup, n, &d), 40.0, 24.0, p));
     }
-    if pv.setup.workspaces.is_empty() {
-        r = r.child(el().size(40.0, (40.0 * c.h / c.w).round()).radius(4.0).border(p.hair, p.t.card_border));
+    if numbers.is_empty() {
+        r = r.child(el().size(40.0, 22.0).radius(4.0).border(p.hair, p.t.card_border));
     }
     r
 }
@@ -771,13 +888,15 @@ fn details_section(s: &S, p: &P, i: usize) -> El {
 }
 
 fn empty_ws(number: usize) -> SetupWorkspace {
-    SetupWorkspace { number, layout: None, splits: Vec::new(), master_ratio: None, apps: Vec::new() }
+    SetupWorkspace { number, monitor: None, layout: None, splits: Vec::new(), master_ratio: None, apps: Vec::new() }
 }
 
 fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let k = kit(p);
     let d = defaults(s);
-    let shown = s.ed.shown().map(to_config).unwrap_or_else(|| empty_ws(s.ed.ws));
+    // An empty monitor shows the layout the workspace has on its others.
+    let sibling = s.ed.setup().and_then(|e| e.workspaces.iter().find(|w| w.number == s.ed.ws)).map(to_config);
+    let shown = s.ed.shown().map(to_config).unwrap_or_else(|| SetupWorkspace { layout: sibling.as_ref().and_then(|w| w.layout), ..empty_ws(s.ed.ws) });
     let kind = setups::workspace_layout(&shown, d.layout);
     let layout_pick = SegmentedControl::new(&LAYOUTS, Some(LAYOUTS.iter().position(|l| *l == kind.name()).unwrap_or(0)))
         .label("Tiling")
@@ -786,6 +905,7 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
             if let Some(w) = s.ed.shown_or_add() {
                 w.layout = LayoutKind::parse(LAYOUTS[i]);
             }
+            s.ed.sync_siblings();
         })
         .build(&k);
     let toolbar = row()
@@ -820,21 +940,114 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
         .child(small(&help, p.t.text_secondary));
     let name = s.ed.setup().map_or("", |e| e.name.text.trim());
     let title = if name.is_empty() { "Where its apps go".to_string() } else { format!("Where {name} puts its apps") };
-    section(p, "setup-layout", &title, vec![ws_cards(s, p, overlays), toolbar, canvas, inspector(s, p)])
+    let mut rows = vec![ws_cards(s, p, overlays)];
+    rows.extend(monitor_picker(s, p));
+    rows.extend([toolbar, canvas, inspector(s, p)]);
+    section(p, "setup-layout", &title, rows)
 }
 
-/// A small screen with a workspace's tiles, `mw` wide.
-fn mini_screen(w: &SetupWorkspace, d: &Defaults, c: &Canvas, mw: f32, p: &P) -> El {
-    let mh = (mw * c.h / c.w).round();
-    let f = mw / c.w;
-    let mut screen = el().size(mw, mh).radius(4.0).fill(p.t.bg).border(p.hair, p.t.card_border);
-    for (i, t) in tile_rects(w, d, c).into_iter().enumerate() {
-        // A pixel of gap around each tile, so neighbours read apart.
-        screen = screen.child(
-            el().absolute(t.0 * f + 1.0, t.1 * f + 1.0).size((t.2 * f - 2.0).max(2.0), (t.3 * f - 2.0).max(2.0)).radius(1.5).fill(color(i).alpha(0.75)),
+/// With more than one monitor: a map of them, as Windows arranges them, to pick the one the
+/// canvas shows. Each monitor of a workspace tiles its own apps.
+fn monitor_picker(s: &S, p: &P) -> Option<El> {
+    let ed = &s.ed;
+    let mons = ed.monitors();
+    if mons.is_empty() {
+        return None;
+    }
+    let setup = ed.setup()?;
+    let count = |m: usize| setup.workspaces.iter().filter(|w| w.number == ed.ws && w.monitor == m).map(|w| w.apps.len()).sum::<usize>();
+    // The connected monitors' arrangement, scaled to MAP_H tall; others follow on the right.
+    const MAP_H: f32 = 46.0;
+    let connected: Vec<Rect> = ed.screens.iter().map(|sc| sc.area).collect();
+    let (x0, y0) = connected.iter().fold((i32::MAX, i32::MAX), |(x, y), r| (x.min(r.x), y.min(r.y)));
+    let (x1, y1) = connected.iter().fold((i32::MIN, i32::MIN), |(x, y), r| (x.max(r.x + r.w), y.max(r.y + r.h)));
+    let f = (MAP_H / (y1 - y0).max(1) as f32).min(360.0 / (x1 - x0).max(1) as f32);
+    let mut map_w = (x1 - x0) as f32 * f;
+    let mut map = el();
+    for &m in &mons {
+        let on = m == ed.mon;
+        let (x, y, w, h) = match connected.get(m) {
+            Some(r) => ((r.x - x0) as f32 * f, (r.y - y0) as f32 * f, r.w as f32 * f, r.h as f32 * f),
+            None => {
+                let a = ed.area(m);
+                let (w, h) = (a.w as f32 * f, a.h as f32 * f);
+                let x = map_w + 10.0;
+                map_w = x + w;
+                (x, 0.0, w, h)
+            }
+        };
+        let n = count(m);
+        let label = match (connected.get(m).is_some(), n) {
+            (false, _) => "not connected".to_string(),
+            (true, 0) => "empty".to_string(),
+            (true, 1) => "1 app".to_string(),
+            (true, n) => format!("{n} apps"),
+        };
+        map = map.child(
+            col()
+                .key(format!("mon-{m}"))
+                .absolute(x + 1.0, y + 1.0)
+                .size((w - 2.0).max(8.0), (h - 2.0).max(8.0))
+                .hit()
+                .cursor(Cursor::Pointer)
+                .label(format!("Monitor {}, {label}", m + 1))
+                .on_press(move |s: &mut S| s.ed.show_mon(m))
+                .center()
+                .gap(0.0)
+                .radius(6.0)
+                .fill(if on { p.accent.alpha(0.18) } else { p.t.bg })
+                .hover(if on { p.accent.alpha(0.22) } else { p.t.text.alpha(0.06) })
+                .border(if on { 1.5 } else { p.hair }, if on { p.accent } else { p.t.card_border })
+                .child(text((m + 1).to_string()).font(TextStyle::new(13.0, 700.0)).color(if on { p.t.text } else { p.t.text_secondary }))
+                .child(text(label).font(TextStyle::new(10.0, 500.0)).color(p.t.text_secondary)),
         );
     }
-    screen
+    let map = map.size(map_w, MAP_H);
+    let hint = if ed.screens.get(ed.mon).is_none() {
+        format!("Monitor {} isn't connected; its apps go on the primary monitor ({}).", ed.mon + 1, ed.primary + 1)
+    } else {
+        format!(
+            "Monitor {} of workspace {}. Each monitor tiles its own apps; {} is your primary.",
+            ed.mon + 1,
+            ed.ws,
+            ed.primary + 1
+        )
+    };
+    Some(
+        row()
+            .key("setup-monitors")
+            .px(space::S3)
+            .pt(space::S2)
+            .gap(space::S3)
+            .center_y()
+            .child(small("Monitor", p.t.text_secondary))
+            .child(map)
+            .child(small(&hint, p.t.text_secondary).grow(1.0).shrink().wrap()),
+    )
+}
+
+/// A workspace drawn small in a `bw` × `bh` box: its monitors side by side as they're
+/// arranged, with their tiles.
+fn mini_thumb(th: &setups::Thumb, bw: f32, bh: f32, p: &P) -> El {
+    let (w, h) = setups::fit(th.aspect, bw, bh);
+    let (ox, oy) = ((bw - w) / 2.0, (bh - h) / 2.0);
+    let mut out = el().size(bw, bh);
+    for r in &th.screens {
+        // A pixel between monitors.
+        out = out.child(
+            el().absolute(ox + r[0] * w, oy + r[1] * h).size((r[2] * w - 1.0).max(2.0), (r[3] * h).max(2.0)).radius(3.0).fill(p.t.bg).border(p.hair, p.t.card_border),
+        );
+    }
+    for (i, r) in th.tiles.iter().enumerate() {
+        // A pixel of gap around each tile, so neighbours read apart.
+        out = out.child(
+            el().absolute(ox + r[0] * w + 1.0, oy + r[1] * h + 1.0)
+                .size((r[2] * w - 2.0).max(2.0), (r[3] * h - 2.0).max(2.0))
+                .radius(1.5)
+                .fill(color(i).alpha(0.75)),
+        );
+    }
+    out
 }
 
 /// A card for each workspace this setup uses (click to show it), and one to add
@@ -842,16 +1055,21 @@ fn mini_screen(w: &SetupWorkspace, d: &Defaults, c: &Canvas, mw: f32, p: &P) -> 
 fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let k = kit(p);
     let d = defaults(s);
-    let c = Canvas::new(s.ed.screen);
     let setup = s.ed.setup().expect("a setup is open");
     let max = (s.workspaces.round() as usize).max(1);
     let cards = s.ed.cards();
     let mut strip = row().key("ws-cards").px(space::S3).pt(space::S3).pb(space::S1).gap(space::S2).flex_wrap();
     for &n in &cards {
-        let w = setup.workspaces.iter().find(|w| w.number == n).map(to_config).unwrap_or_else(|| empty_ws(n));
         let on = n == s.ed.ws;
-        // What the setup puts on this workspace, by name.
-        let names: Vec<String> = w.apps.iter().map(|a| setups::app_label(&a.exe)).filter(|n| !n.is_empty()).collect();
+        // What the setup puts on this workspace (every monitor), by name.
+        let names: Vec<String> = setup
+            .workspaces
+            .iter()
+            .filter(|w| w.number == n)
+            .flat_map(|w| &w.apps)
+            .map(|a| setups::app_label(&a.exe.text))
+            .filter(|n| !n.is_empty())
+            .collect();
         let contents = if names.is_empty() { "No apps yet".to_string() } else { names.join(", ") };
         strip = strip.child(
             row()
@@ -860,8 +1078,9 @@ fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
                 .cursor(Cursor::Pointer)
                 .label(format!("Workspace {n}: {contents}"))
                 .on_press(move |s: &mut S| {
-                    s.ed.ws = n;
-                    s.ed.tile = None;
+                    if s.ed.ws != n {
+                        s.ed.show_ws(n);
+                    }
                 })
                 .h(48.0)
                 .px(10.0)
@@ -871,13 +1090,13 @@ fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
                 .fill(if on { p.accent.alpha(0.14) } else { p.t.bg })
                 .hover(if on { p.accent.alpha(0.18) } else { p.t.text.alpha(0.05) })
                 .border(if on { 1.5 } else { p.hair }, if on { p.accent } else { p.t.card_border })
-                .child(mini_screen(&w, &d, &c, 44.0, p))
+                .child(mini_thumb(&ws_thumb(&s.ed, setup, n, &d), 52.0, 30.0, p))
                 .child(
                     col()
                         .gap(1.0)
                         // Fixed, so three cards and "Add workspace" share a row; the names
                         // are all on the canvas below.
-                        .w(96.0)
+                        .w(90.0)
                         .child(text(format!("Workspace {n}")).font(TextStyle::new(12.5, 650.0)).color(if on { p.t.text } else { p.t.text.alpha(0.85) }).truncate())
                         .child(small(&contents, p.t.text_secondary).truncate()),
                 ),
@@ -946,7 +1165,8 @@ fn inspector(s: &S, p: &P) -> El {
     let ws = s.ed.ws;
     let workspaces = (s.workspaces.round() as usize).max(1);
     let si = s.ed.sel.expect("open");
-    let wi = s.ed.list[si].workspaces.iter().position(|w| w.number == ws).expect("shown workspace");
+    let mon = s.ed.mon;
+    let wi = s.ed.list[si].workspaces.iter().position(|w| w.number == ws && w.monitor == mon).expect("shown workspace");
     let app = &s.ed.list[si].workspaces[wi].apps[t];
     let exe_text = app.exe.text.trim();
     let initial = setups::app_label(exe_text).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
@@ -979,12 +1199,26 @@ fn inspector(s: &S, p: &P) -> El {
         .child(text(ws.to_string()).w(18.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
         .child(step("\u{203a}", (ws + 1).min(workspaces), ws >= workspaces));
     let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| s.ed.remove(t)).build(&k);
-    strip
+    let mut strip = strip
         .child(badge)
         .child(field("Program (matched by file name)", exe, p))
         .child(field("Start with, if it isn't running", run, p).grow(1.0).shrink())
-        .child(field("Workspace", mover, p))
-        .child(remove)
+        .child(field("Workspace", mover, p));
+    let mons = s.ed.monitors();
+    if let (Some(&lo), Some(&hi)) = (mons.iter().min(), mons.iter().max()) {
+        let mstep = |label: &str, to: usize, disabled: bool| {
+            Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.move_to_monitor(t, to)).build(&k)
+        };
+        let hi = hi.max(s.ed.screens.len().saturating_sub(1));
+        let mon_mover = row()
+            .gap(0.0)
+            .center_y()
+            .child(mstep("\u{2039}", mon.saturating_sub(1).max(lo), mon <= lo))
+            .child(text((mon + 1).to_string()).w(18.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
+            .child(mstep("\u{203a}", (mon + 1).min(hi), mon >= hi));
+        strip = strip.child(field("Monitor", mon_mover, p));
+    }
+    strip.child(remove)
 }
 
 fn add_picker(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
@@ -1041,12 +1275,12 @@ fn running_apps() -> Vec<(String, String)> {
 
 /// The screen, its tiles and the seams between them.
 fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults) -> El {
-    let c = Canvas::new(s.ed.screen);
+    let c = s.ed.canvas();
     let rects = tile_rects(w, d, &c);
     let drag = s.ed.drag.filter(|dr| dr.moved && dr.from < rects.len());
     let target = drag.and_then(|dr| tile_under(&rects, dr.pointer, dr.from));
     let mut screen = el()
-        .key(format!("canvas-{}", s.ed.ws))
+        .key(format!("canvas-{}-{}", s.ed.ws, s.ed.mon))
         .size(c.w, c.h)
         .radius(12.0)
         .fill(crate::bar::color("#11111b", Color::BLACK))
@@ -1212,7 +1446,7 @@ fn tile_drag(s: &mut S, i: usize, origin: (f32, f32), d: &mut Drag) {
                 return;
             }
             let dflt = defaults(s);
-            let c = Canvas::new(s.ed.screen);
+            let c = s.ed.canvas();
             let Some(w) = s.ed.shown().map(to_config) else { return };
             let rects = tile_rects(&w, &dflt, &c);
             if let Some(t) = tile_under(&rects, dr.pointer, dr.from)
@@ -1229,7 +1463,7 @@ fn tile_drag(s: &mut S, i: usize, origin: (f32, f32), d: &mut Drag) {
 
 fn seam_drag(s: &mut S, k: usize, handle: (f32, f32), d: &mut Drag) {
     let dflt = defaults(s);
-    let c = Canvas::new(s.ed.screen);
+    let c = s.ed.canvas();
     let Some(w) = s.ed.shown().map(to_config) else { return };
     let Some(seam) = seams(&w, &dflt, &c).into_iter().nth(k) else { return };
     match d.phase {
@@ -1247,6 +1481,7 @@ fn seam_drag(s: &mut S, k: usize, handle: (f32, f32), d: &mut Drag) {
                 if let Some(w) = s.ed.shown_mut() {
                     (w.splits, w.master_ratio) = (splits, master);
                 }
+                s.ed.sync_siblings();
                 return;
             }
         }
@@ -1256,6 +1491,10 @@ fn seam_drag(s: &mut S, k: usize, handle: (f32, f32), d: &mut Drag) {
     let ratio = seam.ratio_at(along / c.scale);
     if let Some(w) = s.ed.shown_mut() {
         setups::set_ratio(&mut w.splits, &mut w.master_ratio, seam.target, ratio, dflt.split_ratio);
+    }
+    // The master column's share is the workspace's, on every monitor.
+    if seam.target == layout::ResizeTarget::Master {
+        s.ed.sync_siblings();
     }
 }
 
@@ -1299,19 +1538,70 @@ number = 2
 apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
 "#;
         let cfg: config::Config = toml::from_str(src).unwrap();
-        let mut ed = Editor::load(&cfg);
+        // Two monitors, the right one primary: entries without a monitor are on it.
+        let mut ed = Editor::load_on(&cfg, two_screens(), 1);
+        assert_eq!(ed.list[0].workspaces[0].monitor, 1);
         // An empty workspace isn't written.
+        ed.select(0);
         ed.ws = 5;
         ed.shown_or_add();
         let mut doc: DocumentMut = "[general]\nworkspaces = 9\n\n[keybinds]\n\"super+q\" = \"close\"\n".parse().unwrap();
-        write(&mut doc, &ed.list);
+        write(&mut doc, &ed);
         let out = doc.to_string();
         let back: config::Config = toml::from_str(&out).unwrap_or_else(|e| panic!("{e}\n{out}"));
         assert_eq!(back.setups, cfg.setups, "{out}");
+        assert!(!out.contains("monitor"), "the primary's entries leave it out:\n{out}");
         assert_eq!(back.keybinds.len(), 1);
         // Writing none removes the tables.
-        write(&mut doc, &[]);
+        ed.list.clear();
+        write(&mut doc, &ed);
         assert!(!doc.to_string().contains("[[setup"));
+    }
+
+    fn two_screens() -> Vec<Screen> {
+        vec![Screen { area: Rect::new(-1920, 0, 1920, 1080) }, Screen { area: Rect::new(0, 32, 1920, 1008) }]
+    }
+
+    #[test]
+    fn apps_go_on_monitors() {
+        let cfg: config::Config = toml::from_str("[[setup]]\nname = \"Dev\"\n[[setup.workspace]]\nnumber = 1\nlayout = \"master\"\napps = [{ exe = \"a.exe\" }, { exe = \"b.exe\" }]").unwrap();
+        let mut ed = Editor::load_on(&cfg, two_screens(), 1);
+        ed.select(0);
+        assert_eq!((ed.ws, ed.mon), (1, 1));
+        assert_eq!(ed.cards(), vec![1]);
+        assert_eq!(ed.monitors(), vec![0, 1]);
+        // b to the left monitor: a new entry there, with the workspace's layout.
+        ed.move_to_monitor(1, 0);
+        assert_eq!((ed.ws, ed.mon, ed.tile), (1, 0, Some(0)));
+        let left = ed.shown().unwrap();
+        assert_eq!((left.apps.len(), left.layout), (1, Some(LayoutKind::Master)));
+        // Changing the layout on one monitor changes it on the other.
+        ed.shown_mut().unwrap().layout = Some(LayoutKind::Dwindle);
+        ed.sync_siblings();
+        assert!(ed.list[0].workspaces.iter().all(|w| w.layout == Some(LayoutKind::Dwindle)));
+        assert_eq!(ed.cards(), vec![1], "one card for both monitors");
+        let mut doc = DocumentMut::new();
+        write(&mut doc, &ed);
+        let back: config::Config = toml::from_str(&doc.to_string()).unwrap();
+        let w = &back.setups[0].workspaces;
+        assert_eq!((w[0].monitor, w[0].apps[0].exe.as_str()), (Some(1), "b.exe"));
+        assert_eq!((w[1].monitor, w[1].apps[0].exe.as_str()), (None, "a.exe"));
+    }
+
+    #[test]
+    fn capture_keeps_monitors_apart() {
+        let v = serde_json::json!({
+            "windows": [
+                {"workspace": 1, "monitor": 1, "exe": "Code.exe"},
+                {"workspace": 1, "monitor": 0, "exe": "msedge.exe"},
+                {"workspace": 1, "monitor": 1, "exe": "WindowsTerminal.exe"},
+            ],
+            "workspaces": [],
+        });
+        let got = parse_capture(&v).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].monitor, got[0].apps.len()), (Some(1), 2));
+        assert_eq!((got[1].monitor, got[1].apps.len()), (Some(0), 1));
     }
 
     #[test]
@@ -1374,11 +1664,15 @@ pub fn sample(s: &mut S) {
         splits = [0.62]
         apps = [{ exe = "Code.exe", run = "code" }, { exe = "WindowsTerminal.exe", run = "wt" }, { exe = "Postman.exe" }]
         [[setup.workspace]]
+        number = 1
+        monitor = 2
+        apps = [{ exe = "msedge.exe" }, { exe = "Notion.exe" }]
+        [[setup.workspace]]
         number = 2
-        apps = [{ exe = "msedge.exe" }]
+        apps = [{ exe = "slack.exe" }]
         [[setup.workspace]]
         number = 3
-        apps = [{ exe = "slack.exe" }]
+        apps = [{ exe = "Spotify.exe" }]
 
         [[setup]]
         name = "Deep work"
@@ -1398,11 +1692,18 @@ pub fn sample(s: &mut S) {
         "#,
     )
     .expect("sample setups parse");
-    let mut ed = Editor::load(&cfg);
-    ed.screen = (1920, 1050);
+    // Two monitors side by side, the left one primary (with the bar).
+    let screens = vec![Screen { area: Rect::new(0, 30, 1920, 1010) }, Screen { area: Rect::new(1920, 0, 1920, 1040) }];
+    let mut ed = Editor::load_on(&cfg, screens, 0);
     ed.select(0);
     ed.tile = Some(0);
     s.ed = ed;
+}
+
+/// Monitor 2 of workspace 1.
+pub fn sample_monitor(s: &mut S) {
+    s.ed.show_mon(1);
+    s.ed.tile = Some(0);
 }
 
 /// The list, before one is opened.
@@ -1424,7 +1725,7 @@ pub fn sample_add_ws(s: &mut S) {
 /// Terminal being dragged onto Code.
 pub fn sample_drag(s: &mut S) {
     let d = defaults(s);
-    let c = Canvas::new(s.ed.screen);
+    let c = s.ed.canvas();
     let w = s.ed.shown().map(to_config).expect("sample workspace");
     let rects = tile_rects(&w, &d, &c);
     let (from, to) = (rects[1], rects[0]);

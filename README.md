@@ -222,14 +222,17 @@ you have open, and clicking one opens it:
 - Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
 - A card for each workspace the setup uses shows that workspace's layout and the apps it puts
   there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
-- The layout editor shows the workspace as lattice will tile it on your primary monitor, one
-  box per app. Drag a box onto another to swap them. Drag the gap between two boxes to resize
-  them; the split shows as a percentage while you drag. Pick dwindle, master or monocle.
+- A workspace spans all your monitors, and each monitor tiles its own windows. With more than
+  one monitor, a map of them (arranged as in Windows' display settings) picks the one to edit.
+- The layout editor shows that monitor as lattice will tile it, one box per app. Drag a box
+  onto another to swap them. Drag the gap between two boxes to resize them; the split shows as
+  a percentage while you drag. Pick dwindle, master or monocle (for the whole workspace, as in
+  lattice).
 - **+ Add app** lists the programs you have open (or "Other program…" to type one in). It
   drops in exactly where a new window would: after the selected box with `new_window =
   "after_focused"`, else at the end.
 - Click a box and the strip under the editor edits it: its program, the command line that
-  starts it, which workspace it's on, or remove it.
+  starts it, which workspace and monitor it's on, or remove it.
 - **Restore** saves and restores it right away; **‹ Setups** goes back to the list.
 
 Restore one with its shortcut, by typing `workspaces` or `setups` in the launcher (a picker
@@ -251,13 +254,25 @@ apps = [
   { exe = "WindowsTerminal.exe", run = "wt" },
 ]
 
+# The browser on the second monitor (from the left) of workspace 1.
+[[setup.workspace]]
+number = 1
+monitor = 2
+apps = [{ exe = "msedge.exe" }]
+
 [[setup.workspace]]
 number = 2
-apps = [{ exe = "msedge.exe" }]
+apps = [{ exe = "slack.exe" }]
 ```
 
+Each `[[setup.workspace]]` is one monitor of a workspace: `monitor` counts from the left, as
+`lattice query monitors` lists them (but from 1), and leaving it out means your primary
+monitor. A setup naming a monitor that isn't connected puts those apps on the primary one.
+`splits` are that monitor's; `layout` and `master_ratio` are the workspace's.
+
 Windows are matched by `exe`, the program's file name (as `lattice --list` shows it). An open
-window already on the right workspace stays where it is; otherwise the one you used last moves.
+window already where it goes stays there, and one already on the right monitor stays on it;
+otherwise the one you used last moves.
 `run` is the command line that starts the app (`run` defaults to `exe`). Some apps start
 through another program: Discord's own shortcut runs `Update.exe --processStart Discord.exe`,
 so use that as `run` with `exe = "Discord.exe"`.
@@ -589,7 +604,8 @@ soundtrack.
 - A window that runs as administrator can be moved only if lattice is also elevated.
 - Resizing tiled windows with the mouse isn't supported yet: they snap back. Use Win+= and
   Win+− instead.
-- Setups tile on the primary monitor, and match apps by program file name, so they
-  can't tell apart two windows of a Store app (all are `ApplicationFrameHost.exe`).
+- Setups match apps by program file name, so they can't tell apart two windows of a Store app
+  (all are `ApplicationFrameHost.exe`). Monitors are numbered by position, so after you
+  rearrange your displays a setup's monitor 2 may be a different screen.
 - Apps with a large minimum size can't shrink to small tiles and overflow them. Spread windows
   across monitors or workspaces, or use the `master` layout.

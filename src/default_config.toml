@@ -265,8 +265,10 @@ float = true
 # Restoring one moves the apps that are open into place, starts the ones that aren't (with
 # `run`, or the exe), and switches to its first workspace. Restore it with its `key`,
 # `lattice msg restore-setup Dev`, or by typing "workspaces" in the launcher. The settings
-# window's Setups tab edits them with a drag-and-drop layout editor. Apps tile in `apps`
-# order on the primary monitor; `splits` (dwindle) and `master_ratio` (master) are optional.
+# window's Setups tab edits them with a drag-and-drop layout editor. Each [[setup.workspace]]
+# is one monitor of a workspace: `monitor` counts from the left (from 1), and none is the
+# primary. Apps tile in `apps` order; `splits` (dwindle) and `master_ratio` (master) are
+# optional.
 # [[setup]]
 # name = "Dev"
 # key = "super+alt+1"
@@ -276,5 +278,6 @@ float = true
 # splits = [0.6]
 # apps = [{ exe = "Code.exe", run = "code" }, { exe = "WindowsTerminal.exe", run = "wt" }]
 # [[setup.workspace]]
-# number = 2
+# number = 1
+# monitor = 2
 # apps = [{ exe = "msedge.exe" }]

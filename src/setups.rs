@@ -15,6 +15,8 @@ use crate::layout::{self, LayoutKind, Params, Rect};
 pub struct Slot {
     /// Workspace index (0-based).
     pub ws: usize,
+    /// Monitor index (0-based, left to right).
+    pub mon: usize,
     /// Position in that workspace's tiling order.
     pub order: usize,
     pub exe: String,
@@ -31,41 +33,53 @@ pub struct Plan {
     pub launch: Vec<usize>,
 }
 
-/// An open window as `plan` sees it: (handle, exe file name, workspace index, its place in
-/// that workspace's tiling order).
-pub type OpenWindow<'a> = (isize, &'a str, usize, usize);
+/// An open window as `plan` sees it.
+#[derive(Clone, Copy, Debug)]
+pub struct OpenWindow<'a> {
+    pub hwnd: isize,
+    pub exe: &'a str,
+    pub ws: usize,
+    pub mon: usize,
+    /// Its place in its workspace's tiling order.
+    pub place: usize,
+}
 
-/// Matches the setup's apps to open windows of the same program. A window already on the
-/// right workspace is taken first, in tiling order (two Edge windows already in place keep
-/// their places), so restoring a setup that's in place changes nothing;
-/// then any other one, in the order given (most recently used first gives the window you
-/// were last in). `ws_index` turns a 1-based workspace number into an index.
-pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usize) -> Plan {
+/// Matches the setup's apps to open windows of the same program. A window already where it
+/// goes (workspace and monitor) is taken first, then one on the right workspace, each in tiling
+/// order (two Edge windows already in place keep their places), so restoring a setup that's in
+/// place changes nothing; then one on the right monitor, so windows don't cross monitors for
+/// nothing; then any other one, in the order given (most recently used first gives the window
+/// you were last in). `ws_index` turns a 1-based workspace number into an
+/// index, and `mon_index` a setup's monitor (1-based, none for the primary) into one.
+pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usize, mon_index: impl Fn(Option<usize>) -> usize) -> Plan {
     let mut slots = Vec::new();
     for w in &setup.workspaces {
-        let ws = ws_index(w.number);
+        let (ws, mon) = (ws_index(w.number), mon_index(w.monitor));
         for (order, app) in w.apps.iter().enumerate() {
             if app.exe.trim().is_empty() {
                 continue;
             }
-            slots.push(Slot { ws, order, exe: app.exe.trim().to_string(), run: app.command_line().to_string() });
+            slots.push(Slot { ws, mon, order, exe: app.exe.trim().to_string(), run: app.command_line().to_string() });
         }
     }
     let mut taken = vec![false; open.len()];
     let mut filled: Vec<Option<isize>> = vec![None; slots.len()];
-    for same_ws in [true, false] {
+    // 0: same workspace and monitor; 1: same workspace; 2: same monitor; 3: anywhere.
+    for pass in 0..4 {
         for (i, slot) in slots.iter().enumerate() {
             if filled[i].is_some() {
                 continue;
             }
-            let mut fits = open
-                .iter()
-                .enumerate()
-                .filter(|(j, (_, exe, ws, _))| !taken[*j] && exe.eq_ignore_ascii_case(&slot.exe) && (!same_ws || *ws == slot.ws));
-            let found = if same_ws { fits.min_by_key(|(_, o)| o.3) } else { fits.next() }.map(|(j, _)| j);
+            let mut fits = open.iter().enumerate().filter(|(j, o)| {
+                !taken[*j]
+                    && o.exe.eq_ignore_ascii_case(&slot.exe)
+                    && (pass >= 2 || o.ws == slot.ws)
+                    && (pass == 1 || pass == 3 || o.mon == slot.mon)
+            });
+            let found = if pass < 2 { fits.min_by_key(|(_, o)| o.place) } else { fits.next() }.map(|(j, _)| j);
             if let Some(j) = found {
                 taken[j] = true;
-                filled[i] = Some(open[j].0);
+                filled[i] = Some(open[j].hwnd);
             }
         }
     }
@@ -171,17 +185,70 @@ pub fn run_for_path(path: &str) -> String {
     if path.contains(' ') { format!("\"{path}\"") } else { path.to_string() }
 }
 
-/// A short description of a setup: "1: Code, Terminal · 2: msedge".
+/// A short description of a setup: "1: Code, Terminal · 2: msedge" (a workspace's apps on
+/// every monitor together).
 pub fn summary(s: &Setup) -> String {
-    let mut parts = Vec::new();
-    for w in &s.workspaces {
-        if w.apps.is_empty() {
-            continue;
-        }
-        let names: Vec<String> = w.apps.iter().map(|a| app_label(&a.exe)).collect();
-        parts.push(format!("{}: {}", w.number, names.join(", ")));
-    }
+    let parts: Vec<String> = numbers(&s.workspaces)
+        .into_iter()
+        .map(|n| {
+            let names: Vec<String> = s.workspaces.iter().filter(|w| w.number == n).flat_map(|w| &w.apps).map(|a| app_label(&a.exe)).collect();
+            format!("{n}: {}", names.join(", "))
+        })
+        .collect();
     if parts.is_empty() { "No apps yet".into() } else { parts.join("  ·  ") }
+}
+
+/// The workspace numbers a setup puts apps on, in the order it first names them.
+pub fn numbers(entries: &[SetupWorkspace]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for w in entries.iter().filter(|w| !w.apps.is_empty()) {
+        if !out.contains(&w.number) {
+            out.push(w.number);
+        }
+    }
+    out
+}
+
+/// A workspace drawn small: every monitor it uses and the tiles on them, as fractions
+/// (`[x, y, w, h]`) of the box around those monitors, whose width over height is `aspect`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Thumb {
+    pub aspect: f32,
+    pub screens: Vec<[f32; 4]>,
+    pub tiles: Vec<[f32; 4]>,
+}
+
+/// The size of a `aspect`-shaped box fitted inside `w` × `h`.
+pub fn fit(aspect: f32, w: f32, h: f32) -> (f32, f32) {
+    if aspect <= 0.0 {
+        (w, h)
+    } else if aspect >= w / h {
+        (w, w / aspect)
+    } else {
+        (h * aspect, h)
+    }
+}
+
+/// The thumbnail of one workspace from its setup `entries` (one per monitor). `area` gives a
+/// setup monitor's tiling area on the desktop (where `tiles` would lay it out).
+pub fn thumb(entries: &[&SetupWorkspace], area: impl Fn(Option<usize>) -> Rect, d: &Defaults) -> Thumb {
+    let areas: Vec<Rect> = entries.iter().map(|w| area(w.monitor)).collect();
+    let mut screens: Vec<Rect> = Vec::new();
+    for a in &areas {
+        if !screens.contains(a) {
+            screens.push(*a);
+        }
+    }
+    let Some(first) = screens.first() else { return Thumb::default() };
+    let (x0, y0) = screens.iter().fold((first.x, first.y), |(x, y), r| (x.min(r.x), y.min(r.y)));
+    let (x1, y1) = screens.iter().fold((first.x + first.w, first.y + first.h), |(x, y), r| (x.max(r.x + r.w), y.max(r.y + r.h)));
+    let (bw, bh) = ((x1 - x0).max(1) as f32, (y1 - y0).max(1) as f32);
+    let frac = |r: Rect| [(r.x - x0) as f32 / bw, (r.y - y0) as f32 / bh, r.w as f32 / bw, r.h as f32 / bh];
+    Thumb {
+        aspect: bw / bh,
+        screens: screens.iter().map(|r| frac(*r)).collect(),
+        tiles: entries.iter().zip(&areas).flat_map(|(w, a)| tiles(w, *a, d)).map(frac).collect(),
+    }
 }
 
 #[cfg(test)]
@@ -194,7 +261,19 @@ mod tests {
     }
 
     fn ws(number: usize, apps: &[&str]) -> SetupWorkspace {
-        SetupWorkspace { number, layout: None, splits: Vec::new(), master_ratio: None, apps: apps.iter().map(|a| app(a)).collect() }
+        SetupWorkspace { number, monitor: None, layout: None, splits: Vec::new(), master_ratio: None, apps: apps.iter().map(|a| app(a)).collect() }
+    }
+
+    fn open(v: &[(isize, &'static str, usize, usize)]) -> Vec<OpenWindow<'static>> {
+        v.iter().map(|&(hwnd, exe, ws, place)| OpenWindow { hwnd, exe, ws, mon: 0, place }).collect()
+    }
+
+    /// Workspace numbers and monitors as indexes, the primary being monitor 1.
+    fn idx(n: usize) -> usize {
+        n - 1
+    }
+    fn mon(m: Option<usize>) -> usize {
+        m.map_or(0, |m| m - 1)
     }
 
     fn dev() -> Setup {
@@ -208,10 +287,10 @@ mod tests {
     #[test]
     fn plan_claims_open_windows_and_launches_the_rest() {
         // Edge is open twice (one already on workspace 2), Code once on 5; nothing else runs.
-        let open = [(10, "msedge.exe", 0, 0), (11, "Code.exe", 4, 0), (12, "msedge.exe", 1, 0), (13, "notepad.exe", 0, 1)];
-        let p = plan(&dev(), &open, |n| n - 1);
+        let open = open(&[(10, "msedge.exe", 0, 0), (11, "Code.exe", 4, 0), (12, "msedge.exe", 1, 0), (13, "notepad.exe", 0, 1)]);
+        let p = plan(&dev(), &open, idx, mon);
         assert_eq!(p.slots.len(), 4);
-        assert_eq!(p.slots[1], Slot { ws: 0, order: 1, exe: "WindowsTerminal.exe".into(), run: "WindowsTerminal.exe".into() });
+        assert_eq!(p.slots[1], Slot { ws: 0, mon: 0, order: 1, exe: "WindowsTerminal.exe".into(), run: "WindowsTerminal.exe".into() });
         // The Edge already on workspace 2 stays; Code comes over from 5.
         assert_eq!(p.claims, vec![(0, 11), (2, 12)]);
         assert_eq!(p.launch, vec![1, 3]);
@@ -222,10 +301,10 @@ mod tests {
         // Two Code slots on different workspaces; the window on workspace 2 must not be taken
         // by the first slot just because it comes first.
         let s = Setup { workspaces: vec![ws(1, &["Code.exe"]), ws(2, &["code.exe"])], ..dev() };
-        let open = [(1, "Code.exe", 1, 0), (2, "Code.exe", 6, 0)];
-        assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 2), (1, 1)]);
+        let open = open(&[(1, "Code.exe", 1, 0), (2, "Code.exe", 6, 0)]);
+        assert_eq!(plan(&s, &open, idx, mon).claims, vec![(0, 2), (1, 1)]);
         // One window for two slots: the other one is launched.
-        let p = plan(&s, &open[..1], |n| n - 1);
+        let p = plan(&s, &open[..1], idx, mon);
         assert_eq!((p.claims, p.launch), (vec![(1, 1)], vec![0]));
     }
 
@@ -234,11 +313,46 @@ mod tests {
         // Two Edge slots and two Edge windows already on workspace 1, the second one used
         // last: they keep their places rather than swapping by recency.
         let s = Setup { workspaces: vec![ws(1, &["msedge.exe", "msedge.exe"])], ..dev() };
-        let open = [(7, "msedge.exe", 0, 1), (5, "msedge.exe", 0, 0)];
-        assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 5), (1, 7)]);
+        let o = open(&[(7, "msedge.exe", 0, 1), (5, "msedge.exe", 0, 0)]);
+        assert_eq!(plan(&s, &o, idx, mon).claims, vec![(0, 5), (1, 7)]);
         // Brought from elsewhere, the one used last goes first.
-        let open = [(7, "msedge.exe", 3, 1), (5, "msedge.exe", 3, 0)];
-        assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 7), (1, 5)]);
+        let o = open(&[(7, "msedge.exe", 3, 1), (5, "msedge.exe", 3, 0)]);
+        assert_eq!(plan(&s, &o, idx, mon).claims, vec![(0, 7), (1, 5)]);
+    }
+
+    #[test]
+    fn monitors_keep_their_windows() {
+        // Edge on each of two monitors of workspace 1; the setup wants one on each. The one on
+        // monitor 2 comes first in tiling order, but each stays on its own monitor.
+        let left = ws(1, &["msedge.exe"]);
+        let right = SetupWorkspace { monitor: Some(2), ..ws(1, &["msedge.exe"]) };
+        let s = Setup { workspaces: vec![left, right], ..dev() };
+        let o = vec![
+            OpenWindow { hwnd: 8, exe: "msedge.exe", ws: 0, mon: 1, place: 0 },
+            OpenWindow { hwnd: 9, exe: "msedge.exe", ws: 0, mon: 0, place: 1 },
+        ];
+        let p = plan(&s, &o, idx, mon);
+        assert_eq!((p.slots[0].mon, p.slots[1].mon), (0, 1));
+        assert_eq!(p.claims, vec![(0, 9), (1, 8)]);
+        // From another workspace, an Edge on monitor 2 takes monitor 2's spot, though monitor
+        // 1's comes first; monitor 1's app is started.
+        let o = vec![OpenWindow { hwnd: 8, exe: "msedge.exe", ws: 4, mon: 1, place: 0 }];
+        let p = plan(&s, &o, idx, mon);
+        assert_eq!((p.claims, p.launch), (vec![(1, 8)], vec![0]));
+    }
+
+    #[test]
+    fn thumbnails_show_every_monitor() {
+        let d = Defaults { layout: LayoutKind::Dwindle, split_ratio: 0.5, master_ratio: 0.55, gaps_inner: 0, gaps_outer: 0, new_window: NewWindow::End };
+        let left = ws(1, &["a.exe", "b.exe"]);
+        let right = SetupWorkspace { monitor: Some(2), ..ws(1, &["c.exe"]) };
+        let area = |m: Option<usize>| if m == Some(2) { Rect::new(1000, 0, 1000, 500) } else { Rect::new(0, 0, 1000, 500) };
+        let t = thumb(&[&left, &right], area, &d);
+        assert_eq!(t.aspect, 4.0);
+        assert_eq!(t.screens, vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]]);
+        assert_eq!(t.tiles, vec![[0.0, 0.0, 0.25, 1.0], [0.25, 0.0, 0.25, 1.0], [0.5, 0.0, 0.5, 1.0]]);
+        let s = Setup { workspaces: vec![left, ws(2, &["d.exe"]), right], ..dev() };
+        assert_eq!(summary(&s), "1: a, b, c  ·  2: d");
     }
 
     #[test]
