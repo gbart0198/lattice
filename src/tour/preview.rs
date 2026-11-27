@@ -48,18 +48,24 @@ static SCENES: &[Scene] = &[
     ("layouts", |t| t.step = 4),
     ("system", |t| t.step = 5),
     ("launcher", |t| t.step = 6),
-    ("launcher-open", |t| {
-        t.step = 7;
-        t.anchors[Anchor::Launcher as usize] = Some(LAUNCHER);
-    }),
-    ("finish", |t| t.step = 8),
+    ("launcher-open", |t| open_at(t, 7)),
+    ("files", |t| open_at(t, 8)),
+    ("commands", |t| open_at(t, 9)),
+    ("windows", |t| open_at(t, 10)),
+    ("launcher-close", |t| open_at(t, 11)),
+    ("finish", |t| t.step = 12),
 ];
 
+/// A step that points at the launcher, with the launcher drawn open.
+fn open_at(t: &mut Tour, step: usize) {
+    t.step = step;
+    t.anchors[Anchor::Launcher as usize] = Some(LAUNCHER);
+}
+
 fn preview_view(s: &Tour, cx: &mut Cx<Tour>) -> El {
-    let launcher = s.anchors[Anchor::Launcher as usize].is_some() && s.step == 7;
     let mut desk = el().w_full().h_full().child(desktop(&s.pal));
-    if launcher {
-        desk = desk.child(launcher_box(&s.pal));
+    if s.anchor_rect().is_some() && s.current().anchor == Some(Anchor::Launcher) {
+        desk = desk.child(launcher_box(&s.pal, s.current().eyebrow));
     }
     desk.child(view::view(s, cx))
 }
@@ -191,9 +197,15 @@ fn bar(p: &Palette) -> El {
         .child(stats)
 }
 
-fn launcher_box(p: &Palette) -> El {
+/// The launcher as it looks in the mode a step talks about (by its eyebrow).
+fn launcher_box(p: &Palette, mode: &str) -> El {
     let r = LAUNCHER;
-    let rows = ["Visual Studio Code", "Windows Terminal", "Spotify", "Discord", "Firefox", "Settings"];
+    let (query, rows): (&str, [&str; 6]) = match mode {
+        "Files" => ("f notes", ["notes.md", "Notes", "meeting-notes.txt", "notes-2026.docx", "release-notes.md", "Notes (Archive)"]),
+        "Commands" => ("> layout", ["Layout: Dwindle", "Layout: Master", "Layout: Monocle", "Toggle floating", "Retile", "Reload config"]),
+        "Windows" => ("", ["Windows Terminal", "Spotify", "Discord", "Firefox", "Settings", "README.md - Visual Studio Code"]),
+        _ => ("vs", ["Visual Studio Code", "Windows Terminal", "Spotify", "Discord", "Firefox", "Settings"]),
+    };
     let list = rows.iter().enumerate().fold(col().px(8.0).py(8.0), |c, (i, name)| {
         c.child(
             row()
@@ -214,7 +226,7 @@ fn launcher_box(p: &Palette) -> El {
         .fill(p.bg)
         .border(1.0, p.surface)
         .child(
-            row().h(60.0).px(20.0).center_y().child(text("vs").font(TextStyle::new(18.0, 500.0)).color(p.fg)),
+            row().h(60.0).px(20.0).center_y().child(text(query.to_string()).font(TextStyle::new(18.0, 500.0)).color(p.fg)),
         )
         .child(el().h(1.0).fill(p.surface))
         .child(list)
