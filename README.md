@@ -585,8 +585,8 @@ many windows were already open and moved into place, `started` how many apps it 
 open window that closed first), and `folded` the setup's monitors (from 1) that aren't
 connected, whose apps went on the primary. Restoring again before it finishes ends the first
 restore early, with what hadn't appeared as `missing`. In the environment a list is its items
-separated by spaces (`LATTICE_MISSING=slack.exe Code.exe`), so `if %LATTICE_COMPLETE%==true`
-is the easy test in `cmd`:
+separated by spaces (`LATTICE_MISSING=slack.exe Code.exe`). An empty list leaves the variable
+unset, so in `cmd` it prints as its own name; `if %LATTICE_COMPLETE%==true` is the easy test:
 
 ```toml
 [[hook]]
