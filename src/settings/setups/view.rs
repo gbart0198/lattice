@@ -1,5 +1,5 @@
 //! The Setups tab's view: the list page (a row a setup, with a preview and its shortcut), and a
-//! setup's own page with its name and shortcut, the workspace cards, the toolbar (tiling, the
+//! setup's own page with its header row (back, name, shortcut, Apply, Delete), the workspace cards, the toolbar (tiling, the
 //! editor's help, the add picker), the monitor bar and carousel around the canvas with a button
 //! either side to add a monitor, and the inspector for the selected window.
 
@@ -30,6 +30,11 @@ pub(super) static TRASH: Icon = Icon {
     name: "setups-trash",
     view: 16.0,
     body: r#"<path d="M3 4.5H13M6.5 4.5V3H9.5V4.5M4.5 4.5L5.2 13H10.8L11.5 4.5M7 7V11M9 7V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+static BACK: Icon = Icon {
+    name: "setups-back",
+    view: 16.0,
+    body: r#"<path d="M10 3.5L5.5 8L10 12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 static INFO: Icon = Icon {
     name: "setups-info",
@@ -82,7 +87,7 @@ fn list_section(s: &S, p: &P) -> El {
         let restore_name = name.to_string();
         right = right
             .child(
-                Button::new("Restore")
+                Button::new("Apply")
                     .variant(ButtonVariant::Outline)
                     .disabled(name.is_empty())
                     .on_press(move |s: &mut S| restore(s, restore_name.clone()))
@@ -138,28 +143,7 @@ fn list_section(s: &S, p: &P) -> El {
 
 /// One setup, on a page of its own.
 fn editor_page(s: &S, p: &P, i: usize, overlays: &mut Vec<El>) -> Vec<El> {
-    let k = kit(p);
-    let name = s.ed.list[i].name.text.trim().to_string();
-    let back = Button::new("\u{2039}  Setups").variant(ButtonVariant::Ghost).on_press(|s: &mut S| s.ed.close()).build(&k);
-    let restore_name = name.clone();
-    let restore_btn = Button::new("Restore")
-        .variant(ButtonVariant::Outline)
-        .disabled(name.is_empty())
-        .on_press(move |s: &mut S| restore(s, restore_name.clone()))
-        .build(&k);
-    let delete = Button::new("Delete")
-        .variant(ButtonVariant::Danger)
-        .on_press(move |s: &mut S| {
-            if i < s.ed.list.len() {
-                let gone = s.ed.list.remove(i);
-                s.ed.close();
-                s.status = format!("Deleted \u{201c}{}\u{201d}; Save to keep the change. Its apps stay open.", gone.name.text.trim());
-                s.status_ok = true;
-            }
-        })
-        .build(&k);
-    let nav = row().key("setup-nav").center_y().gap(space::S2).child(back).child(el().grow(1.0)).child(restore_btn).child(delete);
-    vec![nav, details_section(s, p, i), layout_section(s, p, overlays)]
+    vec![header(s, p, i), layout_section(s, p, overlays)]
 }
 
 /// A setup in the form `setups` previews take.
@@ -211,34 +195,74 @@ fn key_caps(chord: &str, p: &P) -> El {
     })
 }
 
-fn details_section(s: &S, p: &P, i: usize) -> El {
+/// The setup's header, one row: back to the list, its name and shortcut, and Apply and Delete.
+/// A bad shortcut says why under it.
+fn header(s: &S, p: &P, i: usize) -> El {
     let k = kit(p);
     let setup = &s.ed.list[i];
+    let name_text = setup.name.text.trim().to_string();
+    let back = IconButton::new(&BACK)
+        .variant(IconButtonVariant::Ghost)
+        .label("Back to setups")
+        .help("Back to setups")
+        .on_press(|s: &mut S| s.ed.close())
+        .build(&k);
     let name = TextInput::new(&setup.name)
         .label("Name")
-        .placeholder("Dev")
+        .placeholder("Setup name")
         .width(None)
-        .invalid(setup.name.text.trim().is_empty())
+        .invalid(name_text.is_empty())
         .on_edit(move |s: &mut S| &mut s.ed.list[i].name)
         .build(&k);
     let key_text = setup.key.text.trim();
     let key_err = (!key_text.is_empty()).then(|| config::parse_chord(key_text).err()).flatten();
     let key = TextInput::new(&setup.key)
         .label("Shortcut")
-        .placeholder("super+alt+1")
-        .width(None)
+        .placeholder("Shortcut")
+        .width(Some(150.0))
         .invalid(key_err.is_some())
         .on_edit(move |s: &mut S| &mut s.ed.list[i].key)
         .build(&k);
-    let key_caption = key_err.unwrap_or_else(|| "Shortcut".into());
-    // One row, so the layout editor starts high on the page.
-    col()
-        .key("setup-details")
-        .padding(space::S3)
+    let apply_name = name_text.clone();
+    let apply = Button::new("Apply")
+        .variant(ButtonVariant::Outline)
+        .disabled(name_text.is_empty())
+        .on_press(move |s: &mut S| restore(s, apply_name.clone()))
+        .build(&k);
+    let delete = Button::new("Delete")
+        .variant(ButtonVariant::Danger)
+        .on_press(move |s: &mut S| {
+            if i < s.ed.list.len() {
+                let gone = s.ed.list.remove(i);
+                s.ed.close();
+                s.status = format!("Deleted \u{201c}{}\u{201d}; Save to keep the change. Its apps stay open.", gone.name.text.trim());
+                s.status_ok = true;
+            }
+        })
+        .build(&k);
+    let bar = row()
+        .key("setup-header-row")
+        .gap(space::S2)
+        .center_y()
+        .child(back)
+        .child(name.grow(1.0).shrink())
+        .child(key)
+        .child(apply)
+        .child(delete);
+    let mut card = col()
+        .key("setup-header")
+        .gap(4.0)
+        .py(space::S2)
+        .pl(space::S1)
+        .pr(space::S2)
         .fill(p.t.card)
         .radius(rune::tok::radius::LG)
         .border(p.hair, p.t.card_border)
-        .child(row().gap(space::S3).child(field("Name", name, p).grow(1.0)).child(field(&key_caption, key, p).grow(1.0)))
+        .child(bar);
+    if let Some(e) = key_err {
+        card = card.child(small(&format!("Shortcut: {e}"), crate::bar::color("#f38ba8", Color::WHITE)).ml(40.0));
+    }
+    card
 }
 
 fn empty_ws(number: usize) -> SetupWorkspace {

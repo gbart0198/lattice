@@ -200,11 +200,11 @@ fn parse_capture(v: &serde_json::Value) -> Result<Vec<CapturedWs>, String> {
     Ok(out)
 }
 
-/// Saves, then asks the running lattice to restore `name`.
+/// Saves, then asks the running lattice to restore `name` (the Apply button).
 pub(super) fn restore(s: &mut S, name: String) {
     match crate::settings::save(s) {
         Ok(_) => {
-            s.status = format!("Restoring \u{201c}{name}\u{201d}…");
+            s.status = format!("Applying \u{201c}{name}\u{201d}…");
             s.status_ok = true;
             std::thread::spawn(move || {
                 let line = format!("restore-setup {name}");
@@ -253,11 +253,11 @@ pub(crate) fn poll(s: &mut S) -> bool {
         changed = true;
         match r {
             Ok(name) => {
-                s.status = format!("Restored \u{201c}{name}\u{201d}.");
+                s.status = format!("Applied \u{201c}{name}\u{201d}.");
                 s.status_ok = true;
             }
             Err(e) => {
-                s.status = format!("Couldn't restore: {e}");
+                s.status = format!("Couldn't apply it: {e}");
                 s.status_ok = false;
             }
         }

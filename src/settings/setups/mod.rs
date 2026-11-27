@@ -1,6 +1,7 @@
 //! The Setups tab: setups (`[[setup]]`) and their layout editor.
 //!
-//! The tab lists them; clicking one opens it on a page of its own (back with "‹ Setups"). That page has its name and shortcut, a card for each workspace it uses, the
+//! The tab lists them; clicking one opens it on a page of its own. That page has a header row
+//! (back to the list, its name and shortcut, Apply and Delete), a card for each workspace it uses, the
 //! layout canvas, and under the canvas a strip for the selected window. The strip is always
 //! there, so clicking a window changes what's in it rather than growing the page.
 //!

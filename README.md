@@ -219,7 +219,8 @@ Make and edit them on the **Setups** tab of the settings window. It lists your s
 **New setup** starts an empty one, **Save what's open as a setup** makes one from the windows
 you have open, and clicking one opens it:
 
-- Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
+- The row at the top has its name and, if you like, a shortcut (`super+alt+1`) that restores it
+  from anywhere, beside **Apply** and **Delete**.
 - A card for each workspace the setup uses shows that workspace's layout and the apps it puts
   there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
 - A setup is laid out for one or more monitors: the **+** either side of the editor adds one
@@ -238,7 +239,7 @@ you have open, and clicking one opens it:
 - Click a box and the strip under the editor edits it: its program, which workspace and monitor
   it's on, or remove it. An app from the list is started the way the Start menu starts it;
   change its program and it's started by the new name.
-- **Restore** saves and restores it right away; **‹ Setups** goes back to the list.
+- **Apply** saves and restores it right away; **‹** goes back to the list.
 
 Restore one with its shortcut, by typing `workspaces` or `setups` in the launcher (a picker
 with a thumbnail of each layout; type to filter, Enter to restore), with the `setup-picker`
