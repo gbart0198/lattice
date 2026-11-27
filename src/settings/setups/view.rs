@@ -1,7 +1,7 @@
 //! The Setups tab's view: the list page (a row a setup, with a preview and its shortcut), and a
 //! setup's own page with its header row (back, name, shortcut, Apply, Delete), the workspace cards, the toolbar (tiling, the
-//! editor's help, the add picker), the monitor bar and carousel around the canvas with a button
-//! either side to add a monitor, and the inspector for the selected window.
+//! editor's help, the add picker), the monitor bar and carousel around the canvas (arrows either
+//! side to slide between monitors, a "+" either side of its dots to add one), and the inspector for the selected window.
 
 use rune::tok::{space, type_};
 use rune::{Color, Cursor, El, Icon, Spring, TextStyle, Tx, col, el, icon, row, text};
@@ -35,6 +35,11 @@ static BACK: Icon = Icon {
     name: "setups-back",
     view: 16.0,
     body: r#"<path d="M10 3.5L5.5 8L10 12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+static NEXT: Icon = Icon {
+    name: "setups-next",
+    view: 16.0,
+    body: r#"<path d="M6 3.5L10.5 8L6 12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 static INFO: Icon = Icon {
     name: "setups-info",
@@ -310,25 +315,50 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
         .py(space::S2)
         .gap(space::S1)
         .center_y()
-        .child(add_monitor_button(p, 0, "Add a monitor on the left"))
+        .child(side_arrow(s, p, false))
         .child(carousel(s, p, &d, shown.layout).grow(1.0).shrink())
-        .child(add_monitor_button(p, s.ed.count(), "Add a monitor on the right"));
+        .child(side_arrow(s, p, true));
     section(p, "setup-layout", "", vec![ws_cards(s, p, overlays), toolbar, monitor_bar(s, p), canvas, inspector(s, p)])
 }
 
-/// A "+" beside the carousel: lays the setup out for another monitor on that side.
-fn add_monitor_button(p: &P, at: usize, label: &str) -> El {
-    el().key(format!("add-monitor-{}", if at == 0 { "left" } else { "right" }))
-        .size(30.0, 72.0)
+/// An arrow beside the carousel that slides to the next monitor that way; with one monitor,
+/// an empty spot of the same width so the canvas stays put.
+fn side_arrow(s: &S, p: &P, right: bool) -> El {
+    let (n, m) = (s.ed.count(), s.ed.mon);
+    let slot = el().key(if right { "monitor-next" } else { "monitor-prev" }).size(30.0, 72.0);
+    let to = if right { m + 1 } else { m.wrapping_sub(1) };
+    if n <= 1 {
+        return slot;
+    }
+    let enabled = to < n;
+    let label = if right { "Next monitor" } else { "Previous monitor" };
+    let mut slot = slot
         .radius(8.0)
+        .border(p.hair, p.t.card_border)
+        .center()
+        .opacity(if enabled { 1.0 } else { 0.35 })
+        .child(icon(if right { &NEXT } else { &BACK }, 14.0).color(p.t.text_secondary));
+    if enabled {
+        slot = slot.hover(p.t.text.alpha(0.06)).hit().cursor(Cursor::Pointer).label(label).on_press(move |s: &mut S| s.ed.show_mon(to));
+    }
+    slot
+}
+
+/// A small "+" either side of the monitor dots: lays the setup out for another monitor on that
+/// side.
+fn add_monitor_button(p: &P, at: usize, left: bool) -> El {
+    let label = if left { "Add a monitor on the left" } else { "Add a monitor on the right" };
+    el().key(if left { "add-monitor-left" } else { "add-monitor-right" })
+        .size(22.0, 22.0)
+        .radius(11.0)
         .border(p.hair, p.t.card_border)
         .hover(p.t.text.alpha(0.06))
         .center()
         .hit()
         .cursor(Cursor::Pointer)
-        .label(label.to_string())
+        .label(label)
         .on_press(move |s: &mut S| s.ed.add_monitor_at(at))
-        .child(icon(&PLUS, 14.0).color(p.t.text_secondary))
+        .child(icon(&PLUS, 12.0).color(p.t.text_secondary))
 }
 
 /// The info button by the tiling dropdown, and what it opens: how the editor works.
@@ -363,23 +393,16 @@ fn info(s: &S, p: &P, d: &Defaults, kind: LayoutKind, overlays: &mut Vec<El>) ->
         .build(&k, overlays)
 }
 
-/// The monitor shown, and the arrows to slide to the others.
+/// Which monitor is shown (the arrows beside the carousel slide to the others).
 fn monitor_bar(s: &S, p: &P) -> El {
-    let k = kit(p);
     let ed = &s.ed;
     let (n, m) = (ed.count(), ed.mon);
-    let mut bar = row().key("setup-monitors").px(space::S3).pt(space::S2).gap(space::S2).center_y();
+    let mut bar = row().key("setup-monitors").px(space::S3).py(space::S2).gap(space::S2).center_y();
+    bar = bar.child(text(ed.monitor_name(m)).font(TextStyle::new(13.0, 600.0)).color(p.t.text));
     if n > 1 {
-        let arrow = |label: &str, to: usize, disabled: bool| {
-            Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.show_mon(to)).build(&k)
-        };
-        bar = bar
-            .child(arrow("\u{2039}", m.saturating_sub(1), m == 0))
-            .child(text(format!("{} of {n}", m + 1)).font(type_::BODY).color(p.t.text_secondary).w(44.0).align(rune::Align::Center))
-            .child(arrow("\u{203a}", (m + 1).min(n - 1), m + 1 >= n));
+        bar = bar.child(text(format!("{} of {n}", m + 1)).font(type_::BODY).color(p.t.text_secondary));
     }
-    let name = text(ed.monitor_name(m)).font(TextStyle::new(13.0, 600.0)).color(p.t.text);
-    bar.child(name)
+    bar
 }
 
 /// Takes the monitor shown out of the setup (its delete button on the canvas).
@@ -405,7 +428,21 @@ fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
         mine.unwrap_or_else(|| SetupWorkspace { layout, monitor: Some(m + 1), ..empty_ws(ed.ws) })
     };
     if n <= 1 {
-        return canvas(s, p, &entry(0), d, 0, true);
+        return col()
+            .key("carousel")
+            .w_full()
+            .gap(space::S2)
+            .items_center()
+            .child(canvas(s, p, &entry(0), d, 0, true))
+            .child(
+                row()
+                    .key("monitor-dots")
+                    .gap(space::S2)
+                    .center_y()
+                    .child(add_monitor_button(p, 0, true))
+                    .child(el().key("dot-0").size(18.0, 6.0).radius(3.0).fill(p.accent))
+                    .child(add_monitor_button(p, 1, false)),
+            );
     }
     let pitch = SLIDE_W + SLIDE_GAP;
     // As tall as the tallest monitor's canvas.
@@ -432,7 +469,7 @@ fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
         }
         strip = strip.child(slide);
     }
-    let mut dots = row().key("monitor-dots").gap(2.0).center_y();
+    let mut dots = row().key("monitor-dots").gap(2.0).center_y().child(add_monitor_button(p, 0, true).mr(space::S2));
     for m in 0..n {
         let on = m == ed.mon;
         dots = dots.child(
@@ -451,7 +488,7 @@ fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
         .gap(space::S1)
         .items_center()
         .child(row().key("carousel-view").w_full().h(tall + 8.0).justify_center().center_y().clip_fade_linear(28.0, 0.0, 28.0, 0.0).child(strip))
-        .child(dots)
+        .child(dots.child(add_monitor_button(p, n, false).ml(space::S2)))
 }
 
 /// A workspace drawn small in a `bw` × `bh` box: its monitors side by side as they're
