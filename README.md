@@ -223,8 +223,8 @@ you have open, and clicking one opens it:
   from anywhere, beside **Apply** and **Delete**.
 - A card for each workspace the setup uses shows that workspace's layout and the apps it puts
   there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
-- A setup is laid out for one or more monitors: the **+** either side of the dots under the
-  editor adds one on that side, and the bin in the corner of the monitor you're editing
+- A setup is laid out for one or more monitors: the **+** beside the dots under the editor
+  adds one, and the bin in the corner of the monitor you're editing
   removes it (with its apps); a new setup starts with the monitors you have. A workspace spans
   them all and each tiles its own windows, so the editor is a carousel: the monitor you're
   editing in the middle, the others either side to click or step to with the ‹ › beside it.

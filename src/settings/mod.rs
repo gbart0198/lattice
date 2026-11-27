@@ -921,7 +921,7 @@ fn font_preview(s: &S, p: &P) -> El {
 }
 
 fn open_config_button(p: &P) -> El {
-    Button::new("Open config file").variant(ButtonVariant::Outline).on_press(|_: &mut S| open_config_file()).build(&kit(p))
+    Button::new("Open settings file").variant(ButtonVariant::Outline).on_press(|_: &mut S| open_config_file()).build(&kit(p))
 }
 
 fn open_config_file() {
@@ -940,11 +940,8 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
         .center_y()
         .gap(space::S3)
         .child(el().size(28.0, 28.0).radius(7.0).gradient(p.accent, crate::bar::color("#cba6f7", Color::WHITE)))
-        .child(
-            col().gap(2.0).grow(1.0)
-                .child(text("lattice settings").font(TextStyle::new(18.0, 700.0)).color(p.t.text))
-                .child(text(config::config_path().display().to_string()).font(TextStyle::new(11.5, 400.0)).color(p.t.text_secondary)),
-        );
+        .child(text("Settings").font(TextStyle::new(18.0, 700.0)).color(p.t.text).grow(1.0))
+        .child(open_config_button(&p));
     let tabs = row().key("tabs").px(space::S6).pb(space::S3).child(
         SegmentedControl::new(&TABS, Some(s.tab)).label("Section").as_tabs().fit().on_pick(|s: &mut S, i, _| s.tab = i).build(&k),
     );
@@ -976,8 +973,7 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
         .gap(space::S2)
         .center_y()
         .fill(p.t.card)
-        .child(text(s.status.clone()).grow(1.0).shrink().truncate().font(TextStyle::new(12.0, 500.0)).color(status_color))
-        .child(open_config_button(&p));
+        .child(text(s.status.clone()).grow(1.0).shrink().truncate().font(TextStyle::new(12.0, 500.0)).color(status_color));
     if s.restart_needed {
         footer = footer.child(
             Button::new("Restart lattice")

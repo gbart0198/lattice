@@ -10,7 +10,7 @@
 //! an app you add drops in where a new window would (after the selected one, or at the end,
 //! per `general.new_window`). Click a window to edit its program, or move or remove it.
 //!
-//! A setup is laid out for a number of monitors (at least one): the "+" either side of the
+//! A setup is laid out for a number of monitors (at least one): the "+" right of the
 //! carousel's dots adds one, the bin on the monitor shown removes it, and the arrows either side
 //! of the carousel slide between them. A workspace spans every monitor and each tiles its own
 //! windows, so each monitor of a workspace is a `[[setup.workspace]]` entry.
