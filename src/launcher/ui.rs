@@ -11,7 +11,7 @@
 //! Command mode, entered with the command prefix (">"), lists commands to run. The ones that
 //! end the session take a second Enter, the row asking for it in between.
 //!
-//! Typing the setups keyword ("workspaces") opens the saved-workspace picker: each one with a
+//! Typing the setups keyword ("workspaces") opens the setup picker: each one with a
 //! thumbnail of its layouts and its key; Enter restores it.
 
 use std::collections::{HashMap, HashSet};
@@ -127,8 +127,8 @@ pub struct State {
     setup_list: Vec<SetupEntry>,
     /// (index into `setup_list`, matched byte offsets in its name).
     setup_hits: Vec<(usize, Vec<usize>)>,
-    /// The picker was entered by typing the keyword (Backspace takes its last letter back).
-    setups_by_keyword: bool,
+    /// The word typed to open the picker, if it was (Backspace takes its last letter back).
+    setups_word: String,
 }
 
 impl State {
@@ -172,7 +172,7 @@ impl State {
             setups,
             setup_list: super::setups(),
             setup_hits: Vec::new(),
-            setups_by_keyword: false,
+            setups_word: String::new(),
         }
     }
 
@@ -209,10 +209,10 @@ impl State {
             (self.windows.list)();
         }
         if self.mode == Mode::Apps
-            && let Some(rest) = strip_keyword(&self.query.text, &self.setups.keyword)
+            && let Some((word, rest)) = setups_word(&self.query.text, &self.setups.keyword)
         {
-            let rest = rest.to_string();
-            self.enter_setups(true);
+            let (word, rest) = (word.to_string(), rest.to_string());
+            self.enter_setups(&word);
             self.query.replace_text(rest.clone());
             self.query.set_caret(rest.len());
         }
@@ -256,9 +256,9 @@ impl State {
         self.refresh();
     }
 
-    fn enter_setups(&mut self, by_keyword: bool) {
+    fn enter_setups(&mut self, word: &str) {
         self.mode = Mode::Setups;
-        self.setups_by_keyword = by_keyword;
+        self.setups_word = word.to_string();
         self.setup_list = super::setups();
     }
 
@@ -273,14 +273,16 @@ impl State {
         self.mode == Mode::Setups
     }
 
-    /// The saved-workspace picker with an empty field (the host's picker command).
+    /// The setup picker with an empty field (the host's picker command); `by_keyword` as if
+    /// the keyword had been typed (previews).
     pub fn show_setups(&mut self, by_keyword: bool) {
         self.query = focused_edit();
-        self.enter_setups(by_keyword);
+        let word = if by_keyword { self.setups.keyword.clone() } else { String::new() };
+        self.enter_setups(&word);
         self.refresh();
     }
 
-    /// The host's saved workspaces changed (a config reload).
+    /// The host's setups changed (a config reload).
     pub fn setups_listed(&mut self, list: Vec<SetupEntry>) {
         self.setup_list = list;
         if self.mode == Mode::Setups {
@@ -291,7 +293,7 @@ impl State {
     /// Back to app search, the field holding the keyword less its last letter, as if
     /// Backspace took it.
     fn leave_setups(&mut self) {
-        let mut text = if self.setups_by_keyword { self.setups.keyword.clone() } else { String::new() };
+        let mut text = self.setups_word.clone();
         text.pop();
         self.mode = Mode::Apps;
         self.query.replace_text(text.clone());
@@ -551,6 +553,18 @@ impl State {
 }
 
 /// The filter after the setups keyword: "" for the keyword alone, the rest after "keyword ".
+/// The setup picker's word at the start of `text` (`keyword`, or "setups" while there is a
+/// keyword) as typed, and what follows it.
+fn setups_word<'a>(text: &'a str, keyword: &str) -> Option<(&'a str, &'a str)> {
+    if keyword.is_empty() {
+        return None;
+    }
+    [keyword, "setups"].into_iter().find_map(|k| {
+        let rest = strip_keyword(text, k)?;
+        Some((text[..k.len()].trim_end(), rest))
+    })
+}
+
 fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
     if keyword.is_empty() {
         return None;
@@ -561,7 +575,7 @@ fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
     strip_mode_prefix(text, keyword)
 }
 
-/// Saved workspaces matching `query` by name (best first), else by what's in them; an empty
+/// Setups matching `query` by name (best first), else by what's in them; an empty
 /// query lists them all in order.
 fn rank_setups(query: &str, list: &[SetupEntry], limit: usize) -> Vec<(usize, Vec<usize>)> {
     let mut scored: Vec<(i32, usize, Vec<usize>)> = list
@@ -669,7 +683,7 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
         Mode::Files => ("Search files and folders", "Search files and folders…"),
         Mode::Windows => ("Search windows", "Search open windows…"),
         Mode::Commands => ("Run a command", "Run a command…"),
-        Mode::Setups => ("Pick a saved workspace", "Restore a saved workspace…"),
+        Mode::Setups => ("Pick a setup", "Restore a setup…"),
         Mode::Apps => ("Search apps", "Search apps…"),
     };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0))
@@ -698,7 +712,7 @@ fn build(s: &State, _cx: &mut Cx<State>) -> El {
         header = header.child(chip("Commands", command_glyph(t.accent), t));
     }
     if s.mode == Mode::Setups {
-        header = header.child(chip("Workspaces", setups_glyph(t.accent), t));
+        header = header.child(chip("Setups", setups_glyph(t.accent), t));
     }
     let header = header.child(field);
 
@@ -928,11 +942,11 @@ fn setup_body(s: &State, t: &Style) -> El {
             .grow(1.0)
             .center()
             .gap(6.0)
-            .child(text("No saved workspaces yet").font(TextStyle::new(14.5, 550.0)).color(t.foreground))
+            .child(text("No setups yet").font(TextStyle::new(14.5, 550.0)).color(t.foreground))
             .child(text("Make one in Settings › Workspaces").font(TextStyle::new(12.5, 450.0)).color(t.muted));
     }
     if s.setup_hits.is_empty() {
-        return message(&format!("No saved workspaces match \u{201c}{}\u{201d}", s.query.text.trim()), t);
+        return message(&format!("No setups match \u{201c}{}\u{201d}", s.query.text.trim()), t);
     }
     let n = s.setup_list.len();
     let section = row()
@@ -940,7 +954,7 @@ fn setup_body(s: &State, t: &Style) -> El {
         .h(SECTION)
         .px(20.0)
         .center_y()
-        .child(text("Saved workspaces").font(TextStyle::new(12.0, 600.0)).color(t.muted))
+        .child(text("Setups").font(TextStyle::new(12.0, 600.0)).color(t.muted))
         .child(spacer())
         .child(text(if n == 1 { "1 saved".to_string() } else { format!("{n} saved") }).font(TextStyle::new(11.5, 500.0)).color(t.muted.alpha(0.8)));
     let list = s
@@ -1330,6 +1344,10 @@ mod tests {
         assert_eq!(strip_keyword("workspaces dev", "workspaces"), Some("dev"));
         assert_eq!(strip_keyword("workspace", "workspaces"), None);
         assert_eq!(strip_keyword("workspaces", ""), None);
+        // "setups" works too, and Backspace gives back what was typed.
+        assert_eq!(setups_word("Setups dev", "workspaces"), Some(("Setups", "dev")));
+        assert_eq!(setups_word("workspaces", "workspaces"), Some(("workspaces", "")));
+        assert_eq!(setups_word("setups", ""), None);
     }
 
     #[test]

@@ -107,11 +107,11 @@ pub struct Wm {
     events: events::Tracker,
     events_dirty: bool,
     pending_events: Vec<events::Event>,
-    /// The saved workspace being restored, while it waits for apps it started.
+    /// The setup being restored, while it waits for apps it started.
     restore: Option<Restore>,
 }
 
-/// A saved workspace being restored: where its apps go, and which windows fill each spot. Apps
+/// A setup being restored: where its apps go, and which windows fill each spot. Apps
 /// it started take their spot when their window opens, until `until`.
 struct Restore {
     name: String,
@@ -291,7 +291,7 @@ impl Wm {
             floating |= r.float;
             repaint |= r.repaint;
         }
-        // A window of an app a saved workspace is starting takes its spot there (not a splash
+        // A window of an app a setup is starting takes its spot there (not a splash
         // screen: those float, and close again).
         let claim = if runtime && !floating { self.claim_slot(hwnd, &c.exe) } else { None };
         // Every window of a pinned app goes there, splash screens and updaters included (they
@@ -326,7 +326,7 @@ impl Wm {
             }
         }
         if claim.is_some() {
-            log::info!("{hwnd:#x} ({}) takes its place in saved workspace '{}'", self.windows[&hwnd].exe, self.restore.as_ref().map_or("", |r| r.name.as_str()));
+            log::info!("{hwnd:#x} ({}) takes its place in setup '{}'", self.windows[&hwnd].exe, self.restore.as_ref().map_or("", |r| r.name.as_str()));
             self.arrange_restored();
         }
         self.retile(ws);
@@ -342,7 +342,7 @@ impl Wm {
         self.pending_show.remove(&hwnd);
         self.hidden.remove(&hwnd);
         shared::mark_hidden(hwnd, false);
-        // A window that filled a saved workspace's spot (a splash screen, the first window of
+        // A window that filled a setup's spot (a splash screen, the first window of
         // an app that opens another) gives it up while the restore still waits.
         if let Some(r) = self.restore.as_mut() {
             for f in r.filled.iter_mut().filter(|f| **f == Some(hwnd)) {
@@ -1164,19 +1164,19 @@ impl Wm {
     }
 
     // -----------------------------------------------------------------------------------------
-    // Saved workspaces (`setups.rs`)
+    // Setups (`setups.rs`)
 
-    /// The primary monitor's index: saved workspaces tile there.
+    /// The primary monitor's index: setups tile there.
     fn primary_monitor(&self) -> usize {
         self.monitors.iter().position(|m| m.info.primary).unwrap_or(0)
     }
 
-    /// Restores the saved workspace `name`: open windows of its apps move into place, the others
+    /// Restores the setup `name`: open windows of its apps move into place, the others
     /// are started (their windows take their spots as they open, see `claim_slot`), each of its
     /// workspaces gets its layout, and the first one comes on screen.
     fn restore_setup(&mut self, name: &str) {
         let Some(setup) = config::find_setup(&self.cfg.setups, name).cloned() else {
-            log::warn!("restore-workspace: no saved workspace called '{name}'");
+            log::warn!("restore-setup: no setup called '{name}'");
             return;
         };
         self.cleanup();
@@ -1189,7 +1189,7 @@ impl Wm {
         let open_ref: Vec<setups::OpenWindow> = open.iter().map(|(h, exe, ws, _)| (*h, exe.as_str(), *ws, place(*h, *ws))).collect();
         let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n));
         log::info!(
-            "restoring saved workspace '{}': {} in place, starting {}",
+            "restoring setup '{}': {} in place, starting {}",
             setup.name, plan.claims.len(), plan.launch.len()
         );
         self.finish_animations();
@@ -1252,7 +1252,7 @@ impl Wm {
         self.publish();
     }
 
-    /// A spot of the saved workspace being restored for a new window of `exe`, which takes it:
+    /// A spot of the setup being restored for a new window of `exe`, which takes it:
     /// returns the spot's workspace.
     fn claim_slot(&mut self, hwnd: Hwnd, exe: &str) -> Option<usize> {
         let r = self.restore.as_mut()?;
@@ -1287,7 +1287,7 @@ impl Wm {
         }
     }
 
-    /// Hands the launcher's picker the saved workspaces, with a thumbnail of each workspace.
+    /// Hands the launcher's picker the setups, with a thumbnail of each workspace.
     fn publish_setups(&self) {
         let d = setups::Defaults::from(&self.cfg.general);
         let area = if self.monitors.is_empty() { Rect::new(0, 0, 1920, 1080) } else { self.tiling_area(self.primary_monitor()) };

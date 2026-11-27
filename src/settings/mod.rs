@@ -16,7 +16,7 @@ use crate::win;
 mod setups_tab;
 
 const TITLE: &str = "lattice settings";
-const TABS: [&str; 6] = ["General", "Apps", "Workspaces", "Bar", "Border", "Keybinds"];
+const TABS: [&str; 6] = ["General", "Apps", "Setups", "Bar", "Border", "Keybinds"];
 const LAYOUTS: [&str; 3] = ["dwindle", "master", "monocle"];
 const NEW_WINDOW: [&str; 2] = ["after_focused", "end"];
 const APP_DISPLAY: [&str; 3] = ["icons", "names", "both"];
@@ -96,7 +96,7 @@ struct S {
     // [keybinds]
     binds: Vec<Bind>,
     next_id: u64,
-    // [[setup]]: saved workspaces
+    // [[setup]]: setups
     ed: setups_tab::Editor,
     // UI
     update: update::Status,
@@ -788,7 +788,7 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
     vec![
         col().key("kb-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize left|right|up|down [amount], toggle-float, toggle-fullscreen, close, launcher, window-search, workspace-picker, restore-workspace <name>, settings, open-config, reload, quit, exec <program>.".to_string())
+            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize left|right|up|down [amount], toggle-float, toggle-fullscreen, close, launcher, window-search, setup-picker, restore-setup <name>, settings, open-config, reload, quit, exec <program>.".to_string())
                 .w_full()
                 .wrap()
                 .font(TextStyle::new(11.5, 400.0))

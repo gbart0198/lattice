@@ -81,7 +81,7 @@ pub struct Options {
     pub setups: SetupOptions,
 }
 
-/// The saved-workspace picker's link to the host.
+/// The setup picker's link to the host.
 #[derive(Clone)]
 pub struct SetupOptions {
     /// Typed on its own (any case) to open the picker; empty turns that off.
@@ -96,7 +96,7 @@ impl Default for SetupOptions {
     }
 }
 
-/// A saved workspace, as the picker lists it.
+/// A setup, as the picker lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetupEntry {
     pub name: String,
@@ -108,7 +108,7 @@ pub struct SetupEntry {
     pub workspaces: Vec<SetupThumb>,
 }
 
-/// One workspace of a saved workspace, for a thumbnail.
+/// One workspace of a setup, for a thumbnail.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetupThumb {
     pub number: usize,
@@ -116,10 +116,10 @@ pub struct SetupThumb {
     pub tiles: Vec<[f32; 4]>,
 }
 
-/// The host's saved workspaces, kept for the picker.
+/// The host's setups, kept for the picker.
 static SETUPS: Mutex<Vec<SetupEntry>> = Mutex::new(Vec::new());
 
-/// Hands the launcher the saved workspaces (at start and on every config reload). Any thread.
+/// Hands the launcher the setups (at start and on every config reload). Any thread.
 pub fn set_setups(list: Vec<SetupEntry>) {
     *SETUPS.lock().unwrap() = list.clone();
     if let Some(l) = LAUNCHER.get() {
@@ -131,7 +131,7 @@ pub(crate) fn setups() -> Vec<SetupEntry> {
     SETUPS.lock().unwrap().clone()
 }
 
-/// Shows the launcher picking a saved workspace, or hides it if it's already doing that.
+/// Shows the launcher picking a setup, or hides it if it's already doing that.
 /// Any thread.
 pub fn toggle_setups(on: Option<Area>) {
     let Some(l) = LAUNCHER.get() else { return };
@@ -290,7 +290,7 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
     WindowSpec::from_app("launcher", app).configured_options(options).into()
 }
 
-/// The saved-workspace picker over sample setups, in a window of its own: for headless
+/// The setup picker over sample setups, in a window of its own: for headless
 /// previews (`lattice --launcher-preview --snap out.png --scene setups`). Debug builds.
 pub fn preview(opts: Options) {
     let (jobs, _rx) = mpsc::channel();

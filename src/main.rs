@@ -54,7 +54,7 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-previ
   --animation-preview SCENE [fast]  play an animation (move, swap, workspace, fullscreen,
                   minimize) over demo windows in the middle of the screen, then exit. Uses the
                   fancy style unless `fast` is given; touches no other window
-  --launcher-preview  show the launcher's saved-workspace picker over sample data (debug
+  --launcher-preview  show the launcher's setup picker over sample data (debug
                   builds: add --snap out.png --scene setups)
   --update-preview  show the update notice with a made-up release (changes nothing)
   --launcher-bench  open and dismiss the launcher on its own and print how long each open and
@@ -64,7 +64,7 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-previ
 
 Scripting a running lattice:
   msg COMMAND     run a command as a keybind would (`lattice msg workspace 3`,
-                  `lattice msg restore-workspace Dev` for a saved workspace)
+                  `lattice msg restore-setup Dev` for a setup)
   query WHAT      print JSON: workspaces, windows, monitors, focused, or state (all of them)
   subscribe [EVENT...]  print one JSON line per event (all, or the ones named) until Ctrl+C
                   Events: startup, config-reloaded, workspace-changed, layout-changed,
@@ -330,7 +330,7 @@ fn main() {
         return;
     }
     if has("--launcher-preview") {
-        // The launcher alone over sample saved workspaces (`--scene setups`), for screenshots.
+        // The launcher alone over sample setups (`--scene setups`), for screenshots.
         launcher::preview(launcher_options(&config::load()));
         return;
     }

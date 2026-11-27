@@ -206,21 +206,22 @@ apply to new windows and to windows already open when lattice starts; when you s
 open windows move only if their app's rule is new or changed, so a window you moved by hand
 stays put.
 
-### Saved workspaces
+### Setups
 
-Save a set of apps with their workspaces and layout, say "Dev": the editor and a terminal side
-by side on workspace 1, the browser on 2, Slack on 3. Restoring it moves the apps that are
-already open into place, starts the ones that aren't, gives each workspace its layout and
-split sizes, and switches you to its first workspace. Apps it starts take their spot as their
-window opens (for up to a minute), so a slow app still lands in the right place.
+A setup is a set of apps, the workspaces they go on, and how each of those workspaces is
+laid out. Say "Dev": the editor and a terminal side by side on workspace 1, the browser on 2,
+Slack on 3. Restoring it moves the apps that are already open into place, starts the ones
+that aren't, gives each workspace its layout and split sizes, and switches you to its first
+workspace. Apps it starts take their spot as their window opens (for up to a minute), so a
+slow app still lands in the right place.
 
-Make and edit them on the **Workspaces** tab of the settings window. It lists your saved
-workspaces; **New saved workspace** starts an empty one, **Save what's open now** makes one
-from the windows you have open, and clicking one opens it:
+Make and edit them on the **Setups** tab of the settings window. It lists your setups;
+**New setup** starts an empty one, **Save what's open as a setup** makes one from the windows
+you have open, and clicking one opens it:
 
 - Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
-- A card for each workspace it uses shows that workspace's layout and how many apps it holds.
-  Click a card to edit that workspace; **Add workspace** picks another number.
+- A card for each workspace the setup uses shows that workspace's layout and the apps it puts
+  there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
 - The layout editor shows the workspace as lattice will tile it on your primary monitor, one
   box per app. Drag a box onto another to swap them. Drag the gap between two boxes to resize
   them; the split shows as a percentage while you drag. Pick dwindle, master or monocle.
@@ -229,11 +230,11 @@ from the windows you have open, and clicking one opens it:
   "after_focused"`, else at the end.
 - Click a box and the strip under the editor edits it: its program, the command line that
   starts it, which workspace it's on, or remove it.
-- **Restore** saves and restores it right away; **‹ Saved workspaces** goes back to the list.
+- **Restore** saves and restores it right away; **‹ Setups** goes back to the list.
 
-Restore one with its shortcut, by typing `workspaces` in the launcher (a picker with a
-thumbnail of each layout; type to filter, Enter to restore), with the `workspace-picker`
-command, or from a script: `lattice msg restore-workspace Dev`. They're stored as `[[setup]]`
+Restore one with its shortcut, by typing `workspaces` or `setups` in the launcher (a picker
+with a thumbnail of each layout; type to filter, Enter to restore), with the `setup-picker`
+command, or from a script: `lattice msg restore-setup Dev`. They're stored as `[[setup]]`
 tables at the end of the config:
 
 ```toml
@@ -340,7 +341,7 @@ Enter flips back to the previous window, as Alt+Tab does. Enter switches to the 
 workspace and focuses it (restoring it if it's minimized). In the app search, `w` and a space
 does the same (`window_prefix` in `[launcher]`); Backspace on an empty field goes back to apps.
 
-Type `workspaces` to pick a [saved workspace](#saved-workspaces) to restore: each one with a
+Type `workspaces` (or `setups`) to pick a [setup](#setups) to restore: each one with a
 thumbnail of its layouts, what's in it and its shortcut. Keep typing to filter, Enter restores.
 The word is `setups_keyword` in `[launcher]`.
 
@@ -442,8 +443,8 @@ written.
 | `toggle-float` / `toggle-fullscreen` / `close` | Act on the focused window |
 | `retile` / `reload` / `quit` | Re-tile everything / reload the config / quit lattice |
 | `exec <command line>` | Start a program, as the Run dialog would |
-| `restore-workspace <name>` | Restore a saved workspace (any case; quotes are optional) |
-| `launcher` / `window-search` / `workspace-picker` / `settings` / `open-config` / `tour` | Open those windows (`workspace-picker`: the launcher's saved-workspace picker) |
+| `restore-setup <name>` | Restore a [setup](#setups) (any case; quotes are optional) |
+| `launcher` / `window-search` / `setup-picker` / `settings` / `open-config` / `tour` | Open those windows (`setup-picker`: the launcher's setup picker) |
 
 Commands go through the same queue as your keypresses, in order, so a `query` straight after a
 `msg` sees its result. `exec` starts the program from lattice, with lattice's environment and
@@ -588,7 +589,7 @@ soundtrack.
 - A window that runs as administrator can be moved only if lattice is also elevated.
 - Resizing tiled windows with the mouse isn't supported yet: they snap back. Use Win+= and
   Win+− instead.
-- Saved workspaces tile on the primary monitor, and match apps by program file name, so they
+- Setups tile on the primary monitor, and match apps by program file name, so they
   can't tell apart two windows of a Store app (all are `ApplicationFrameHost.exe`).
 - Apps with a large minimum size can't shrink to small tiles and overflow them. Spread windows
   across monitors or workspaces, or use the `master` layout.

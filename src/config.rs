@@ -26,7 +26,7 @@ pub struct Config {
     /// `[[hook]]` tables: commands run when something happens (see `events.rs`).
     #[serde(default, rename = "hook", alias = "hooks")]
     pub hooks: Vec<Hook>,
-    /// `[[setup]]` tables: saved workspaces (see `setups.rs`).
+    /// `[[setup]]` tables: setups (see `setups.rs`).
     #[serde(default, rename = "setup", alias = "setups")]
     pub setups: Vec<Setup>,
     #[serde(default = "default_keybinds")]
@@ -195,7 +195,7 @@ pub struct Launcher {
     pub window_prefix: String,
     /// Typed before a space to run commands (layouts, workspaces, power, audio, Wi-Fi).
     pub command_prefix: String,
-    /// Typed on its own to pick a saved workspace to restore; empty turns it off.
+    /// Typed on its own to pick a setup to restore ("setups" works too); empty turns it off.
     pub setups_keyword: String,
     /// What Enter and Ctrl+Enter do with a file, and with a folder: "open", "reveal",
     /// "copy-path" or "exec <command line>" (with {path}, {dir}, {name}).
@@ -292,7 +292,7 @@ impl HookOn {
     }
 }
 
-/// `[[setup]]`: a saved workspace. Restoring it puts these apps on these workspaces, in this
+/// `[[setup]]`: a setup. Restoring it puts these apps on these workspaces, in this
 /// order and layout, starting any that aren't running.
 #[derive(Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Setup {
@@ -336,7 +336,7 @@ impl SetupApp {
     }
 }
 
-/// The saved workspace called `name` (any case).
+/// The setup called `name` (any case).
 pub fn find_setup<'a>(setups: &'a [Setup], name: &str) -> Option<&'a Setup> {
     let name = name.trim();
     setups.iter().find(|s| s.name.trim().eq_ignore_ascii_case(name))
@@ -466,9 +466,9 @@ pub enum Command {
     OpenConfig,
     /// Start the product tour, or end the one showing.
     Tour,
-    /// Restore the saved workspace with this name.
+    /// Restore the setup with this name.
     RestoreSetup(String),
-    /// Show the launcher's saved-workspace picker.
+    /// Show the launcher's setup picker.
     SetupPicker,
     Quit,
 }
@@ -543,13 +543,14 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "settings" => Command::Settings,
         "tour" => Command::Tour,
         "open-config" | "edit-config" => Command::OpenConfig,
-        "restore-workspace" | "setup" => {
+        // restore-workspace and workspace-picker: their names from before they were called setups.
+        "restore-setup" | "setup" | "restore-workspace" => {
             if rest.is_empty() {
-                return Err("restore-workspace needs the saved workspace's name".into());
+                return Err("restore-setup needs the setup's name".into());
             }
             Command::RestoreSetup(unquote(rest).to_string())
         }
-        "workspace-picker" | "setups" | "saved-workspaces" => Command::SetupPicker,
+        "setup-picker" | "setups" | "workspace-picker" | "saved-workspaces" => Command::SetupPicker,
         "quit" | "exit" => Command::Quit,
         "exec" => {
             if rest.is_empty() {
@@ -641,7 +642,7 @@ pub fn parse_chord(s: &str) -> Result<(u8, u32), String> {
     Ok((mods, key))
 }
 
-/// Chord -> command table used by the keyboard hook. A saved workspace's own `key` wins over
+/// Chord -> command table used by the keyboard hook. A setup's own `key` wins over
 /// a keybind on the same chord.
 pub fn build_keymap(cfg: &Config) -> HashMap<(u8, u32), Command> {
     let mut map = HashMap::new();
@@ -660,10 +661,10 @@ pub fn build_keymap(cfg: &Config) -> HashMap<(u8, u32), Command> {
         match parse_chord(key) {
             Ok(c) => {
                 if let Some(old) = map.insert(c, Command::RestoreSetup(setup.name.clone())) {
-                    log::warn!("saved workspace \"{}\": {key} was bound to {old:?}; the saved workspace wins", setup.name);
+                    log::warn!("setup \"{}\": {key} was bound to {old:?}; the setup wins", setup.name);
                 }
             }
-            Err(e) => log::error!("saved workspace \"{}\" key: {e}", setup.name),
+            Err(e) => log::error!("setup \"{}\" key: {e}", setup.name),
         }
     }
     map
@@ -774,9 +775,12 @@ mod tests {
 
     #[test]
     fn setup_commands() {
-        assert_eq!(parse_command("restore-workspace Deep Work"), Ok(Some(Command::RestoreSetup("Deep Work".into()))));
+        assert_eq!(parse_command("restore-setup Deep Work"), Ok(Some(Command::RestoreSetup("Deep Work".into()))));
+        // The old names still work.
+        assert_eq!(parse_command("restore-workspace Dev"), Ok(Some(Command::RestoreSetup("Dev".into()))));
         assert_eq!(parse_command("setup \"Dev\""), Ok(Some(Command::RestoreSetup("Dev".into()))));
-        assert!(parse_command("restore-workspace").is_err());
+        assert!(parse_command("restore-setup").is_err());
+        assert_eq!(parse_command("setup-picker"), Ok(Some(Command::SetupPicker)));
         assert_eq!(parse_command("workspace-picker"), Ok(Some(Command::SetupPicker)));
     }
 

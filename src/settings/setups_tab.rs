@@ -1,11 +1,10 @@
-//! The Workspaces tab: saved workspaces (`[[setup]]`) and their layout editor.
+//! The Setups tab: setups (`[[setup]]`) and their layout editor.
 //!
-//! The tab lists them; clicking one opens it on a page of its own (back with "‹ Saved
-//! workspaces"). That page has its name and shortcut, a card for each workspace it uses, the
+//! The tab lists them; clicking one opens it on a page of its own (back with "‹ Setups"). That page has its name and shortcut, a card for each workspace it uses, the
 //! layout canvas, and under the canvas a strip for the selected window. The strip is always
 //! there, so clicking a window changes what's in it rather than growing the page.
 //!
-//! The editor draws a saved workspace the way lattice will tile it, from the same `layout`
+//! The editor draws a setup the way lattice will tile it, from the same `layout`
 //! code: drag a window onto another to swap them, drag the seam between windows to resize, and
 //! an app you add drops in where a new window would (after the selected one, or at the end,
 //! per `general.new_window`). Click a window to edit its program, or move or remove it.
@@ -69,7 +68,7 @@ pub struct TileDrag {
 
 pub struct Editor {
     pub list: Vec<SetupEdit>,
-    /// The saved workspace being edited.
+    /// The setup being edited.
     pub sel: Option<usize>,
     /// The workspace shown on the canvas (1-based).
     pub ws: usize,
@@ -134,7 +133,7 @@ impl Editor {
         SetupEdit { id: self.id(), name: TextEdit::new(s.name.clone()), key: TextEdit::new(s.key.clone().unwrap_or_default()), workspaces }
     }
 
-    /// Opens saved workspace `i`, showing its first workspace with apps.
+    /// Opens setup `i`, showing its first workspace with apps.
     fn select(&mut self, i: usize) {
         self.sel = Some(i);
         self.ws = self.list[i].workspaces.iter().find(|w| !w.apps.is_empty()).map_or(1, |w| w.number);
@@ -153,7 +152,7 @@ impl Editor {
         self.ws_picker.close();
     }
 
-    /// Shows workspace `n`, adding it (empty) if the saved workspace doesn't use it yet.
+    /// Shows workspace `n`, adding it (empty) if the setup doesn't use it yet.
     fn show_ws(&mut self, n: usize) {
         self.ws = n;
         self.tile = None;
@@ -175,7 +174,7 @@ impl Editor {
         self.list.get(self.sel?)
     }
 
-    /// The workspace on the canvas, if the saved workspace has it.
+    /// The workspace on the canvas, if the setup has it.
     fn shown(&self) -> Option<&WsEdit> {
         self.setup()?.workspaces.iter().find(|w| w.number == self.ws)
     }
@@ -185,7 +184,7 @@ impl Editor {
         self.list.get_mut(self.sel?)?.workspaces.iter_mut().find(|w| w.number == ws)
     }
 
-    /// The workspace on the canvas, added to the saved workspace if it isn't there yet.
+    /// The workspace on the canvas, added to the setup if it isn't there yet.
     fn shown_or_add(&mut self) -> Option<&mut WsEdit> {
         let ws = self.ws;
         let setup = self.list.get_mut(self.sel?)?;
@@ -322,7 +321,7 @@ fn seams(w: &SetupWorkspace, d: &Defaults, c: &Canvas) -> Vec<layout::Seam> {
 // ---------------------------------------------------------------------------------------------
 // Saving
 
-/// Problems that keep the saved workspaces from being saved.
+/// Problems that keep the setups from being saved.
 pub fn validate(s: &S) -> Result<(), String> {
     let workspaces = s.workspaces.round() as usize;
     let mut names = std::collections::HashSet::new();
@@ -335,10 +334,10 @@ pub fn validate(s: &S) -> Result<(), String> {
     for setup in &s.ed.list {
         let name = setup.name.text.trim();
         if name.is_empty() {
-            return Err("Every saved workspace needs a name".into());
+            return Err("Every setup needs a name".into());
         }
         if !names.insert(name.to_lowercase()) {
-            return Err(format!("Two saved workspaces are called \"{name}\""));
+            return Err(format!("Two setups are called \"{name}\""));
         }
         let key = setup.key.text.trim();
         if !key.is_empty() {
@@ -368,7 +367,7 @@ pub fn validate(s: &S) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes the saved workspaces as `[[setup]]` tables, replacing the ones there.
+/// Writes the setups as `[[setup]]` tables, replacing the ones there.
 pub fn write(doc: &mut DocumentMut, list: &[SetupEdit]) {
     doc.remove("setup");
     doc.remove("setups");
@@ -379,7 +378,7 @@ pub fn write(doc: &mut DocumentMut, list: &[SetupEdit]) {
     for (i, s) in list.iter().enumerate() {
         let mut t = toml_edit::Table::new();
         if i == 0 {
-            t.decor_mut().set_prefix("\n# Saved workspaces: apps, their workspaces and layout. Restore one with its key,\n# `lattice msg restore-workspace NAME`, or \"workspaces\" in the launcher. The settings\n# window's Workspaces tab edits them (and rewrites this part of the file).\n");
+            t.decor_mut().set_prefix("\n# Setups: apps, the workspaces they go on, and their layout. Restore one with its key,\n# `lattice msg restore-setup NAME`, or \"workspaces\" in the launcher. The settings\n# window's Workspaces tab edits them (and rewrites this part of the file).\n");
         }
         t["name"] = toml_edit::value(s.name.text.trim());
         let key = s.key.text.trim();
@@ -497,7 +496,7 @@ fn restore(s: &mut S, name: String) {
             s.status = format!("Restoring \u{201c}{name}\u{201d}…");
             s.status_ok = true;
             std::thread::spawn(move || {
-                let line = format!("restore-workspace {name}");
+                let line = format!("restore-setup {name}");
                 let r = crate::ipc::request("msg", &line).map(|_| name);
                 *RESTORED.lock().unwrap() = Some(r);
                 wake();
@@ -579,7 +578,7 @@ pub fn tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
     vec![
         col().key("setups-help").gap(4.0).mx(space::S3).w_full().child(
             small(
-                "Save a set of apps with their workspaces and layout. Restoring one starts what isn't running and moves everything into place: with its shortcut, by typing \u{201c}workspaces\u{201d} in the launcher, or `lattice msg restore-workspace NAME`.",
+                "Save a set of apps with their workspaces and layout. Restoring one starts what isn't running and moves everything into place: with its shortcut, by typing \u{201c}workspaces\u{201d} in the launcher, or `lattice msg restore-setup NAME`.",
                 p.t.text_secondary,
             )
             .w_full()
@@ -637,31 +636,31 @@ fn list_section(s: &S, p: &P) -> El {
                 .px(space::S3)
                 .py(16.0)
                 .gap(4.0)
-                .child(text("No saved workspaces yet").font(type_::BODY).color(p.t.text))
+                .child(text("No setups yet").font(type_::BODY).color(p.t.text))
                 .child(small("Make one from scratch, or save the windows you have open now.", p.t.text_secondary)),
         );
     }
-    let new = Button::new("New saved workspace").on_press(|s: &mut S| {
+    let new = Button::new("New setup").on_press(|s: &mut S| {
         let name = unique_name(&s.ed.list, "New workspace");
         let id = s.ed.id();
         s.ed.list.push(SetupEdit { id, name: TextEdit::new(name), key: TextEdit::new(""), workspaces: Vec::new() });
         let i = s.ed.list.len() - 1;
         s.ed.select(i);
     });
-    let capture_label = if s.ed.capturing { "Reading windows…" } else { "Save what's open now" };
+    let capture_label = if s.ed.capturing { "Reading windows…" } else { "Save what's open as a setup" };
     let cap = Button::new(capture_label).variant(ButtonVariant::Outline).disabled(s.ed.capturing).on_press(|s: &mut S| {
         s.ed.capturing = true;
         capture();
     });
     rows.push(row().key("setups-add").px(space::S3).py(space::S2).gap(space::S2).child(new.build(&k)).child(cap.build(&k)));
-    section(p, "setups-list", &format!("Saved workspaces ({})", s.ed.list.len()), rows)
+    section(p, "setups-list", &format!("Setups ({})", s.ed.list.len()), rows)
 }
 
-/// One saved workspace, on a page of its own.
+/// One setup, on a page of its own.
 fn editor_page(s: &S, p: &P, i: usize, overlays: &mut Vec<El>) -> Vec<El> {
     let k = kit(p);
     let name = s.ed.list[i].name.text.trim().to_string();
-    let back = Button::new("\u{2039}  Saved workspaces").variant(ButtonVariant::Ghost).on_press(|s: &mut S| s.ed.close()).build(&k);
+    let back = Button::new("\u{2039}  Setups").variant(ButtonVariant::Ghost).on_press(|s: &mut S| s.ed.close()).build(&k);
     let restore_name = name.clone();
     let restore_btn = Button::new("Restore")
         .variant(ButtonVariant::Outline)
@@ -683,7 +682,7 @@ fn editor_page(s: &S, p: &P, i: usize, overlays: &mut Vec<El>) -> Vec<El> {
     vec![nav, details_section(s, p, i), layout_section(s, p, overlays)]
 }
 
-/// A saved workspace in the form `setups` previews take.
+/// A setup in the form `setups` previews take.
 struct SetupPreview {
     setup: Setup,
 }
@@ -819,7 +818,9 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
         .items_center()
         .child(canvas(s, p, &shown, &d))
         .child(small(&help, p.t.text_secondary));
-    section(p, "setup-layout", "Apps and layout", vec![ws_cards(s, p, overlays), toolbar, canvas, inspector(s, p)])
+    let name = s.ed.setup().map_or("", |e| e.name.text.trim());
+    let title = if name.is_empty() { "Where its apps go".to_string() } else { format!("Where {name} puts its apps") };
+    section(p, "setup-layout", &title, vec![ws_cards(s, p, overlays), toolbar, canvas, inspector(s, p)])
 }
 
 /// A small screen with a workspace's tiles, `mw` wide.
@@ -836,30 +837,28 @@ fn mini_screen(w: &SetupWorkspace, d: &Defaults, c: &Canvas, mw: f32, p: &P) -> 
     screen
 }
 
-/// A card for each workspace this saved workspace uses (click to show it), and one to add
+/// A card for each workspace this setup uses (click to show it), and one to add
 /// another.
 fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let k = kit(p);
     let d = defaults(s);
     let c = Canvas::new(s.ed.screen);
-    let setup = s.ed.setup().expect("a saved workspace is open");
+    let setup = s.ed.setup().expect("a setup is open");
     let max = (s.workspaces.round() as usize).max(1);
     let cards = s.ed.cards();
     let mut strip = row().key("ws-cards").px(space::S3).pt(space::S3).pb(space::S1).gap(space::S2).flex_wrap();
     for &n in &cards {
         let w = setup.workspaces.iter().find(|w| w.number == n).map(to_config).unwrap_or_else(|| empty_ws(n));
         let on = n == s.ed.ws;
-        let count = match w.apps.len() {
-            0 => "Empty".to_string(),
-            1 => "1 app".to_string(),
-            c => format!("{c} apps"),
-        };
+        // What the setup puts on this workspace, by name.
+        let names: Vec<String> = w.apps.iter().map(|a| setups::app_label(&a.exe)).filter(|n| !n.is_empty()).collect();
+        let contents = if names.is_empty() { "No apps yet".to_string() } else { names.join(", ") };
         strip = strip.child(
             row()
                 .key(format!("ws-card-{n}"))
                 .hit()
                 .cursor(Cursor::Pointer)
-                .label(format!("Workspace {n}, {count}"))
+                .label(format!("Workspace {n}: {contents}"))
                 .on_press(move |s: &mut S| {
                     s.ed.ws = n;
                     s.ed.tile = None;
@@ -876,8 +875,11 @@ fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
                 .child(
                     col()
                         .gap(1.0)
-                        .child(text(format!("Workspace {n}")).font(TextStyle::new(12.5, 650.0)).color(if on { p.t.text } else { p.t.text.alpha(0.85) }))
-                        .child(small(&count, p.t.text_secondary)),
+                        // Fixed, so three cards and "Add workspace" share a row; the names
+                        // are all on the canvas below.
+                        .w(96.0)
+                        .child(text(format!("Workspace {n}")).font(TextStyle::new(12.5, 650.0)).color(if on { p.t.text } else { p.t.text.alpha(0.85) }).truncate())
+                        .child(small(&contents, p.t.text_secondary).truncate()),
                 ),
         );
     }
@@ -886,7 +888,7 @@ fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
         let options: Vec<ComboboxOption> = free.iter().map(|n| ComboboxOption::new(n.to_string(), format!("Workspace {n}"))).collect();
         let trigger = row()
             .h(48.0)
-            .px(14.0)
+            .px(12.0)
             .gap(6.0)
             .center_y()
             .radius(9.0)

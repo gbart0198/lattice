@@ -1,5 +1,5 @@
-//! Saved workspaces (`[[setup]]` in the config): a named set of apps, the workspaces they go on,
-//! their tiling order and each workspace's layout. Restoring one (`restore-workspace NAME`, its
+//! Setups (`[[setup]]` in the config): a named set of apps, the workspaces they go on,
+//! their tiling order and each workspace's layout. Restoring one (`restore-setup NAME`, its
 //! own key, or the launcher's picker) moves the apps that are open into place and starts the rest;
 //! their windows are put where they belong as they appear (`wm.rs`).
 //!
@@ -10,7 +10,7 @@
 use crate::config::{NewWindow, Setup, SetupWorkspace};
 use crate::layout::{self, LayoutKind, Params, Rect};
 
-/// One app of a saved workspace: where it goes.
+/// One app of a setup: where it goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
     /// Workspace index (0-based).
@@ -81,7 +81,7 @@ pub fn arrange(order: &[isize], first: &[isize]) -> Vec<isize> {
     out
 }
 
-/// A saved workspace's layout, filling in what it leaves out from `[general]`.
+/// A setup's layout, filling in what it leaves out from `[general]`.
 pub fn workspace_layout(w: &SetupWorkspace, default: LayoutKind) -> LayoutKind {
     w.layout.unwrap_or(default)
 }
