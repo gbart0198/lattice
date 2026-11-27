@@ -1,16 +1,16 @@
 //! The Setups tab's view: the list page (a row a setup, with a preview and its shortcut), and a
-//! setup's own page with its name and shortcut, the workspace cards, the tiling toolbar and add
-//! picker, the monitor bar and carousel around the canvas, and the inspector for the selected
-//! window.
+//! setup's own page with its name and shortcut, the workspace cards, the toolbar (tiling, the
+//! editor's help, the add picker), the monitor bar and carousel around the canvas with a button
+//! either side to add a monitor, and the inspector for the selected window.
 
 use rune::tok::{space, type_};
-use rune::{Color, Cursor, El, Spring, TextStyle, Tx, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, Combobox, ComboboxOption, SegmentedControl, TextInput};
+use rune::{Color, Cursor, El, Icon, Spring, TextStyle, Tx, col, el, icon, row, text};
+use rune_kit::{Button, ButtonVariant, Combobox, ComboboxOption, IconButton, IconButtonVariant, Placement, Popover, Select, TextInput};
 
 use super::canvas::{SLIDE_GAP, SLIDE_W, canvas, color, defaults};
+use super::catalog;
 use super::io::{capture, restore};
 use super::model::{Editor, SetupEdit, setup_config, to_config, unique_name};
-use super::samples::SAMPLE;
 use crate::config::{self, NewWindow, Setup, SetupWorkspace};
 use crate::layout::LayoutKind;
 use crate::settings::{LAYOUTS, P, S, kit, section};
@@ -20,6 +20,25 @@ use crate::setups::{self, Defaults};
 const SLIDE: Spring = Spring::new(0.45, 0.06);
 
 const OTHER: &str = "__other__";
+
+pub(super) static PLUS: Icon = Icon {
+    name: "setups-plus",
+    view: 16.0,
+    body: r#"<path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
+};
+pub(super) static TRASH: Icon = Icon {
+    name: "setups-trash",
+    view: 16.0,
+    body: r#"<path d="M3 4.5H13M6.5 4.5V3H9.5V4.5M4.5 4.5L5.2 13H10.8L11.5 4.5M7 7V11M9 7V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+static INFO: Icon = Icon {
+    name: "setups-info",
+    view: 16.0,
+    body: r#"<circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 7.2V11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="5" r="0.8" fill="currentColor"/>"#,
+};
+
+/// The tiling dropdown's names for `LAYOUTS`.
+const LAYOUT_NAMES: [&str; 3] = ["Dwindle", "Master", "Monocle"];
 
 /// A workspace of `setup` drawn small: each of its monitors.
 fn ws_thumb(ed: &Editor, setup: &SetupEdit, n: usize, d: &Defaults) -> setups::Thumb {
@@ -211,10 +230,7 @@ fn details_section(s: &S, p: &P, i: usize) -> El {
         .invalid(key_err.is_some())
         .on_edit(move |s: &mut S| &mut s.ed.list[i].key)
         .build(&k);
-    let key_caption = match key_err {
-        Some(e) => e,
-        None => "Shortcut (optional), e.g. super+alt+1".into(),
-    };
+    let key_caption = key_err.unwrap_or_else(|| "Shortcut".into());
     // One row, so the layout editor starts high on the page.
     col()
         .key("setup-details")
@@ -236,52 +252,94 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let sibling = s.ed.setup().and_then(|e| e.workspaces.iter().find(|w| w.number == s.ed.ws)).map(to_config);
     let shown = s.ed.shown().map(to_config).unwrap_or_else(|| SetupWorkspace { layout: sibling.as_ref().and_then(|w| w.layout), ..empty_ws(s.ed.ws) });
     let kind = setups::workspace_layout(&shown, d.layout);
-    let layout_pick = SegmentedControl::new(&LAYOUTS, Some(LAYOUTS.iter().position(|l| *l == kind.name()).unwrap_or(0)))
+    let current = LAYOUTS.iter().position(|l| *l == kind.name()).map(|i| LAYOUT_NAMES[i]);
+    let layout_pick = Select::new("setup-tiling", &LAYOUT_NAMES)
         .label("Tiling")
-        .fit()
-        .on_pick(|s: &mut S, i, _| {
+        .width(130.0)
+        .current(current)
+        .open(s.ed.layout_open)
+        .on_toggle(|s: &mut S| s.ed.layout_open = !s.ed.layout_open)
+        .on_close(|s: &mut S| s.ed.layout_open = false)
+        .on_choose(|s: &mut S, chosen: &str, _tx: &mut Tx| {
+            s.ed.layout_open = false;
+            let Some(i) = LAYOUT_NAMES.iter().position(|n| *n == chosen) else { return };
             if let Some(w) = s.ed.shown_or_add() {
                 w.layout = LayoutKind::parse(LAYOUTS[i]);
             }
             s.ed.sync_siblings();
         })
-        .build(&k);
+        .build(&k, overlays);
     let toolbar = row()
         .key("setup-toolbar")
         .px(space::S3)
         .pt(space::S2)
-        .gap(space::S3)
+        .gap(space::S2)
         .center_y()
         .child(small("Tiling", p.t.text_secondary))
         .child(layout_pick)
+        .child(info(s, p, &d, kind, overlays))
         .child(el().grow(1.0))
         .child(add_picker(s, p, overlays));
-    let help = if shown.apps.is_empty() {
-        "Add an app to place it here.".to_string()
-    } else {
-        let order = match d.new_window {
-            NewWindow::AfterFocused => "New apps go after the selected window",
-            NewWindow::End => "New apps go at the end",
-        };
-        match kind {
-            LayoutKind::Monocle => format!("Monocle: every window fills the screen. Drag one onto another to reorder. {order}."),
-            _ => format!("Drag a window onto another to swap them, or the gap between two to resize. {order}."),
-        }
-    };
-    let canvas = col()
+    let canvas = row()
         .key("canvas-wrap")
-        .px(space::S3)
+        .px(space::S2)
         .py(space::S2)
-        .gap(space::S2)
-        .items_center()
-        .child(carousel(s, p, &d, shown.layout))
-        .child(small(&help, p.t.text_secondary));
-    let name = s.ed.setup().map_or("", |e| e.name.text.trim());
-    let title = if name.is_empty() { "Where its apps go".to_string() } else { format!("Where {name} puts its apps") };
-    section(p, "setup-layout", &title, vec![ws_cards(s, p, overlays), toolbar, monitor_bar(s, p), canvas, inspector(s, p)])
+        .gap(space::S1)
+        .center_y()
+        .child(add_monitor_button(p, 0, "Add a monitor on the left"))
+        .child(carousel(s, p, &d, shown.layout).grow(1.0).shrink())
+        .child(add_monitor_button(p, s.ed.count(), "Add a monitor on the right"));
+    section(p, "setup-layout", "", vec![ws_cards(s, p, overlays), toolbar, monitor_bar(s, p), canvas, inspector(s, p)])
 }
 
-/// The monitor shown, the arrows to slide to the others, and adding and removing monitors.
+/// A "+" beside the carousel: lays the setup out for another monitor on that side.
+fn add_monitor_button(p: &P, at: usize, label: &str) -> El {
+    el().key(format!("add-monitor-{}", if at == 0 { "left" } else { "right" }))
+        .size(30.0, 72.0)
+        .radius(8.0)
+        .border(p.hair, p.t.card_border)
+        .hover(p.t.text.alpha(0.06))
+        .center()
+        .hit()
+        .cursor(Cursor::Pointer)
+        .label(label.to_string())
+        .on_press(move |s: &mut S| s.ed.add_monitor_at(at))
+        .child(icon(&PLUS, 14.0).color(p.t.text_secondary))
+}
+
+/// The info button by the tiling dropdown, and what it opens: how the editor works.
+fn info(s: &S, p: &P, d: &Defaults, kind: LayoutKind, overlays: &mut Vec<El>) -> El {
+    let k = kit(p);
+    let trigger = IconButton::new(&INFO)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("How the layout editor works")
+        .on_press(|s: &mut S| s.ed.info_open = !s.ed.info_open)
+        .build(&k);
+    let order = match d.new_window {
+        NewWindow::AfterFocused => "after the selected window",
+        NewWindow::End => "at the end",
+    };
+    let mut lines = vec![
+        "Drag a window onto another to swap them.".to_string(),
+        "Drag the gap between two windows to resize them.".to_string(),
+        format!("New apps go {order}, as lattice places new windows."),
+        "Click a window to change its program, or move or remove it.".to_string(),
+    ];
+    if kind == LayoutKind::Monocle {
+        lines[1] = "Monocle: every window fills the screen; they're fanned out here so each shows.".to_string();
+    }
+    let body = lines.into_iter().fold(col().gap(6.0).w(260.0), |c, l| c.child(small(&l, p.t.text_secondary).w_full().wrap()));
+    Popover::new("setup-info")
+        .trigger(trigger)
+        .title("Layout editor")
+        .open(s.ed.info_open)
+        .placement(Placement::BottomStart)
+        .on_close(|s: &mut S| s.ed.info_open = false)
+        .child(body)
+        .build(&k, overlays)
+}
+
+/// The monitor shown, and the arrows to slide to the others.
 fn monitor_bar(s: &S, p: &P) -> El {
     let k = kit(p);
     let ed = &s.ed;
@@ -297,25 +355,19 @@ fn monitor_bar(s: &S, p: &P) -> El {
             .child(arrow("\u{203a}", (m + 1).min(n - 1), m + 1 >= n));
     }
     let name = text(ed.monitor_name(m)).font(TextStyle::new(13.0, 600.0)).color(p.t.text);
-    bar = bar.child(name).child(el().grow(1.0));
-    let add = Button::new("+ Add monitor").variant(ButtonVariant::Ghost).on_press(|s: &mut S| s.ed.add_monitor()).build(&k);
-    bar = bar.child(add);
-    if n > 1 {
-        let remove = Button::new("Remove monitor")
-            .variant(ButtonVariant::GhostMuted)
-            .on_press(move |s: &mut S| {
-                let gone = s.ed.remove_monitor();
-                s.status = match gone {
-                    0 => format!("Removed monitor {}.", m + 1),
-                    1 => format!("Removed monitor {} and its app. Close without saving to undo.", m + 1),
-                    g => format!("Removed monitor {} and its {g} apps. Close without saving to undo.", m + 1),
-                };
-                s.status_ok = true;
-            })
-            .build(&k);
-        bar = bar.child(remove);
-    }
-    bar
+    bar.child(name)
+}
+
+/// Takes the monitor shown out of the setup (its delete button on the canvas).
+pub(super) fn remove_monitor(s: &mut S) {
+    let m = s.ed.mon;
+    let gone = s.ed.remove_monitor();
+    s.status = match gone {
+        0 => format!("Removed monitor {}.", m + 1),
+        1 => format!("Removed monitor {} and its app. Close without saving to undo.", m + 1),
+        g => format!("Removed monitor {} and its {g} apps. Close without saving to undo.", m + 1),
+    };
+    s.status_ok = true;
 }
 
 /// The canvas of each monitor of the workspace, side by side: the one shown in the middle, the
@@ -506,11 +558,7 @@ fn inspector(s: &S, p: &P) -> El {
         .fill(p.t.bg);
     let selected = s.ed.tile.filter(|t| s.ed.shown().is_some_and(|w| *t < w.apps.len()));
     let Some(t) = selected else {
-        let msg = if s.ed.shown().is_some_and(|w| !w.apps.is_empty()) {
-            "Click a window to change its program, move it to another workspace, or remove it."
-        } else {
-            "Nothing here yet. Add an app above, or pick another workspace."
-        };
+        let msg = if s.ed.shown().is_some_and(|w| !w.apps.is_empty()) { "No window selected." } else { "Nothing here yet." };
         return strip.child(small(msg, p.t.text_secondary).grow(1.0).shrink().wrap());
     };
     let k = kit(p);
@@ -531,15 +579,9 @@ fn inspector(s: &S, p: &P) -> El {
     let exe = TextInput::new(&app.exe)
         .label("Program")
         .placeholder("Code.exe")
-        .width(Some(170.0))
+        .width(None)
         .invalid(exe_text.is_empty() || crate::settings::bad_exe(&app.exe.text))
         .on_edit(move |s: &mut S| &mut s.ed.list[si].workspaces[wi].apps[t].exe)
-        .build(&k);
-    let run = TextInput::new(&app.run)
-        .label("Start with")
-        .placeholder(if exe_text.is_empty() { "code" } else { exe_text })
-        .width(None)
-        .on_edit(move |s: &mut S| &mut s.ed.list[si].workspaces[wi].apps[t].run)
         .build(&k);
     let step = |label: &str, to: usize, disabled: bool| {
         Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.move_to(t, to)).build(&k)
@@ -553,8 +595,7 @@ fn inspector(s: &S, p: &P) -> El {
     let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| s.ed.remove(t)).build(&k);
     let mut strip = strip
         .child(badge)
-        .child(field("Program (matched by file name)", exe, p))
-        .child(field("Start with, if it isn't running", run, p).grow(1.0).shrink())
+        .child(field("Program", exe, p).grow(1.0).shrink())
         .child(field("Workspace", mover, p));
     let count = s.ed.count();
     if count > 1 {
@@ -575,51 +616,32 @@ fn inspector(s: &S, p: &P) -> El {
 fn add_picker(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let k = kit(p);
     let mut options = Vec::new();
-    if s.ed.picker.is_open() {
-        for (exe, path) in running_apps() {
-            options.push(ComboboxOption::new(path.clone(), setups::app_label(&exe)));
-        }
+    let programs = if s.ed.picker.is_open() { catalog::programs() } else { None };
+    for (i, prog) in programs.unwrap_or_default().iter().enumerate() {
+        let mut o = ComboboxOption::new(i.to_string(), prog.name.clone());
+        o.detail = prog.exe.clone();
+        options.push(o);
     }
-    options.push(ComboboxOption::new(OTHER, "Other program…"));
+    if s.ed.picker.is_open() && programs.is_none() {
+        let mut o = ComboboxOption::new("__loading__", "Finding programs\u{2026}");
+        o.disabled = true;
+        options.push(o);
+    }
+    options.push(ComboboxOption::new(OTHER, "Other program\u{2026}"));
     Combobox::new("setup-add-app", &s.ed.picker, &options, |s: &mut S| &mut s.ed.picker)
         .label("Add an app")
         .placeholder("+ Add app")
-        .search_placeholder("Search open apps…")
-        .width(190.0)
+        .search_placeholder("Search programs\u{2026}")
+        .width(240.0)
         .max_height(320.0)
         .on_choose(|s: &mut S, chosen: &str, _tx: &mut Tx| {
             s.ed.picker.close();
             let nw = defaults(s).new_window;
             if chosen == OTHER {
                 s.ed.add("", "", nw);
-            } else {
-                let exe = std::path::Path::new(chosen).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                s.ed.add(&exe, &setups::run_for_path(chosen), nw);
+            } else if let Some(prog) = chosen.parse::<usize>().ok().and_then(|i| catalog::programs()?.get(i)) {
+                s.ed.add(&prog.exe, &prog.run, nw);
             }
         })
         .build(&k, overlays)
-}
-
-/// Programs with a window lattice would tile, by full path (one entry a program).
-fn running_apps() -> Vec<(String, String)> {
-    if SAMPLE.load(std::sync::atomic::Ordering::Relaxed) {
-        return ["Discord.exe", "figma.exe", "msedge.exe", "Notion.exe", "slack.exe", "Spotify.exe"]
-            .iter()
-            .map(|e| (e.to_string(), format!(r"C:\Program Files\{}\{e}", setups::app_label(e))))
-            .collect();
-    }
-    let mut out: Vec<(String, String)> = Vec::new();
-    for h in crate::win::enum_windows() {
-        let Some(c) = crate::win::candidate(h) else { continue };
-        if c.exe.eq_ignore_ascii_case("lattice.exe") || c.exe.eq_ignore_ascii_case("ApplicationFrameHost.exe") {
-            continue;
-        }
-        let path = crate::win::exe_path(h);
-        if path.is_empty() || out.iter().any(|(_, p)| p.eq_ignore_ascii_case(&path)) {
-            continue;
-        }
-        out.push((c.exe, path));
-    }
-    out.sort_by_key(|(exe, _)| exe.to_lowercase());
-    out
 }

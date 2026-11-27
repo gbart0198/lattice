@@ -222,20 +222,22 @@ you have open, and clicking one opens it:
 - Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
 - A card for each workspace the setup uses shows that workspace's layout and the apps it puts
   there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
-- A setup is laid out for one or more monitors: **+ Add monitor** and **Remove monitor** (which
-  takes that monitor's apps with it) change how many; a new setup starts with the monitors you
-  have. A workspace spans them all and each tiles its own windows, so the editor is a carousel:
+- A setup is laid out for one or more monitors: the **+** either side of the editor adds one
+  on that side, and the bin in the corner of the monitor you're editing removes it (with its
+  apps); a new setup starts with the monitors you have. A workspace spans them all and each tiles its own windows, so the editor is a carousel:
   the monitor you're editing in the middle, the others either side to click or step to with
   ‹ ›.
 - The layout editor shows that monitor as lattice will tile it, one box per app. Drag a box
   onto another to swap them. Drag the gap between two boxes to resize them; the split shows as
-  a percentage while you drag. Pick dwindle, master or monocle (for the whole workspace, as in
-  lattice).
-- **+ Add app** lists the programs you have open (or "Other program…" to type one in). It
+  a percentage while you drag. Pick dwindle, master or monocle from the **Tiling** dropdown
+  (for the whole workspace, as in lattice). The ⓘ beside it sums this up.
+- **+ Add app** lists the programs the launcher finds (the Start menu's apps, with the program
+  each one runs) and any others you have open; "Other program…" adds one by its `.exe`. It
   drops in exactly where a new window would: after the selected box with `new_window =
   "after_focused"`, else at the end.
-- Click a box and the strip under the editor edits it: its program, the command line that
-  starts it, which workspace and monitor it's on, or remove it.
+- Click a box and the strip under the editor edits it: its program, which workspace and monitor
+  it's on, or remove it. An app from the list is started the way the Start menu starts it;
+  change its program and it's started by the new name.
 - **Restore** saves and restores it right away; **‹ Setups** goes back to the list.
 
 Restore one with its shortcut, by typing `workspaces` or `setups` in the launcher (a picker
@@ -621,7 +623,7 @@ soundtrack.
 | `src/bar.rs` | Rune top bar |
 | `src/border.rs` | Rune focus-border overlay |
 | `src/anim/` | Window animations: easing curves, the animator and its vsync frame clock (`mod.rs`), the live-preview overlay (`dwm.rs`), and the `--animation-preview` demo (`preview.rs`) |
-| `src/settings/` | Rune settings window (`--settings`, its own process); edits config.toml with `toml_edit`. The Setups tab is `setups/`: the editor's state (`model.rs`), the layout canvas and its drags (`canvas.rs`), the pages (`view.rs`), saving, capture and restore (`io.rs`), and the sample data for the `--scene setups*` previews (`samples.rs`) |
+| `src/settings/` | Rune settings window (`--settings`, its own process); edits config.toml with `toml_edit`. The Setups tab is `setups/`: the editor's state (`model.rs`), the layout canvas and its drags (`canvas.rs`), the pages (`view.rs`), saving, capture and restore (`io.rs`), the add picker's programs from the launcher's catalog (`catalog.rs`), and the sample data for the `--scene setups*` previews (`samples.rs`) |
 | `src/tour/` | The guided tour (`--tour`, its own process): steps and lattice queries (`mod.rs`), spotlight and card (`view.rs`), sample-desktop preview and headless scenes (`preview.rs`) |
 | `src/icon.rs` | Extracts app icons for the bar |
 | `src/launcher/` | The app launcher, self-contained (imports nothing from the rest of lattice): fuzzy ranking and history (`rank.rs`), Start menu catalog, icons and launching (`system.rs`), window search ranking (`windows.rs`), command mode's catalog (`commands.rs`) and its power, audio and Wi-Fi actions (`control.rs`), Rune UI (`ui.rs`) |

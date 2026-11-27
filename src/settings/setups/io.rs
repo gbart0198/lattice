@@ -106,7 +106,7 @@ pub(crate) fn write(doc: &mut DocumentMut, ed: &Editor) {
             for a in &w.apps {
                 let mut it = toml_edit::InlineTable::new();
                 it.insert("exe", a.exe.text.trim().into());
-                let run = a.run.text.trim();
+                let run = a.run();
                 if !run.is_empty() {
                     it.insert("run", run.into());
                 }
@@ -141,7 +141,7 @@ pub(crate) fn set_waker(w: rune::Waker) {
     let _ = WAKER.set(w);
 }
 
-fn wake() {
+pub(super) fn wake() {
     GEN.fetch_add(1, Ordering::SeqCst);
     if let Some(w) = WAKER.get() {
         w();
@@ -222,7 +222,7 @@ pub(super) fn restore(s: &mut S, name: String) {
 
 /// Takes what came back from lattice; true when something changed.
 pub(crate) fn poll(s: &mut S) -> bool {
-    let mut changed = false;
+    let mut changed = super::catalog::arrived();
     if let Some(r) = CAPTURED.lock().unwrap().take() {
         s.ed.capturing = false;
         changed = true;

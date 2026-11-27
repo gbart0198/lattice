@@ -13,7 +13,18 @@ use crate::setups;
 pub(super) struct AppEdit {
     pub(super) id: u64,
     pub(super) exe: TextEdit,
-    pub(super) run: TextEdit,
+    /// How restoring starts it, which the editor doesn't show: what the picker or a capture
+    /// gave, or the config's `run`. It goes with the program it was made for (`run_for`): change
+    /// the program and it's started by its name instead.
+    run: String,
+    run_for: String,
+}
+
+impl AppEdit {
+    /// The `run` to save: empty once the program was changed.
+    pub(super) fn run(&self) -> &str {
+        if self.exe.text.trim().eq_ignore_ascii_case(self.run_for.trim()) { self.run.trim() } else { "" }
+    }
 }
 
 /// A setup's apps on one monitor of one workspace (a `[[setup.workspace]]` entry).
@@ -96,6 +107,9 @@ pub(crate) struct Editor {
     pub(super) primary: usize,
     next_id: u64,
     pub(super) capturing: bool,
+    /// The tiling dropdown, and the layout editor's help, open.
+    pub(super) layout_open: bool,
+    pub(super) info_open: bool,
 }
 
 impl Editor {
@@ -121,6 +135,8 @@ impl Editor {
             primary,
             next_id: 1,
             capturing: false,
+            layout_open: false,
+            info_open: false,
         };
         let list: Vec<SetupEdit> = cfg.setups.iter().map(|s| ed.from_config(s)).collect();
         ed.list = list;
@@ -133,7 +149,7 @@ impl Editor {
     }
 
     pub(super) fn app(&mut self, exe: &str, run: &str) -> AppEdit {
-        AppEdit { id: self.id(), exe: TextEdit::new(exe), run: TextEdit::new(run) }
+        AppEdit { id: self.id(), exe: TextEdit::new(exe), run: run.to_string(), run_for: exe.to_string() }
     }
 
     fn from_config(&mut self, s: &Setup) -> SetupEdit {
@@ -182,6 +198,8 @@ impl Editor {
         self.seam = None;
         self.picker.close();
         self.ws_picker.close();
+        self.layout_open = false;
+        self.info_open = false;
     }
 
     /// Shows workspace `n` (on its first monitor with apps), adding it (empty) if the setup
@@ -239,11 +257,21 @@ impl Editor {
         out
     }
 
-    /// Lays the setup out for one more monitor, and shows it.
+    /// Lays the setup out for one more monitor, right of the others, and shows it.
     pub(super) fn add_monitor(&mut self) {
+        self.add_monitor_at(self.count());
+    }
+
+    /// Lays the setup out for one more monitor at `at` (0 is left of the others, `count()`
+    /// right of them), moving the ones from there right, and shows it.
+    pub(super) fn add_monitor_at(&mut self, at: usize) {
         let Some(setup) = self.sel.and_then(|i| self.list.get_mut(i)) else { return };
+        let at = at.min(setup.monitors);
+        for w in setup.workspaces.iter_mut().filter(|w| w.monitor >= at) {
+            w.monitor += 1;
+        }
         setup.monitors += 1;
-        self.mon = setup.monitors - 1;
+        self.mon = at;
         self.tile = None;
     }
 
@@ -381,7 +409,7 @@ pub(super) fn to_config(w: &WsEdit) -> SetupWorkspace {
         layout: w.layout,
         splits: w.splits.clone(),
         master_ratio: w.master_ratio,
-        apps: w.apps.iter().map(|a| SetupApp { exe: a.exe.text.trim().to_string(), run: a.run.text.trim().to_string() }).collect(),
+        apps: w.apps.iter().map(|a| SetupApp { exe: a.exe.text.trim().to_string(), run: a.run().to_string() }).collect(),
     }
 }
 
@@ -476,6 +504,13 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
         write(&mut doc, &ed);
         let back: config::Config = toml::from_str(&doc.to_string()).unwrap();
         assert_eq!(setups::monitor_count(&back.setups[0]), 3);
+        // One added on the left moves the others right, apps and all.
+        ed.add_monitor_at(0);
+        assert_eq!((ed.count(), ed.mon), (4, 0));
+        let on: Vec<(usize, &str)> = ed.list[0].workspaces.iter().flat_map(|w| w.apps.iter().map(move |a| (w.monitor, a.exe.text.as_str()))).collect();
+        assert_eq!(on, vec![(1, "a.exe"), (2, "b.exe")]);
+        ed.remove_monitor();
+        assert_eq!((ed.count(), ed.mon), (3, 0));
         // Removing monitor 2 takes b with it and moves 3 down; one monitor stays.
         ed.show_mon(1);
         assert_eq!(ed.remove_monitor(), 1);
@@ -579,5 +614,16 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
         assert_eq!(names(&ed), ["a.exe", "b.exe"]);
         ed.remove(0);
         assert_eq!(names(&ed), ["b.exe"]);
+    }
+
+    #[test]
+    fn a_changed_program_forgets_how_the_old_one_started() {
+        let mut ed = Editor::load(&toml::from_str("[[setup]]\nname = \"Dev\"\n[[setup.workspace]]\nnumber = 1\napps = [{ exe = \"Code.exe\", run = \"code\" }]").unwrap());
+        let app = &mut ed.list[0].workspaces[0].apps[0];
+        assert_eq!(app.run(), "code");
+        app.exe = TextEdit::new("code.EXE");
+        assert_eq!(app.run(), "code", "same program, other case");
+        app.exe = TextEdit::new("Cursor.exe");
+        assert_eq!(app.run(), "");
     }
 }

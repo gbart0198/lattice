@@ -5,14 +5,15 @@
 use rune::{Color, Cursor, Drag, El, Phase, TextStyle, Tx, col, el, row, text};
 
 use super::model::{Editor, to_config};
-use super::view::small;
+use super::view::{TRASH, remove_monitor, small};
 use crate::config::{NewWindow, SetupWorkspace};
 use crate::layout::{self, LayoutKind, Rect};
-use crate::settings::{LAYOUTS, NEW_WINDOW, P, S};
+use crate::settings::{LAYOUTS, NEW_WINDOW, P, S, kit};
 use crate::setups::{self, Defaults};
 
-/// The canvas's width in logical pixels; its height follows the screen's shape.
-const CANVAS_W: f32 = 640.0;
+/// The canvas's width in logical pixels; its height follows the screen's shape. Narrower than
+/// the card, for the add-monitor buttons either side.
+const CANVAS_W: f32 = 600.0;
 /// The tallest it gets (a portrait monitor is fitted into this).
 const CANVAS_MAX_H: f32 = 400.0;
 /// With more than one monitor, the room for each in the carousel: smaller, so the ones either
@@ -260,6 +261,17 @@ pub(super) fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults, m: usize, l
                 );
             }
         }
+    }
+    // The monitor shown can be taken out of the setup (one always stays).
+    if live && drag.is_none() && s.ed.count() > 1 {
+        let k = kit(p);
+        let delete = rune_kit::IconButton::new(&TRASH)
+            .variant(rune_kit::IconButtonVariant::Ghost)
+            .label(format!("Remove monitor {}", m + 1))
+            .help(format!("Remove monitor {} and its apps", m + 1))
+            .on_press(remove_monitor)
+            .build(&k);
+        screen = screen.child(el().key("remove-monitor").absolute(c.w - 36.0, 8.0).radius(7.0).fill(Color::BLACK.alpha(0.55)).child(delete));
     }
     // The window being dragged follows the pointer, over everything.
     if let Some(dr) = drag {

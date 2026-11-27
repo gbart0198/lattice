@@ -32,7 +32,7 @@ mod files;
 mod index;
 mod rank;
 mod system;
-pub(crate) use system::style_window;
+pub(crate) use system::{App as CatalogApp, com_init, scan as scan_apps, style_window, target_exe};
 mod ui;
 mod windows;
 

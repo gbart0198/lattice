@@ -522,11 +522,12 @@ fn section(p: &P, key: &str, title: &str, rows: Vec<El>) -> El {
             card = card.child(el().key(format!("sep{i}")).h(p.hair).ml(space::S3).mr(space::S3).fill(p.t.separator));
         }
     }
-    col()
-        .key(key.to_string())
-        .gap(space::S2)
-        .child(text(title.to_string()).key("header").font(type_::SECTION).color(p.t.text_secondary).ml(space::S3))
-        .child(card)
+    let mut out = col().key(key.to_string()).gap(space::S2);
+    // No title: the card alone.
+    if !title.is_empty() {
+        out = out.child(text(title.to_string()).key("header").font(type_::SECTION).color(p.t.text_secondary).ml(space::S3));
+    }
+    out.child(card)
 }
 
 fn setting_row(p: &P, key: &str, label: &str, hint: Option<&str>, control: El) -> El {
@@ -1110,6 +1111,16 @@ pub fn run() {
                 s.tab = 2;
                 setups::sample(s);
                 setups::sample_add_ws(s);
+            }),
+            ("setups-info", |s: &mut S| {
+                s.tab = 2;
+                setups::sample(s);
+                setups::sample_info(s);
+            }),
+            ("setups-tiling", |s: &mut S| {
+                s.tab = 2;
+                setups::sample(s);
+                setups::sample_tiling(s);
             }),
             ("setups-empty", |s: &mut S| {
                 s.tab = 2;

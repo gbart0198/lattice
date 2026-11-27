@@ -27,7 +27,7 @@ state and the WinEvent hooks. A third thread runs only the low-level keyboard ho
 | Win32 calls | `win.rs` (`Hwnd` is an `isize`); hidden-window recovery in `shared.rs` (`hidden.txt`) |
 | The bar | `bar.rs`, fed by `Wm::publish` |
 | Launcher | `launcher/`: `mod.rs` entry, `ui.rs` view, `system.rs` app catalog and launching, `rank.rs` scoring, `files.rs` + `everything.rs` + `index.rs` file search, `windows.rs` window search, `commands.rs` + `control.rs` command mode |
-| Settings window | `settings/` (separate process, `--settings`; edits config.toml with `toml_edit`); the Setups tab in `settings/setups/` (`model.rs` state, `canvas.rs` canvas and drags, `view.rs` pages, `io.rs` save/capture/restore, `samples.rs` `--scene setups*` data) |
+| Settings window | `settings/` (separate process, `--settings`; edits config.toml with `toml_edit`); the Setups tab in `settings/setups/` (`model.rs` state, `canvas.rs` canvas and drags, `view.rs` pages, `catalog.rs` the add picker's programs, `io.rs` save/capture/restore, `samples.rs` `--scene setups*` data) |
 | Tour, focus border, updates | `tour/`, `border.rs`, `update.rs` + `update_toast.rs` |
 | CLI entry for terminals | `bin/lattice-console.rs` (builds `lattice.com`) |
 | User docs | `README.md`: command table under "Scripting", hook events table, "How workspaces work" |
