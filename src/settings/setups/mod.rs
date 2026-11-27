@@ -33,4 +33,4 @@ pub(super) use samples::{
     sample, sample_add, sample_add_ws, sample_drag, sample_info, sample_list, sample_master, sample_missing, sample_monitor, sample_none, sample_one,
     sample_resize, sample_tiling,
 };
-pub(super) use view::tab;
+pub(super) use view::{INFO, TRASH, tab};
