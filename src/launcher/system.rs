@@ -106,6 +106,58 @@ fn wanted(name: &str, id: &str) -> bool {
     !name.to_lowercase().contains("uninstall") && !DOCUMENTS.iter().any(|ext| id.ends_with(ext))
 }
 
+/// The program an app in the catalog runs, as a full path: a shortcut's target, or a packaged
+/// app's executable from its manifest. None for the few that have neither (web apps, say).
+pub fn target_exe(id: &str) -> Option<String> {
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::UI::Shell::IShellItem2;
+    use windows::Win32::UI::Shell::PropertiesSystem::PSGetPropertyKeyFromName;
+    // A path already (possibly under a known-folder GUID, which the shell resolves below).
+    if !id.contains('!') && id.to_ascii_lowercase().ends_with(".exe") && !id.starts_with('{') {
+        return Some(id.to_string());
+    }
+    unsafe {
+        let item: IShellItem2 = SHCreateItemFromParsingName(&HSTRING::from(apps_folder_path(id)), None::<&IBindCtx>).ok()?;
+        let prop = |name: &str| -> Option<String> {
+            let mut key = PROPERTYKEY::default();
+            PSGetPropertyKeyFromName(&HSTRING::from(name), &mut key).ok()?;
+            let p = item.GetString(&key).ok()?;
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const c_void));
+            s.filter(|s| !s.trim().is_empty())
+        };
+        if let Some(target) = prop("System.Link.TargetParsingPath").filter(|t| t.to_ascii_lowercase().ends_with(".exe")) {
+            return Some(target);
+        }
+        let dir = prop("System.AppUserModel.PackageInstallPath")?;
+        let manifest = std::fs::read_to_string(std::path::Path::new(&dir).join("AppxManifest.xml")).ok()?;
+        let exe = manifest_executable(&manifest, id.split_once('!')?.1)?;
+        Some(format!("{}\\{}", dir.trim_end_matches('\\'), exe.replace('/', "\\")))
+    }
+}
+
+/// The `Executable` of the `<Application Id="app_id">` in a package's AppxManifest.xml.
+fn manifest_executable(xml: &str, app_id: &str) -> Option<String> {
+    let attr = |tag: &str, name: &str| -> Option<String> {
+        let at = tag.find(&format!(" {name}=\"")).or_else(|| tag.find(&format!("\n{name}=\""))).or_else(|| tag.find(&format!("\t{name}=\"")))?;
+        let rest = &tag[at + name.len() + 3..];
+        Some(rest[..rest.find('"')?].to_string())
+    };
+    let mut rest = xml;
+    while let Some(i) = rest.find("<Application") {
+        rest = &rest[i + "<Application".len()..];
+        // `<Applications>` is the list, not one.
+        if !rest.starts_with([' ', '\n', '\r', '\t']) {
+            continue;
+        }
+        let tag = &rest[..rest.find('>').unwrap_or(rest.len())];
+        if attr(tag, "Id").as_deref() == Some(app_id) {
+            return attr(tag, "Executable").filter(|e| !e.is_empty());
+        }
+    }
+    None
+}
+
 /// The app's icon at `size` pixels, as the Start menu draws it.
 pub fn icon(id: &str, size: u32) -> Option<Icon> {
     shell_icon(&apps_folder_path(id), size)
@@ -406,5 +458,18 @@ mod tests {
         assert!(!wanted("Uninstall Foo", "C:\\foo\\unins000.exe"));
         assert!(!wanted("Foo Readme", "{7C5A40EF}\\Foo\\readme.txt"));
         assert!(wanted("Steam Game", "steam.url"), "Steam games are .url shortcuts");
+    }
+
+    #[test]
+    fn manifests_name_the_executable() {
+        let xml = r#"<Package><Applications>
+  <Application Id="App" Executable="WindowsTerminal.exe" EntryPoint="Windows.FullTrustApplication">
+  </Application>
+  <Application
+    Id="Other" Executable="PaintApp\mspaint.exe"/>
+</Applications></Package>"#;
+        assert_eq!(manifest_executable(xml, "App").as_deref(), Some("WindowsTerminal.exe"));
+        assert_eq!(manifest_executable(xml, "Other").as_deref(), Some("PaintApp\\mspaint.exe"));
+        assert_eq!(manifest_executable(xml, "Missing"), None);
     }
 }

@@ -10,7 +10,7 @@ use crate::config::{self, NewWindow};
 use crate::layout::Rect;
 use crate::settings::S;
 
-/// Previews list made-up open apps in the add picker, never what's really running.
+/// Previews list made-up programs in the add picker, never what's really installed or running.
 pub(super) static SAMPLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn sample(s: &mut S) {
@@ -130,4 +130,15 @@ pub(crate) fn sample_master(s: &mut S) {
 pub(crate) fn sample_add(s: &mut S) {
     s.ed.tile = Some(1);
     s.ed.picker.step(rune_kit::ComboboxEvent::Toggle { current: None });
+}
+
+/// The layout editor's help open.
+pub(crate) fn sample_info(s: &mut S) {
+    s.ed.tile = None;
+    s.ed.info_open = true;
+}
+
+/// The tiling dropdown open.
+pub(crate) fn sample_tiling(s: &mut S) {
+    s.ed.layout_open = true;
 }
