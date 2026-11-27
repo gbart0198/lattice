@@ -55,6 +55,19 @@ if (Test-Path $hiddenList) {
 Remove-Item (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\lattice.lnk') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\lattice.lnk') -ErrorAction SilentlyContinue
 Remove-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\lattice' -Recurse -ErrorAction SilentlyContinue
+# The user PATH, raw: read and written as REG_EXPAND_SZ so entries like %USERPROFILE%\bin keep
+# working ([Environment]::SetEnvironmentVariable would expand them for good).
+function Get-UserPath { (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
+function Set-UserPath($value) {
+    Set-ItemProperty 'HKCU:\Environment' Path $value -Type ExpandString
+    # Tell Explorer, so terminals opened from now on see it.
+    Add-Type -Namespace LatticeEnv -Name Native -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, UIntPtr w, string l, uint f, uint t, out UIntPtr r);'
+    $r = [UIntPtr]::Zero
+    [void][LatticeEnv.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r)
+}
+$userPath = Get-UserPath
+$kept = ($userPath -split ';') | Where-Object { $_ -and $_.TrimEnd('\') -ine $dest }
+if ($userPath -and ($kept -join ';') -ne $userPath) { Set-UserPath ($kept -join ';') }
 # This script may be running from the install folder: delete it after we exit.
 Start-Process cmd.exe -ArgumentList "/c timeout /t 2 >nul & rmdir /s /q `"$dest`"" -WindowStyle Hidden
 if ($RemoveConfig) { Remove-Item (Join-Path $env:APPDATA 'lattice') -Recurse -ErrorAction SilentlyContinue }

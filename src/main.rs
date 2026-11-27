@@ -41,6 +41,7 @@ unsafe extern "system" fn on_console_ctrl(_: u32) -> BOOL {
 const HELP: &str = "lattice - tiling window manager for Windows 11
 
 USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-preview SCENE | --help]
+       lattice msg COMMAND | query WHAT | subscribe [EVENT...]
 
   (no args)       start the window manager and bar
   --list          print monitors and the windows lattice would manage, then exit (changes nothing)
@@ -57,6 +58,15 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-previ
                   keystroke takes (takes the focus while it runs). --cycles N (8), --gap MS
                   between opens (1000), --settle MS before typing (250)
   --restore       show any windows a killed lattice left hidden, then exit (used by the uninstaller)
+
+Scripting a running lattice:
+  msg COMMAND     run a command as a keybind would (`lattice msg workspace 3`)
+  query WHAT      print JSON: workspaces, windows, monitors, focused, or state (all of them)
+  subscribe [EVENT...]  print one JSON line per event (all, or the ones named) until Ctrl+C
+                  Events: startup, config-reloaded, workspace-changed, layout-changed,
+                  focus-changed, window-opened, window-closed, window-moved, monitor-changed,
+                  display-changed. Run commands on them with [[hook]] in the config.
+  Exit codes: 0 ok, 1 lattice not running or the request failed, 2 bad arguments
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";
 
