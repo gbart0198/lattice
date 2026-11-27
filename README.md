@@ -26,7 +26,7 @@ and a top bar, with all of its UI drawn by [Rune](https://github.com/anomalyco/r
   output, Wi-Fi).
 - **Settings window** (Win+Alt+Comma) for everything above.
 - **Guided tour**: on the first start, a spotlight walks you over your real desktop (the bar,
-  workspaces, layouts, the launcher) and waits for you to try each key. Replay it with
+  workspaces, layouts, the launcher and its file, command and window searches) and waits for you to try each key. Replay it with
   Win+Shift+/.
 
 ## Install
@@ -241,7 +241,8 @@ already have; while nothing moves nothing exists, and with animations off nothin
 
 The first time lattice starts, it dims the screen and walks you through it with a spotlight on
 the real thing: the bar, the workspace pills, the focused window, the layout button, the stats
-and the launcher. Steps that teach a key wait for you to press it (Win+2, Win+\\, Win+Space)
+and the launcher. With the launcher open, it shows each of its modes in turn: apps, file search
+(`f` and a space), command mode (`>` and a space) and window search (Win+J). Steps that teach a key wait for you to press it (Win+2, Win+\\, Win+Space)
 and tick off when you do, then wait for **Next** so you can read what happened (the launcher
 step moves straight on, to point at the launcher); each also has **Next**, **Back** and **Skip tour**. **Escape ends it**
 whatever has focus (except while the launcher is open, where Escape closes the launcher). The

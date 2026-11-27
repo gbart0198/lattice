@@ -1,8 +1,8 @@
 //! The product tour: a guided walk over the real desktop. A dimmed, click-through overlay cuts a
 //! glowing spotlight around one thing at a time (the bar's workspaces, the layout button, the
-//! focused window, the launcher) and a card beside it says what it is. Steps that teach a key
-//! wait for you to press it ("Press Win+2") and move on when lattice reports it happened; every
-//! step also has a Next button.
+//! focused window, the launcher and its app, file, command and window searches) and a card
+//! beside it says what it is. Steps that teach a key wait for you to press it ("Press Win+2")
+//! and move on when lattice reports it happened; every step also has a Next button.
 //!
 //! It runs as its own process (`lattice --tour`), so the GPU device its translucent overlay
 //! needs (tens of MB) goes away with it instead of staying in lattice for good. It learns where
@@ -154,7 +154,8 @@ pub const STEPS: &[Step] = &[
         anchor: None,
         eyebrow: "Launcher",
         title: "Open anything",
-        body: "A quick search over every app in your Start menu. The ones you use most rise to the top.",
+        body: "One search box for your apps, files, open windows and commands. \
+               The apps you use most rise to the top.",
         keys: &["Win", "Space"],
         keys_label: "open the launcher",
         wait: Wait::LauncherOpen,
@@ -162,11 +163,54 @@ pub const STEPS: &[Step] = &[
     },
     Step {
         anchor: Some(Anchor::Launcher),
-        eyebrow: "Launcher",
+        eyebrow: "Apps",
         title: "Type a little, press Enter",
-        body: "A few letters are enough: vsc finds Visual Studio Code. Type f and a space to search files and folders instead.",
+        body: "A few letters are enough: vsc finds Visual Studio Code. The arrows move the selection.",
+        keys: &["Enter"],
+        keys_label: "open the highlighted app",
+        wait: Wait::Next,
+        done: "",
+    },
+    Step {
+        anchor: Some(Anchor::Launcher),
+        eyebrow: "Files",
+        title: "Find any file or folder",
+        body: "Type f and a space to search files and folders instead, through Everything when it's running \
+               or lattice's own index of your user folder. Backspace on an empty field goes back to apps.",
+        keys: &["F", "Space"],
+        keys_label: "search files and folders",
+        wait: Wait::Next,
+        done: "",
+    },
+    Step {
+        anchor: Some(Anchor::Launcher),
+        eyebrow: "Commands",
+        title: "Run commands by name",
+        body: "Type > and a space for layouts, workspaces, floating and system commands: lock, sleep, \
+               audio output, Wi-Fi. Arguments are part of the name, so > move 3 finds Move window to workspace 3.",
+        keys: &[">", "Space"],
+        keys_label: "enter command mode",
+        wait: Wait::Next,
+        done: "",
+    },
+    Step {
+        anchor: Some(Anchor::Launcher),
+        eyebrow: "Windows",
+        title: "Jump to any window",
+        body: "Win+J searches every open window on every workspace and monitor, most recent first. \
+               Enter switches to it, so Win+J, Enter flips back. Here, w and a space does the same.",
+        keys: &["Win", "J"],
+        keys_label: "search open windows",
+        wait: Wait::Next,
+        done: "",
+    },
+    Step {
+        anchor: Some(Anchor::Launcher),
+        eyebrow: "Launcher",
+        title: "Escape puts it away",
+        body: "Whatever it's searching, Escape closes the launcher and you're back where you were.",
         keys: &["Esc"],
-        keys_label: "close it when you're done",
+        keys_label: "close the launcher",
         wait: Wait::LauncherClosed,
         done: "",
     },
@@ -185,6 +229,7 @@ pub const STEPS: &[Step] = &[
 /// The last step's cheat sheet.
 pub const CHEATS: &[(&[&str], &str)] = &[
     (&["Win", "Space"], "Launcher"),
+    (&["Win", "J"], "Find a window"),
     (&["Win", "1-9"], "Workspaces"),
     (&["Win", "\\"], "Cycle layout"),
     (&["Win", "Alt", ","], "Settings"),

@@ -36,3 +36,18 @@ fn the_card_sits_below_a_bar_item_and_inside_a_full_window() {
     let c = view::card_rect(&t);
     assert!(c.y + c.h <= 900.0 && c.y > 400.0);
 }
+
+#[test]
+fn launcher_steps_sit_between_opening_and_closing_it() {
+    let open = STEPS.iter().position(|s| s.wait == Wait::LauncherOpen).expect("a step opens the launcher");
+    let close = STEPS.iter().position(|s| s.wait == Wait::LauncherClosed).expect("a step closes it");
+    assert!(open < close);
+    for (i, s) in STEPS.iter().enumerate() {
+        if s.anchor == Some(Anchor::Launcher) {
+            assert!(open < i && i <= close, "step {i} ({}) points at the launcher outside it", s.title);
+        }
+    }
+    for mode in ["Apps", "Files", "Commands", "Windows"] {
+        assert!(STEPS[open..close].iter().any(|s| s.eyebrow == mode), "no {mode} step");
+    }
+}
