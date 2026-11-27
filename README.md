@@ -243,8 +243,9 @@ you have open, and clicking one opens it:
 
 Restore one with its shortcut, by typing `workspaces` or `setups` in the launcher (a picker
 with a thumbnail of each layout; type to filter, Enter to restore), with the `setup-picker`
-command, or from a script: `lattice msg restore-setup Dev`. They're stored as `[[setup]]`
-tables at the end of the config:
+command, or from a script: `lattice msg restore-setup Dev` (with `--wait`, it returns once
+every app is in place; see [Waiting for a setup](#waiting-for-a-setup)). They're stored as
+`[[setup]]` tables at the end of the config:
 
 ```toml
 [[setup]]
@@ -472,7 +473,7 @@ written.
 | `focus-window <hwnd>` | Focus that window, switching to its workspace |
 | `retile` / `reload` / `quit` | Re-tile everything / reload the config / quit lattice |
 | `exec <command line>` | Start a program, as the Run dialog would |
-| `restore-setup <name>` | Restore a [setup](#setups) (any case; quotes are optional) |
+| `restore-setup [--wait] <name>` | Restore a [setup](#setups) (any case; quotes are optional). `--wait`: see [below](#waiting-for-a-setup) |
 | `launcher` / `window-search` / `setup-picker` / `settings` / `open-config` / `tour` | Open those windows (`setup-picker`: the launcher's setup picker) |
 
 **Naming a window.** Commands marked `[hwnd]` act on the focused window, or on the window
@@ -512,6 +513,21 @@ are numbered from 0, left to right. Window handles (`hwnd`) are decimal numbers;
 **Exit codes.** 0 on success, 1 if lattice isn't running or refused the request (the reason goes
 to stderr), and 2 for a mistake in the arguments, such as an unknown command or query. A
 lattice running as administrator only takes requests from an elevated terminal.
+
+#### Waiting for a setup
+
+`lattice msg restore-setup Dev` returns as soon as the restore starts; apps it had to start
+take their places over the next seconds. Add `--wait` to return only once they have:
+
+```powershell
+lattice msg restore-setup --wait Dev
+if ($LASTEXITCODE -eq 0) { lattice query windows }   # every app is in place
+```
+
+It prints the restore's [`setup-restored`](#hook-events) event as one line of JSON and exits
+0 when every app took its place, or 1 (naming the missing apps on stderr) when some never
+opened a window within lattice's 60-second wait, or another restore started first. `--wait`
+goes with `restore-setup` only (exit 2 otherwise).
 
 ### Hook events
 
@@ -557,9 +573,30 @@ own, so take care not to set off the same hook in a loop.
 | `window-moved` | A window went to another workspace or monitor | the window's fields, `previous_workspace`, `previous_monitor` |
 | `monitor-changed` | The focus moved to another monitor | `monitor`, `previous_monitor`, `workspace` |
 | `display-changed` | Monitors were added, removed, moved or resized | `monitors` (how many there are now) |
+| `setup-restored` | A [setup](#setups) restore finished: every app is in place, or the 60 s wait for the ones it started ran out | `restore`, `name`, `complete`, `in_place`, `started`, `missing`, `folded` |
 
 A window's fields are `hwnd`, `title`, `exe`, `class`, `workspace`, `monitor` and `floating`,
 numbered as in queries.
+
+`setup-restored` comes once per restore. `restore` counts restores since lattice started
+(the id `--wait` matches on); `complete` is `true` when no app is `missing`; `in_place` is how
+many windows were already open and moved into place, `started` how many apps it started.
+`missing` lists the `exe` of each spot no window took (an app that never opened one, or an
+open window that closed first), and `folded` the setup's monitors (from 1) that aren't
+connected, whose apps went on the primary. Restoring again before it finishes ends the first
+restore early, with what hadn't appeared as `missing`. In the environment a list is its items
+separated by spaces (`LATTICE_MISSING=slack.exe Code.exe`). An empty list leaves the variable
+unset, so in `cmd` it prints as its own name; `if %LATTICE_COMPLETE%==true` is the easy test:
+
+```toml
+[[hook]]
+on = "setup-restored"
+run = "if %LATTICE_NAME%==Dev if %LATTICE_COMPLETE%==true start \"\" /D C:\\src\\app npm run dev"
+```
+
+An app that opens a window and then replaces it (a launcher, a sign-in window) fills its
+spot with the first one, so `setup-restored` may come before the second opens. That one still
+takes the spot, as long as it opens within the 60 s.
 
 A few things to know about timing:
 
@@ -570,7 +607,8 @@ A few things to know about timing:
   only the one you stop on. Focus passing briefly through the bar or the launcher and back
   isn't reported.
 - Within one burst, windows opening, closing and moving come first, then workspace, layout,
-  display and monitor changes, then focus.
+  display and monitor changes, then focus. `setup-restored` comes after the moves that
+  finished it.
 - Changing a window's title doesn't count as an event; query `windows` when you need the
   current titles.
 

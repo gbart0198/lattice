@@ -21,7 +21,7 @@ state and the WinEvent hooks. A third thread runs only the low-level keyboard ho
 | `lattice msg/query/subscribe` | `ipc.rs` (wire format, CLI side, `State` JSON); requests are queued and answered in `hooks.rs` `run` |
 | Query output | `wm.rs` `Wm::state` builds `ipc::State`; `ipc.rs` `query_json` |
 | `[[hook]]` and subscribe events | `events.rs` (`Tracker::update` diffs state once per batch; `emit`) |
-| Setups (`[[setup]]`, `restore-setup`) | `setups.rs`; placement as windows appear in `wm.rs` (`Restore`, `try_manage`) |
+| Setups (`[[setup]]`, `restore-setup`) | `setups.rs`; placement as windows appear in `wm.rs` (`Restore`, `try_manage`, `claim_slot`); when a restore is done, `check_restore` (`setup-restored`, `events.rs` `Event::setup_restored`); `msg restore-setup --wait` in `ipc.rs` (`take_wait`, `wait_restored`), matched by the id `hooks.rs` replies with |
 | Placement kept across restarts (`state.json`) | `persist.rs` (file format, `load`/`save`, `assign` matches live windows to saved ones, `remap_monitors`); `wm.rs` `restore_saved_state`, `snapshot`, `save_state` (called once per batch in `hooks.rs` `run`, and in `shutdown`) |
 | Config fields and defaults | `config.rs` structs; `default_config.toml` (the commented file users get) |
 | Win32 calls | `win.rs` (`Hwnd` is an `isize`); hidden-window recovery in `shared.rs` (`hidden.txt`) |
