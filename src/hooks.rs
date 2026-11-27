@@ -354,6 +354,7 @@ pub fn run(cfg: Config) {
         // workspace switch hides and shows every window on two workspaces.
         wm.update_border();
         wm.emit_events();
+        wm.save_state();
         shared::flush_hidden();
     }
 

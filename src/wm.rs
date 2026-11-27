@@ -16,6 +16,7 @@ use crate::config::{self, AnimStyle, Command, Config, Dir, NewWindow, WsTarget};
 use crate::events;
 use crate::ipc;
 use crate::layout::{self, LayoutKind, Params, Rect};
+use crate::persist;
 use crate::shared::{self, BarModel, WsInfo};
 use crate::win::{self, Hwnd, MonitorInfo};
 
@@ -106,6 +107,20 @@ pub struct Wm {
     events: events::Tracker,
     events_dirty: bool,
     pending_events: Vec<events::Event>,
+    /// Something that `state.json` keeps may have changed; and what was last written to it.
+    state_dirty: bool,
+    state_written: Option<String>,
+}
+
+/// Where a window lattice saw before a restart goes back to (`persist.rs`).
+#[derive(Clone, Copy)]
+struct Restored {
+    ws: usize,
+    mon: Option<usize>,
+    floating: bool,
+    focused: bool,
+    /// Its place in the saved tiling order.
+    order: usize,
 }
 
 /// What a directional search can land on: a window, or an empty monitor.
@@ -136,11 +151,16 @@ impl Wm {
             events: events::Tracker::default(),
             events_dirty: false,
             pending_events: Vec::new(),
+            state_dirty: true,
+            state_written: None,
             cfg,
         };
         wm.build_workspaces();
         wm.refresh_monitors();
-        wm.adopt_existing();
+        match persist::load() {
+            Some(saved) => wm.restore(&saved),
+            None => wm.adopt_existing(),
+        }
         wm.focused_monitor = wm.monitor_index_at(win::cursor_pos());
         wm.retile(wm.active);
         wm.publish();
@@ -199,13 +219,72 @@ impl Wm {
     /// Manages windows that were open before lattice started: they join the active
     /// workspace on the monitor they're on.
     fn adopt_existing(&mut self) {
+        self.adopt(&HashMap::new());
+    }
+
+    /// `adopt_existing`, putting the windows in `restored` back where they were.
+    fn adopt(&mut self, restored: &HashMap<Hwnd, Restored>) {
         let mut all = win::enum_windows();
         all.reverse(); // bottom of the z-order first, so the topmost window ends up focused
         for hwnd in all {
             if !self.windows.contains_key(&hwnd) {
-                let mon = self.monitor_index_of_handle(win::monitor_of(hwnd));
-                self.try_manage(hwnd, Some(mon), false);
+                let r = restored.get(&hwnd).copied();
+                let mon = r.and_then(|r| r.mon).unwrap_or_else(|| self.monitor_index_of_handle(win::monitor_of(hwnd)));
+                self.try_manage_at(hwnd, Some(mon), r, false);
             }
+        }
+    }
+
+    /// Starts from the state a previous lattice saved: its workspace layouts and split sizes,
+    /// the workspace that was on screen, and each window still open back on its workspace and
+    /// monitor, in its old tiling order. Windows it doesn't know join the active workspace.
+    fn restore(&mut self, saved: &persist::Saved) {
+        let rects: Vec<Rect> = self.monitors.iter().map(|m| m.info.rect).collect();
+        let mons = persist::remap_monitors(&saved.monitors, &rects);
+        for (ws, s) in self.workspaces.iter_mut().zip(&saved.workspaces) {
+            if let Some(kind) = LayoutKind::parse(&s.layout) {
+                ws.layout = kind;
+            }
+            ws.split_ratio = s.split_ratio;
+            ws.master_ratio = s.master_ratio;
+            ws.splits = s.splits.iter().filter_map(|(m, v)| Some((mons.get(*m).copied().flatten()?, v.clone()))).collect();
+        }
+        self.active = saved.active.min(self.workspaces.len() - 1);
+
+        let live: Vec<(Hwnd, String, String)> = win::enum_windows()
+            .into_iter()
+            .filter(|h| !self.windows.contains_key(h))
+            .filter_map(|h| win::candidate(h).map(|c| (h, c.exe, c.title)))
+            .collect();
+        let last = self.workspaces.len() - 1;
+        let restored: HashMap<Hwnd, Restored> = persist::assign(&saved.windows, &live)
+            .into_iter()
+            .map(|(h, i)| {
+                let s = &saved.windows[i];
+                let r = Restored { ws: s.ws.min(last), mon: mons.get(s.mon).copied().flatten(), floating: s.floating, focused: s.focused, order: i };
+                (h, r)
+            })
+            .collect();
+        log::info!("restoring {} of {} saved windows (workspace {} on screen)", restored.len(), saved.windows.len(), self.active + 1);
+        self.adopt(&restored);
+
+        // Back in their old order; windows lattice didn't know come after.
+        for ws in &mut self.workspaces {
+            ws.windows.sort_by_key(|h| restored.get(h).map_or(usize::MAX, |r| r.order));
+        }
+        for (h, r) in &restored {
+            if r.focused
+                && let Some(w) = self.windows.get(h)
+            {
+                let (ws, mon) = (w.ws, w.mon);
+                self.workspaces[ws].last_focus = Some(*h);
+                self.workspaces[ws].mon_focus.insert(mon, *h);
+            }
+        }
+        // The window in front may now be on a hidden workspace: land on this one's instead.
+        let fg = win::foreground();
+        if self.windows.get(&fg).is_some_and(|w| w.ws != self.active) {
+            self.focus_active_workspace();
         }
     }
 
@@ -258,6 +337,12 @@ impl Wm {
 
     /// `mon`: the monitor to put the window on (startup); `None` means the focused monitor.
     fn try_manage(&mut self, hwnd: Hwnd, mon: Option<usize>, runtime: bool) -> bool {
+        self.try_manage_at(hwnd, mon, None, runtime)
+    }
+
+    /// `try_manage`; a `restored` window goes back to the workspace it was on and keeps its
+    /// floating state, whatever the rules say (ignore rules still apply).
+    fn try_manage_at(&mut self, hwnd: Hwnd, mon: Option<usize>, restored: Option<Restored>, runtime: bool) -> bool {
         if self.windows.contains_key(&hwnd) {
             return false;
         }
@@ -273,9 +358,13 @@ impl Wm {
         }
         // Every window of a pinned app goes there, splash screens and updaters included (they
         // open hidden on that workspace); you stay where you are.
-        let ws = config::rule_workspace(&self.cfg.rules, &c.exe, &c.class, &c.title)
-            .map(|n| self.ws_index(n))
-            .unwrap_or(self.active);
+        let ws = match restored {
+            Some(r) => {
+                floating = r.floating;
+                r.ws
+            }
+            None => config::rule_workspace(&self.cfg.rules, &c.exe, &c.class, &c.title).map(|n| self.ws_index(n)).unwrap_or(self.active),
+        };
         let mon = mon.unwrap_or(self.focused_monitor);
         let minimized = win::is_minimized(hwnd);
         log::info!(
@@ -928,6 +1017,7 @@ impl Wm {
         log::debug!("command {cmd:?}");
         self.border_dirty = true;
         self.events_dirty = true;
+        self.state_dirty = true;
         match cmd {
             Command::Focus(d) => self.focus_dir(d),
             Command::MoveWindow(d) => self.move_dir(d),
@@ -1217,6 +1307,53 @@ impl Wm {
         }
     }
 
+    /// What `state.json` keeps (`persist.rs`).
+    fn snapshot(&self) -> persist::Saved {
+        let workspaces = self
+            .workspaces
+            .iter()
+            .map(|ws| {
+                let mut splits: Vec<(usize, Vec<f32>)> = ws.splits.iter().filter(|(_, v)| !v.is_empty()).map(|(m, v)| (*m, v.clone())).collect();
+                splits.sort_by_key(|(m, _)| *m);
+                persist::SavedWorkspace { layout: ws.layout.name().into(), split_ratio: ws.split_ratio, master_ratio: ws.master_ratio, splits }
+            })
+            .collect();
+        let windows = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(i, ws)| ws.windows.iter().map(move |h| (i, ws, *h)))
+            .filter_map(|(i, ws, h)| {
+                let w = self.windows.get(&h)?;
+                Some(persist::SavedWindow {
+                    hwnd: h,
+                    exe: w.exe.clone(),
+                    title: w.title.clone(),
+                    ws: i,
+                    mon: w.mon,
+                    floating: w.floating,
+                    focused: ws.last_focus == Some(h),
+                })
+            })
+            .collect();
+        persist::Saved::new(self.active, self.monitors.iter().map(|m| m.info.rect.into()).collect(), workspaces, windows)
+    }
+
+    /// Writes `state.json` if something it keeps changed. The WM loop calls this once per
+    /// batch, so it's as current as the last thing that happened if lattice crashes.
+    pub fn save_state(&mut self) {
+        if !std::mem::take(&mut self.state_dirty) {
+            return;
+        }
+        let Ok(json) = serde_json::to_string(&self.snapshot()) else { return };
+        if self.state_written.as_deref() == Some(json.as_str()) {
+            return;
+        }
+        if persist::save(&json) {
+            self.state_written = Some(json);
+        }
+    }
+
     /// Forgets windows that died without us noticing.
     fn cleanup(&mut self) {
         let dead: Vec<Hwnd> = self.windows.keys().copied().filter(|h| !win::is_window(*h)).collect();
@@ -1236,6 +1373,11 @@ impl Wm {
         }
         if !matches!(ev, Event::Location(_)) {
             self.events_dirty = true;
+        }
+        // Titles change all the time (terminals animate them); they're saved along with the
+        // next real change.
+        if !matches!(ev, Event::Location(_) | Event::NameChange(_)) {
+            self.state_dirty = true;
         }
         match ev {
             Event::Show(h) => {
@@ -1445,6 +1587,9 @@ impl Wm {
     }
 
     pub fn shutdown(&mut self) {
+        // Before showing every hidden window: titles may have changed since the last save.
+        self.state_dirty = true;
+        self.save_state();
         self.finish_animations();
         self.anim.flush();
         shared::restore_hidden();

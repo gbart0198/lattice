@@ -488,6 +488,14 @@ lattice never strands windows. It saves the list of windows it has hidden to
 shows them again the next time it starts. Monitor changes (rotation, resolution, plugging
 monitors in or out) are picked up automatically.
 
+Restarting lattice keeps your layout. Whenever windows move between workspaces or monitors,
+change order or float, or a workspace's layout or split sizes change, lattice notes it in
+`%APPDATA%\lattice\state.json`. When it starts again (after quitting, an update or a crash)
+it puts each window that's still open back on its workspace and monitor, in its old tiling
+order, and returns to the workspace you were on. It recognizes a window by its handle, or,
+for an app that reopened its windows, by its exe and title. Windows it doesn't recognize join
+the workspace on screen. Delete `state.json` to start fresh.
+
 ## Development
 
 ```powershell
