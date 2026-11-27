@@ -185,6 +185,8 @@ pub struct Launcher {
     pub max_results: usize,
     /// Typed before a space to search files and folders instead of apps.
     pub file_prefix: String,
+    /// Typed before a space to search open windows instead of apps.
+    pub window_prefix: String,
     /// What Enter and Ctrl+Enter do with a file, and with a folder: "open", "reveal",
     /// "copy-path" or "exec <command line>" (with {path}, {dir}, {name}).
     pub file_enter: String,
@@ -204,6 +206,7 @@ impl Default for Launcher {
             width: 680.0,
             max_results: 8,
             file_prefix: "f".into(),
+            window_prefix: "w".into(),
             file_enter: "open".into(),
             file_ctrl_enter: "reveal".into(),
             folder_enter: "open".into(),
@@ -364,6 +367,12 @@ pub enum Command {
     Exec(String),
     /// Show or hide the app launcher.
     Launcher,
+    /// Show or hide the launcher searching every open window.
+    WindowSearch,
+    /// Switch to this window, its workspace and monitor (sent by the launcher, not bindable).
+    FocusWindow(crate::win::Hwnd),
+    /// Hand the launcher the window list (sent by it, for the window prefix; not bindable).
+    ListWindows,
     /// Open the settings window.
     Settings,
     /// Open config.toml in a text editor.
@@ -434,6 +443,7 @@ pub fn parse_command(s: &str) -> Result<Option<Command>, String> {
         "retile" => Command::Retile,
         "reload" => Command::Reload,
         "launcher" | "launch" => Command::Launcher,
+        "window-search" | "windows" => Command::WindowSearch,
         "settings" => Command::Settings,
         "tour" => Command::Tour,
         "open-config" | "edit-config" => Command::OpenConfig,
@@ -563,6 +573,14 @@ mod tests {
         assert_eq!(parse_chord("super+shift+1"), Ok((MOD_SUPER | MOD_SHIFT, b'1' as u32)));
         assert_eq!(parse_chord("Win+Return"), Ok((MOD_SUPER, 0x0D)));
         assert!(parse_chord("q").is_err());
+    }
+
+    #[test]
+    fn window_search_command() {
+        assert_eq!(parse_command("window-search"), Ok(Some(Command::WindowSearch)));
+        assert_eq!(parse_command("windows"), Ok(Some(Command::WindowSearch)));
+        let cfg = Config::default();
+        assert_eq!(build_keymap(&cfg).get(&parse_chord("super+j").unwrap()), Some(&Command::WindowSearch));
     }
 
     #[test]

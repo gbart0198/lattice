@@ -100,6 +100,9 @@ max_results = 8
 # of apps; Backspace on an empty field goes back. It uses voidtools Everything when it's
 # running (https://www.voidtools.com: instant, whole-disk), else lattice's own index.
 file_prefix = "f"
+# Window search (the `window-search` command, super+j): every open window on every workspace
+# and monitor, most recently used first; Enter switches to it. Or type this prefix and a space.
+window_prefix = "w"
 # Enter and Ctrl+Enter on a file, and on a folder. Actions:
 #   "open"       open with the default app (a folder: in Explorer)
 #   "reveal"     open the containing folder with the item selected
@@ -171,6 +174,7 @@ float = true
 #   toggle-float   toggle-fullscreen   close
 #   retile   reload   quit   exec <command line>
 #   launcher (show/hide the app launcher)
+#   window-search (search open windows on every workspace; Enter switches to one)
 #   settings (open the settings window)   open-config (open this file in an editor)
 #   tour (replay the guided tour of lattice; Escape ends it)
 # Setting a key to "none" disables it. Note: super+L (lock) can't be overridden by any app.
@@ -221,6 +225,7 @@ float = true
 "super+shift+o" = "move-to-monitor next"
 
 "super+space" = "launcher"
+"super+j" = "window-search"
 "super+backslash" = "layout next"
 "super+shift+period" = "resize right"
 "super+shift+comma" = "resize left"

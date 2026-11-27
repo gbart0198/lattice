@@ -1,6 +1,7 @@
 //! A Raycast-style app launcher: a search box over every app in the Start menu, ranked by fuzzy
 //! match and by how often you launch each one, opened and dismissed with a hotkey. Typing the
 //! file prefix ("f") and a space switches it to searching files and folders (see `files`).
+//! It also searches the host's open windows ([`toggle_windows`], or the window prefix "w").
 //!
 //! Self-contained on purpose: nothing in here imports from the rest of lattice. A host
 //!
@@ -14,6 +15,7 @@
 //! - `system`: the Windows parts (app catalog, icons, launching, file actions, focus);
 //! - `files`: file search on its own thread, through `everything` (voidtools Everything's IPC)
 //!   or, when that isn't running, lattice's own `index`;
+//! - `windows`: window search ranking (pure Rust; the host lists and switches windows);
 //! - `ui`: the Rune state and view.
 
 mod bench;
@@ -24,9 +26,11 @@ mod rank;
 mod system;
 pub(crate) use system::style_window;
 mod ui;
+mod windows;
 
 pub use bench::run as bench;
 pub use files::{FileAction, FileActions, FileOptions};
+pub use windows::{WindowEntry, WindowIcon};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -63,6 +67,26 @@ pub struct Options {
     /// Environment variables the host set for itself that launched apps shouldn't inherit.
     pub clean_env: Vec<String>,
     pub files: FileOptions,
+    pub windows: WindowSearch,
+}
+
+/// Window search's link to the host, which owns the windows. Both callbacks run on the
+/// launcher's UI thread, so they should only pass the request on.
+#[derive(Clone)]
+pub struct WindowSearch {
+    /// Typed before a space to search open windows; empty turns the prefix off (the host's
+    /// [`toggle_windows`] still works).
+    pub prefix: String,
+    /// Asks the host for its windows, which it hands to [`set_windows`].
+    pub list: Arc<dyn Fn() + Send + Sync>,
+    /// Asks the host to bring this window forward, switching workspace or monitor as needed.
+    pub focus: Arc<dyn Fn(isize) + Send + Sync>,
+}
+
+impl Default for WindowSearch {
+    fn default() -> Self {
+        WindowSearch { prefix: String::new(), list: Arc::new(|| {}), focus: Arc::new(|_| {}) }
+    }
 }
 
 /// A monitor's work area in physical pixels, to centre the launcher on.
@@ -128,9 +152,10 @@ pub fn window(opts: Options) -> rune::AnyWindowSpec {
         prefix: opts.files.prefix.clone(),
         actions: opts.files.actions.clone(),
     };
+    let ui_windows = opts.windows;
     let app = App::new(spec)
         .windowless()
-        .init(move || ui::State::new(history, state_jobs, ui_files))
+        .init(move || ui::State::new(history, state_jobs, ui_files, ui_windows))
         .on_focus(ui::on_focus)
         .on_frame_drawn(|_| reveal())
         .on_window(|w| {
@@ -185,7 +210,34 @@ pub fn toggle(on: Option<Area>) {
     if l.app.is_visible() {
         hide();
     } else {
-        show(l, on);
+        show(l, on, None);
+    }
+}
+
+/// Shows the launcher searching `windows` (most recently used first), or hides it if it's
+/// already doing that. Any thread.
+pub fn toggle_windows(on: Option<Area>, windows: Vec<WindowEntry>) {
+    let Some(l) = LAUNCHER.get() else { return };
+    if !l.app.is_visible() {
+        show(l, on, Some(windows));
+    } else {
+        // Already searching windows: dismiss, as the key does for apps. Open on something
+        // else: switch it over in place.
+        l.app.update(move |s, tx| {
+            if s.in_windows() {
+                s.reset();
+                tx.close_window();
+            } else {
+                s.show_windows(windows, false);
+            }
+        });
+    }
+}
+
+/// The host's answer to [`WindowSearch::list`]. Any thread.
+pub fn set_windows(windows: Vec<WindowEntry>) {
+    if let Some(l) = LAUNCHER.get() {
+        l.app.update(move |s, _| s.windows_listed(windows));
     }
 }
 
@@ -223,7 +275,8 @@ fn warn_if_gpu_started() {
     }
 }
 
-fn show(l: &Launcher, on: Option<Area>) {
+/// `windows`: open searching these windows instead of apps.
+fn show(l: &Launcher, on: Option<Area>, windows: Option<Vec<WindowEntry>>) {
     {
         let mut last = l.last_scan.lock().unwrap();
         if last.elapsed() > RESCAN_AFTER {
@@ -231,7 +284,12 @@ fn show(l: &Launcher, on: Option<Area>) {
             l.send(Job::Scan);
         }
     }
-    l.app.update(|s, _| s.reset());
+    l.app.update(move |s, _| {
+        s.reset();
+        if let Some(w) = windows {
+            s.show_windows(w, false);
+        }
+    });
     match on {
         Some(a) => {
             let w = (l.width * a.scale).round() as i32;
