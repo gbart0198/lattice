@@ -89,8 +89,8 @@ pub const STEPS: &[Step] = &[
         anchor: None,
         eyebrow: "Welcome",
         title: "Welcome to lattice",
-        body: "lattice tiles your windows, gives you ten workspaces and puts everything a keystroke away. \
-               This tour points things out on your real desktop. It takes about a minute.",
+        body: "lattice tiles your windows across ten workspaces and keeps everything a keystroke away. This \
+               minute-long tour points things out on your real desktop.",
         keys: &[],
         keys_label: "",
         wait: Wait::Next,
@@ -100,8 +100,8 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Bar),
         eyebrow: "The bar",
         title: "Your desktop at a glance",
-        body: "Workspaces on the left, the focused window's title in the middle, your system on the right. \
-               It stays above everything.",
+        body: "Workspaces on the left, the focused window's title in the middle and system stats on the \
+               right, always above your windows.",
         keys: &[],
         keys_label: "",
         wait: Wait::Next,
@@ -111,19 +111,19 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Workspaces),
         eyebrow: "Workspaces",
         title: "Ten desktops, one key away",
-        body: "Each pill is a workspace, with icons for the apps on it. Click one, or hold Win and press its number. \
-               Add Shift to take the focused window with you.",
+        body: "Each pill is a workspace showing its apps. Click one or press Win and its number, adding Shift \
+               to bring the focused window along.",
         keys: &["Win", "2"],
         keys_label: "switch to workspace 2",
         wait: Wait::Workspace,
-        done: "That's it. Win+1 brings you back.",
+        done: "Win+1 takes you back.",
     },
     Step {
         anchor: Some(Anchor::Focused),
         eyebrow: "Tiling",
         title: "Windows arrange themselves",
-        body: "New windows snap into place, and the glow marks the one with focus. Move focus with Win and the arrows; \
-               add Shift to swap windows. Dragging one onto another swaps them too.",
+        body: "New windows snap into place with a glow around the focused one. Win+Shift and an arrow swaps \
+               windows, as does dragging one onto another.",
         keys: &["Win", "←", "→"],
         keys_label: "move focus",
         wait: Wait::Next,
@@ -133,18 +133,18 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Layout),
         eyebrow: "Layouts",
         title: "Three ways to tile",
-        body: "Dwindle spirals windows inward, master keeps one large window beside a stack, \
-               and monocle shows one at a time. Each workspace keeps its own.",
+        body: "Dwindle spirals windows inward, master puts one large window beside a stack and monocle shows \
+               one at a time, set per workspace.",
         keys: &["Win", "\\"],
         keys_label: "cycle the layout",
         wait: Wait::Layout,
-        done: "Changed. Press it again to keep cycling.",
+        done: "Press it again to keep cycling.",
     },
     Step {
         anchor: Some(Anchor::Stats),
         eyebrow: "System",
         title: "Vitals without a widget",
-        body: "CPU, memory, battery and the clock. Choose what shows, the colours and the font in Settings.",
+        body: "CPU, memory, battery and the clock, with what shows and how it looks chosen in Settings.",
         keys: &["Win", "Alt", ","],
         keys_label: "open Settings",
         wait: Wait::Next,
@@ -154,8 +154,7 @@ pub const STEPS: &[Step] = &[
         anchor: None,
         eyebrow: "Launcher",
         title: "Open anything",
-        body: "One search box for your apps, files, open windows and commands. \
-               The apps you use most rise to the top.",
+        body: "One search box for apps, files, open windows and commands, with your most-used apps on top.",
         keys: &["Win", "Space"],
         keys_label: "open the launcher",
         wait: Wait::LauncherOpen,
@@ -165,7 +164,7 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Launcher),
         eyebrow: "Apps",
         title: "Type a little, press Enter",
-        body: "A few letters are enough: vsc finds Visual Studio Code. The arrows move the selection.",
+        body: "A few letters are enough, so vsc finds Visual Studio Code.",
         keys: &["Enter"],
         keys_label: "open the highlighted app",
         wait: Wait::Next,
@@ -175,8 +174,8 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Launcher),
         eyebrow: "Files",
         title: "Find any file or folder",
-        body: "Type f and a space to search files and folders instead, through Everything when it's running \
-               or lattice's own index of your user folder. Backspace on an empty field goes back to apps.",
+        body: "Type f and a space to search files and folders, and Backspace on an empty field to return to \
+               apps.",
         keys: &["F", "Space"],
         keys_label: "search files and folders",
         wait: Wait::Next,
@@ -186,8 +185,8 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Launcher),
         eyebrow: "Commands",
         title: "Run commands by name",
-        body: "Type > and a space for layouts, workspaces, floating and system commands: lock, sleep, \
-               audio output, Wi-Fi. Arguments are part of the name, so > move 3 finds Move window to workspace 3.",
+        body: "Type > and a space for layout, workspace and system commands like lock, sleep or Wi-Fi, with \
+               arguments inline as in > move 3.",
         keys: &[">", "Space"],
         keys_label: "enter command mode",
         wait: Wait::Next,
@@ -197,8 +196,8 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Launcher),
         eyebrow: "Windows",
         title: "Jump to any window",
-        body: "Win+J searches every open window on every workspace and monitor, most recent first. \
-               Enter switches to it, so Win+J, Enter flips back. Here, w and a space does the same.",
+        body: "Win+J searches every open window on every workspace, most recent first, so Win+J then Enter \
+               flips back to the last one.",
         keys: &["Win", "J"],
         keys_label: "search open windows",
         wait: Wait::Next,
@@ -208,7 +207,7 @@ pub const STEPS: &[Step] = &[
         anchor: Some(Anchor::Launcher),
         eyebrow: "Launcher",
         title: "Escape puts it away",
-        body: "Whatever it's searching, Escape closes the launcher and you're back where you were.",
+        body: "Escape closes the launcher from any mode.",
         keys: &["Esc"],
         keys_label: "close the launcher",
         wait: Wait::LauncherClosed,
@@ -218,7 +217,7 @@ pub const STEPS: &[Step] = &[
         anchor: None,
         eyebrow: "All set",
         title: "You're ready",
-        body: "Everything lives in Settings and in config.toml. A few keys worth remembering:",
+        body: "Everything else lives in Settings and config.toml, and these keys are worth remembering:",
         keys: &[],
         keys_label: "",
         wait: Wait::Next,
