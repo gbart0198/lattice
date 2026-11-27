@@ -31,11 +31,13 @@ pub struct Plan {
     pub launch: Vec<usize>,
 }
 
-/// An open window as `plan` sees it: (handle, exe file name, workspace index).
-pub type OpenWindow<'a> = (isize, &'a str, usize);
+/// An open window as `plan` sees it: (handle, exe file name, workspace index, its place in
+/// that workspace's tiling order).
+pub type OpenWindow<'a> = (isize, &'a str, usize, usize);
 
 /// Matches the setup's apps to open windows of the same program. A window already on the
-/// right workspace is taken first, so restoring a setup that's in place changes nothing;
+/// right workspace is taken first, in tiling order (two Edge windows already in place keep
+/// their places), so restoring a setup that's in place changes nothing;
 /// then any other one, in the order given (most recently used first gives the window you
 /// were last in). `ws_index` turns a 1-based workspace number into an index.
 pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usize) -> Plan {
@@ -56,9 +58,11 @@ pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usiz
             if filled[i].is_some() {
                 continue;
             }
-            let found = open.iter().enumerate().position(|(j, (_, exe, ws))| {
-                !taken[j] && exe.eq_ignore_ascii_case(&slot.exe) && (!same_ws || *ws == slot.ws)
-            });
+            let mut fits = open
+                .iter()
+                .enumerate()
+                .filter(|(j, (_, exe, ws, _))| !taken[*j] && exe.eq_ignore_ascii_case(&slot.exe) && (!same_ws || *ws == slot.ws));
+            let found = if same_ws { fits.min_by_key(|(_, o)| o.3) } else { fits.next() }.map(|(j, _)| j);
             if let Some(j) = found {
                 taken[j] = true;
                 filled[i] = Some(open[j].0);
@@ -204,7 +208,7 @@ mod tests {
     #[test]
     fn plan_claims_open_windows_and_launches_the_rest() {
         // Edge is open twice (one already on workspace 2), Code once on 5; nothing else runs.
-        let open = [(10, "msedge.exe", 0), (11, "Code.exe", 4), (12, "msedge.exe", 1), (13, "notepad.exe", 0)];
+        let open = [(10, "msedge.exe", 0, 0), (11, "Code.exe", 4, 0), (12, "msedge.exe", 1, 0), (13, "notepad.exe", 0, 1)];
         let p = plan(&dev(), &open, |n| n - 1);
         assert_eq!(p.slots.len(), 4);
         assert_eq!(p.slots[1], Slot { ws: 0, order: 1, exe: "WindowsTerminal.exe".into(), run: "WindowsTerminal.exe".into() });
@@ -218,11 +222,23 @@ mod tests {
         // Two Code slots on different workspaces; the window on workspace 2 must not be taken
         // by the first slot just because it comes first.
         let s = Setup { workspaces: vec![ws(1, &["Code.exe"]), ws(2, &["code.exe"])], ..dev() };
-        let open = [(1, "Code.exe", 1), (2, "Code.exe", 6)];
+        let open = [(1, "Code.exe", 1, 0), (2, "Code.exe", 6, 0)];
         assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 2), (1, 1)]);
         // One window for two slots: the other one is launched.
         let p = plan(&s, &open[..1], |n| n - 1);
         assert_eq!((p.claims, p.launch), (vec![(1, 1)], vec![0]));
+    }
+
+    #[test]
+    fn windows_in_place_keep_their_order() {
+        // Two Edge slots and two Edge windows already on workspace 1, the second one used
+        // last: they keep their places rather than swapping by recency.
+        let s = Setup { workspaces: vec![ws(1, &["msedge.exe", "msedge.exe"])], ..dev() };
+        let open = [(7, "msedge.exe", 0, 1), (5, "msedge.exe", 0, 0)];
+        assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 5), (1, 7)]);
+        // Brought from elsewhere, the one used last goes first.
+        let open = [(7, "msedge.exe", 3, 1), (5, "msedge.exe", 3, 0)];
+        assert_eq!(plan(&s, &open, |n| n - 1).claims, vec![(0, 7), (1, 5)]);
     }
 
     #[test]

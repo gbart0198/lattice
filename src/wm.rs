@@ -117,6 +117,9 @@ struct Restore {
     name: String,
     slots: Vec<setups::Slot>,
     filled: Vec<Option<Hwnd>>,
+    /// Each workspace's saved split ratios. Retiling forgets ratios past the last split, so
+    /// they're put back as each window arrives.
+    splits: HashMap<usize, Vec<f32>>,
     until: Instant,
 }
 
@@ -1182,7 +1185,8 @@ impl Wm {
         let mut open: Vec<(Hwnd, String, usize, u64)> =
             self.windows.iter().filter(|(_, w)| !w.floating).map(|(h, w)| (*h, w.exe.clone(), w.ws, w.focused_at)).collect();
         open.sort_by_key(|o| std::cmp::Reverse(o.3));
-        let open_ref: Vec<setups::OpenWindow> = open.iter().map(|(h, exe, ws, _)| (*h, exe.as_str(), *ws)).collect();
+        let place = |h: Hwnd, ws: usize| self.workspaces[ws].windows.iter().position(|x| *x == h).unwrap_or(usize::MAX);
+        let open_ref: Vec<setups::OpenWindow> = open.iter().map(|(h, exe, ws, _)| (*h, exe.as_str(), *ws, place(*h, *ws))).collect();
         let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n));
         log::info!(
             "restoring saved workspace '{}': {} in place, starting {}",
@@ -1191,14 +1195,17 @@ impl Wm {
         self.finish_animations();
         let primary = self.primary_monitor();
         let g = self.cfg.general.clone();
+        let mut saved_splits = HashMap::new();
         for w in &setup.workspaces {
             let i = self.ws_index(w.number);
             let ws = &mut self.workspaces[i];
             ws.layout = w.layout.unwrap_or(g.layout);
             ws.master_ratio = w.master_ratio.unwrap_or(g.master_ratio).clamp(0.1, 0.9);
             ws.split_ratio = g.split_ratio;
-            ws.splits.insert(primary, w.splits.iter().map(|r| r.clamp(0.1, 0.9)).collect());
+            let splits: Vec<f32> = w.splits.iter().map(|r| r.clamp(0.1, 0.9)).collect();
+            ws.splits.insert(primary, splits.clone());
             ws.fullscreen = None;
+            saved_splits.insert(i, splits);
         }
         let mut filled = vec![None; plan.slots.len()];
         for &(i, h) in &plan.claims {
@@ -1222,7 +1229,13 @@ impl Wm {
         }
         let first = plan.slots.first().map(|s| s.ws);
         let first_window = plan.slots.iter().zip(&filled).find(|(s, _)| Some(s.ws) == first).and_then(|(_, f)| *f);
-        self.restore = Some(Restore { name: setup.name.clone(), slots: plan.slots, filled, until: Instant::now() + RESTORE_WAIT });
+        self.restore = Some(Restore {
+            name: setup.name.clone(),
+            slots: plan.slots,
+            filled,
+            splits: saved_splits,
+            until: Instant::now() + RESTORE_WAIT,
+        });
         self.arrange_restored();
         if let Some(ws) = first {
             if let Some(h) = first_window {
@@ -1260,6 +1273,11 @@ impl Wm {
             if let Some(h) = f.filter(|h| self.windows.get(h).is_some_and(|w| w.ws == s.ws)) {
                 by_ws.entry(s.ws).or_default().push((s.order, h));
             }
+        }
+        let saved: Vec<(usize, Vec<f32>)> = by_ws.keys().filter_map(|ws| Some((*ws, r.splits.get(ws)?.clone()))).collect();
+        let primary = self.primary_monitor();
+        for (ws, splits) in saved {
+            self.workspaces[ws].splits.insert(primary, splits);
         }
         for (ws, mut list) in by_ws {
             list.sort_by_key(|(order, _)| *order);
