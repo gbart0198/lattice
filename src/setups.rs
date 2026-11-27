@@ -33,6 +33,92 @@ pub struct Plan {
     pub launch: Vec<usize>,
 }
 
+/// How many monitors a setup is laid out for: `monitors`, or the highest its entries name
+/// (at least 1).
+pub fn monitor_count(s: &Setup) -> usize {
+    let named = s.workspaces.iter().filter_map(|w| w.monitor).max().unwrap_or(1);
+    s.monitors.unwrap_or(named).max(named).max(1)
+}
+
+/// Which of a setup's monitors (0-based) an entry is on, as the editor and thumbnails draw it:
+/// a one-monitor setup's entries are on its only one, and an entry without a monitor is on
+/// the primary's place (or the last).
+pub fn monitor_slot(count: usize, m: Option<usize>, primary: usize) -> usize {
+    if count <= 1 {
+        return 0;
+    }
+    m.and_then(|m| m.checked_sub(1)).unwrap_or(primary).min(count - 1)
+}
+
+/// The desktop area each of a setup's `count` monitors is drawn with: a one-monitor setup's
+/// is the primary's; otherwise monitor k is the k-th connected one from the left, and one
+/// that isn't connected is the primary's size, past the right edge of the rest.
+pub fn monitor_areas(count: usize, connected: &[Rect], primary: usize) -> Vec<Rect> {
+    let fallback = Rect::new(0, 0, 1920, 1040);
+    let prim = connected.get(primary).or(connected.first()).copied().unwrap_or(fallback);
+    if count <= 1 {
+        return vec![prim];
+    }
+    let mut right = connected.iter().map(|r| r.x + r.w).max().unwrap_or(prim.x + prim.w);
+    let top = connected.iter().map(|r| r.y).min().unwrap_or(prim.y);
+    (0..count)
+        .map(|k| match connected.get(k) {
+            Some(r) => *r,
+            None => {
+                let r = Rect::new(right, top, prim.w, prim.h);
+                right += prim.w;
+                r
+            }
+        })
+        .collect()
+}
+
+/// A setup entry as it lands on this desktop.
+#[derive(Clone, Copy, Debug)]
+pub struct Placed<'a> {
+    pub entry: &'a SetupWorkspace,
+    /// Workspace and monitor indexes.
+    pub ws: usize,
+    pub mon: usize,
+    /// Its monitor isn't connected: its apps join the primary's.
+    pub folded: bool,
+    /// Where its first app goes in that monitor's tiling order: after the apps of the entries
+    /// that belong there, for a folded one.
+    pub start: usize,
+    /// Its splits are the monitor's: the first entry that belongs there, else the first folded
+    /// onto it. The apps of others go past the splits it saved, on the default ratio.
+    pub splits: bool,
+}
+
+/// Where each of a setup's entries goes with `connected` monitors, `primary` the primary's
+/// index: monitor k on the k-th from the left, a one-monitor setup (and an entry without a
+/// monitor) on the primary. A monitor that isn't connected folds onto the primary, after its
+/// own apps, so nothing is lost with fewer monitors than the setup was made with.
+pub fn placed(setup: &Setup, ws_index: impl Fn(usize) -> usize, connected: usize, primary: usize) -> Vec<Placed<'_>> {
+    let count = monitor_count(setup);
+    let mut out: Vec<Placed> = setup
+        .workspaces
+        .iter()
+        .map(|w| {
+            let (mon, folded) = match w.monitor.and_then(|m| m.checked_sub(1)) {
+                Some(i) if count > 1 && i < connected => (i, false),
+                Some(_) if count > 1 => (primary, true),
+                _ => (primary, false),
+            };
+            Placed { entry: w, ws: ws_index(w.number), mon, folded, start: 0, splits: false }
+        })
+        .collect();
+    let mut next: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for folded in [false, true] {
+        for p in out.iter_mut().filter(|p| p.folded == folded) {
+            let n = next.entry((p.ws, p.mon)).or_insert(0);
+            (p.start, p.splits) = (*n, *n == 0);
+            *n += p.entry.apps.len().max(1);
+        }
+    }
+    out
+}
+
 /// An open window as `plan` sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct OpenWindow<'a> {
@@ -49,17 +135,16 @@ pub struct OpenWindow<'a> {
 /// order (two Edge windows already in place keep their places), so restoring a setup that's in
 /// place changes nothing; then one on the right monitor, so windows don't cross monitors for
 /// nothing; then any other one, in the order given (most recently used first gives the window
-/// you were last in). `ws_index` turns a 1-based workspace number into an
-/// index, and `mon_index` a setup's monitor (1-based, none for the primary) into one.
-pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usize, mon_index: impl Fn(Option<usize>) -> usize) -> Plan {
+/// you were last in). `ws_index` turns a 1-based workspace number into an index; monitors
+/// go as `placed` puts them.
+pub fn plan(setup: &Setup, open: &[OpenWindow], ws_index: impl Fn(usize) -> usize, connected: usize, primary: usize) -> Plan {
     let mut slots = Vec::new();
-    for w in &setup.workspaces {
-        let (ws, mon) = (ws_index(w.number), mon_index(w.monitor));
-        for (order, app) in w.apps.iter().enumerate() {
+    for p in placed(setup, ws_index, connected, primary) {
+        for (j, app) in p.entry.apps.iter().enumerate() {
             if app.exe.trim().is_empty() {
                 continue;
             }
-            slots.push(Slot { ws, mon, order, exe: app.exe.trim().to_string(), run: app.command_line().to_string() });
+            slots.push(Slot { ws: p.ws, mon: p.mon, order: p.start + j, exe: app.exe.trim().to_string(), run: app.command_line().to_string() });
         }
     }
     let mut taken = vec![false; open.len()];
@@ -229,6 +314,28 @@ pub fn fit(aspect: f32, w: f32, h: f32) -> (f32, f32) {
     }
 }
 
+/// The thumbnail of workspace `n` of a setup: each of its monitors (as `monitor_areas` gives
+/// them), empty or not.
+pub fn ws_thumb(s: &Setup, n: usize, areas: &[Rect], primary: usize, d: &Defaults) -> Thumb {
+    let count = areas.len().max(1);
+    let mut entries: Vec<SetupWorkspace> = Vec::new();
+    for k in 0..count {
+        let mine = s.workspaces.iter().filter(|w| w.number == n && monitor_slot(count, w.monitor, primary) == k);
+        let mut e = SetupWorkspace { number: n, monitor: Some(k + 1), layout: None, splits: Vec::new(), master_ratio: None, apps: Vec::new() };
+        for (i, w) in mine.enumerate() {
+            if i == 0 {
+                (e.layout, e.splits, e.master_ratio) = (w.layout, w.splits.clone(), w.master_ratio);
+            }
+            e.apps.extend(w.apps.iter().cloned());
+        }
+        entries.push(e);
+    }
+    // An empty monitor still shows the workspace's layout on the others; that's all it shares.
+    let refs: Vec<&SetupWorkspace> = entries.iter().collect();
+    let area = |m: Option<usize>| areas.get(m.map_or(0, |m| m - 1)).copied().unwrap_or(Rect::new(0, 0, 1920, 1040));
+    thumb(&refs, area, d)
+}
+
 /// The thumbnail of one workspace from its setup `entries` (one per monitor). `area` gives a
 /// setup monitor's tiling area on the desktop (where `tiles` would lay it out).
 pub fn thumb(entries: &[&SetupWorkspace], area: impl Fn(Option<usize>) -> Rect, d: &Defaults) -> Thumb {
@@ -272,14 +379,12 @@ mod tests {
     fn idx(n: usize) -> usize {
         n - 1
     }
-    fn mon(m: Option<usize>) -> usize {
-        m.map_or(0, |m| m - 1)
-    }
 
     fn dev() -> Setup {
         Setup {
             name: "Dev".into(),
             key: None,
+            monitors: None,
             workspaces: vec![ws(1, &["Code.exe", "WindowsTerminal.exe"]), ws(2, &["msedge.exe"]), ws(3, &["slack.exe"])],
         }
     }
@@ -288,7 +393,7 @@ mod tests {
     fn plan_claims_open_windows_and_launches_the_rest() {
         // Edge is open twice (one already on workspace 2), Code once on 5; nothing else runs.
         let open = open(&[(10, "msedge.exe", 0, 0), (11, "Code.exe", 4, 0), (12, "msedge.exe", 1, 0), (13, "notepad.exe", 0, 1)]);
-        let p = plan(&dev(), &open, idx, mon);
+        let p = plan(&dev(), &open, idx, 4, 0);
         assert_eq!(p.slots.len(), 4);
         assert_eq!(p.slots[1], Slot { ws: 0, mon: 0, order: 1, exe: "WindowsTerminal.exe".into(), run: "WindowsTerminal.exe".into() });
         // The Edge already on workspace 2 stays; Code comes over from 5.
@@ -302,9 +407,9 @@ mod tests {
         // by the first slot just because it comes first.
         let s = Setup { workspaces: vec![ws(1, &["Code.exe"]), ws(2, &["code.exe"])], ..dev() };
         let open = open(&[(1, "Code.exe", 1, 0), (2, "Code.exe", 6, 0)]);
-        assert_eq!(plan(&s, &open, idx, mon).claims, vec![(0, 2), (1, 1)]);
+        assert_eq!(plan(&s, &open, idx, 4, 0).claims, vec![(0, 2), (1, 1)]);
         // One window for two slots: the other one is launched.
-        let p = plan(&s, &open[..1], idx, mon);
+        let p = plan(&s, &open[..1], idx, 4, 0);
         assert_eq!((p.claims, p.launch), (vec![(1, 1)], vec![0]));
     }
 
@@ -314,10 +419,10 @@ mod tests {
         // last: they keep their places rather than swapping by recency.
         let s = Setup { workspaces: vec![ws(1, &["msedge.exe", "msedge.exe"])], ..dev() };
         let o = open(&[(7, "msedge.exe", 0, 1), (5, "msedge.exe", 0, 0)]);
-        assert_eq!(plan(&s, &o, idx, mon).claims, vec![(0, 5), (1, 7)]);
+        assert_eq!(plan(&s, &o, idx, 4, 0).claims, vec![(0, 5), (1, 7)]);
         // Brought from elsewhere, the one used last goes first.
         let o = open(&[(7, "msedge.exe", 3, 1), (5, "msedge.exe", 3, 0)]);
-        assert_eq!(plan(&s, &o, idx, mon).claims, vec![(0, 7), (1, 5)]);
+        assert_eq!(plan(&s, &o, idx, 4, 0).claims, vec![(0, 7), (1, 5)]);
     }
 
     #[test]
@@ -331,13 +436,13 @@ mod tests {
             OpenWindow { hwnd: 8, exe: "msedge.exe", ws: 0, mon: 1, place: 0 },
             OpenWindow { hwnd: 9, exe: "msedge.exe", ws: 0, mon: 0, place: 1 },
         ];
-        let p = plan(&s, &o, idx, mon);
+        let p = plan(&s, &o, idx, 4, 0);
         assert_eq!((p.slots[0].mon, p.slots[1].mon), (0, 1));
         assert_eq!(p.claims, vec![(0, 9), (1, 8)]);
         // From another workspace, an Edge on monitor 2 takes monitor 2's spot, though monitor
         // 1's comes first; monitor 1's app is started.
         let o = vec![OpenWindow { hwnd: 8, exe: "msedge.exe", ws: 4, mon: 1, place: 0 }];
-        let p = plan(&s, &o, idx, mon);
+        let p = plan(&s, &o, idx, 4, 0);
         assert_eq!((p.claims, p.launch), (vec![(1, 8)], vec![0]));
     }
 
@@ -417,5 +522,54 @@ mod tests {
         assert_eq!(app_label("x"), "x");
         assert_eq!(run_for_path(r"C:\Program Files\x\x.exe"), r#""C:\Program Files\x\x.exe""#);
         assert_eq!(summary(&dev()), "1: Code, WindowsTerminal  ·  2: msedge  ·  3: slack");
+    }
+
+    #[test]
+    fn fewer_monitors_fold_onto_the_primary() {
+        // Made on two monitors: 2 apps on monitor 1, 1 on monitor 2, then opened with one.
+        let mut left = ws(1, &["a.exe", "b.exe"]);
+        left.monitor = Some(1);
+        left.splits = vec![0.7];
+        let mut right = ws(1, &["c.exe"]);
+        right.monitor = Some(2);
+        right.splits = vec![0.3];
+        let s = Setup { workspaces: vec![right, left], ..dev() };
+        assert_eq!(monitor_count(&s), 2);
+        let p = placed(&s, idx, 1, 0);
+        // Monitor 2 folds onto the primary, after monitor 1's apps; monitor 1 keeps its splits.
+        assert!(p[0].folded && !p[1].folded);
+        assert_eq!((p[0].mon, p[0].start, p[0].splits), (0, 2, false));
+        assert_eq!((p[1].mon, p[1].start, p[1].splits), (0, 0, true));
+        let orders: Vec<(String, usize)> = plan(&s, &[], idx, 1, 0).slots.into_iter().map(|s| (s.exe, s.order)).collect();
+        assert_eq!(orders, vec![("c.exe".into(), 2), ("a.exe".into(), 0), ("b.exe".into(), 1)]);
+        // With both connected, each keeps its own monitor and splits.
+        let p = placed(&s, idx, 2, 1);
+        assert_eq!((p[0].mon, p[0].folded, p[0].splits), (1, false, true));
+        assert_eq!((p[1].mon, p[1].folded, p[1].splits), (0, false, true));
+    }
+
+    #[test]
+    fn one_monitor_setups_go_on_the_primary() {
+        let mut w = ws(1, &["a.exe"]);
+        w.monitor = Some(1);
+        let s = Setup { workspaces: vec![w], ..dev() };
+        // The primary is the right of two: a one-monitor setup goes there, not on the left.
+        assert_eq!(placed(&s, idx, 2, 1)[0].mon, 1);
+        // Laid out for three, with two connected: monitor 1 is the left one.
+        let s = Setup { monitors: Some(3), ..s };
+        assert_eq!(monitor_count(&s), 3);
+        assert_eq!((placed(&s, idx, 2, 1)[0].mon, placed(&s, idx, 2, 1)[0].folded), (0, false));
+    }
+
+    #[test]
+    fn missing_monitors_are_drawn_past_the_right_edge() {
+        let screens = [Rect::new(-1920, 0, 1920, 1080), Rect::new(0, 32, 1920, 1008)];
+        // The primary (the right one) for a one-monitor setup.
+        assert_eq!(monitor_areas(1, &screens, 1), vec![screens[1]]);
+        let a = monitor_areas(3, &screens[..1], 0);
+        assert_eq!(a[1], Rect::new(0, 0, 1920, 1080));
+        assert_eq!(a[2], Rect::new(1920, 0, 1920, 1080));
+        assert_eq!(monitor_slot(3, None, 1), 1);
+        assert_eq!(monitor_slot(1, Some(2), 1), 0);
     }
 }

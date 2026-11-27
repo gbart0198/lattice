@@ -8,12 +8,16 @@
 //! code: drag a window onto another to swap them, drag the seam between windows to resize, and
 //! an app you add drops in where a new window would (after the selected one, or at the end,
 //! per `general.new_window`). Click a window to edit its program, or move or remove it.
+//!
+//! A setup is laid out for a number of monitors (at least one), which you add and remove here;
+//! a carousel slides between them. A workspace spans every monitor and each tiles its own
+//! windows, so each monitor of a workspace is a `[[setup.workspace]]` entry.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use rune::tok::{space, type_};
-use rune::{Color, Cursor, Drag, El, Phase, TextEdit, TextStyle, Tx, col, el, row, text};
+use rune::{Color, Cursor, Drag, El, Phase, Spring, TextEdit, TextStyle, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Combobox, ComboboxOption, ComboboxState, SegmentedControl, TextInput};
 use toml_edit::DocumentMut;
 
@@ -26,6 +30,13 @@ use crate::setups::{self, Defaults};
 const CANVAS_W: f32 = 640.0;
 /// The tallest it gets (a portrait monitor is fitted into this).
 const CANVAS_MAX_H: f32 = 400.0;
+/// With more than one monitor, the room for each in the carousel: smaller, so the ones either
+/// side peek in.
+const SLIDE_W: f32 = 460.0;
+const SLIDE_H: f32 = 300.0;
+const SLIDE_GAP: f32 = 18.0;
+/// How the carousel slides, and how the monitors either side shrink and dim.
+const SLIDE: Spring = Spring::new(0.45, 0.06);
 /// How wide the grab area of a seam is.
 const SEAM: f32 = 14.0;
 /// Pointer travel before a press on a window counts as a drag.
@@ -44,7 +55,7 @@ pub struct AppEdit {
 /// A setup's apps on one monitor of one workspace (a `[[setup.workspace]]` entry).
 pub struct WsEdit {
     pub number: usize,
-    /// The monitor (0-based, left to right), resolved: an entry without one is the primary's.
+    /// Which of the setup's monitors (0-based, left to right).
     pub monitor: usize,
     pub layout: Option<LayoutKind>,
     pub splits: Vec<f32>,
@@ -56,6 +67,8 @@ pub struct SetupEdit {
     pub id: u64,
     pub name: TextEdit,
     pub key: TextEdit,
+    /// How many monitors it's laid out for (at least 1).
+    pub monitors: usize,
     pub workspaces: Vec<WsEdit>,
 }
 
@@ -128,7 +141,7 @@ impl Editor {
             list: Vec::new(),
             sel: None,
             ws: 1,
-            mon: primary,
+            mon: 0,
             tile: None,
             drag: None,
             seam: None,
@@ -155,26 +168,38 @@ impl Editor {
     }
 
     fn from_config(&mut self, s: &Setup) -> SetupEdit {
+        let count = setups::monitor_count(s);
         let workspaces = s
             .workspaces
             .iter()
             .map(|w| WsEdit {
                 number: w.number,
-                monitor: w.monitor.and_then(|m| m.checked_sub(1)).unwrap_or(self.primary),
+                monitor: setups::monitor_slot(count, w.monitor, self.primary),
                 layout: w.layout,
                 splits: w.splits.clone(),
                 master_ratio: w.master_ratio,
                 apps: w.apps.iter().map(|a| self.app(&a.exe, &a.run)).collect(),
             })
             .collect();
-        SetupEdit { id: self.id(), name: TextEdit::new(s.name.clone()), key: TextEdit::new(s.key.clone().unwrap_or_default()), workspaces }
+        SetupEdit {
+            id: self.id(),
+            name: TextEdit::new(s.name.clone()),
+            key: TextEdit::new(s.key.clone().unwrap_or_default()),
+            monitors: count,
+            workspaces,
+        }
+    }
+
+    /// A new, empty setup, laid out for the monitors connected now.
+    fn blank(&mut self, name: String) -> SetupEdit {
+        SetupEdit { id: self.id(), name: TextEdit::new(name), key: TextEdit::new(""), monitors: self.screens.len().max(1), workspaces: Vec::new() }
     }
 
     /// Opens setup `i`, showing its first workspace with apps (on its first monitor with apps).
     fn select(&mut self, i: usize) {
         self.sel = Some(i);
         let first = self.list[i].workspaces.iter().find(|w| !w.apps.is_empty()).map(|w| (w.number, w.monitor));
-        (self.ws, self.mon) = first.unwrap_or((1, self.primary));
+        (self.ws, self.mon) = first.unwrap_or((1, self.home()));
         self.tile = None;
         self.drag = None;
         self.seam = None;
@@ -194,7 +219,7 @@ impl Editor {
     /// doesn't use it yet.
     fn show_ws(&mut self, n: usize) {
         self.ws = n;
-        self.mon = self.setup().and_then(|s| s.workspaces.iter().find(|w| w.number == n && !w.apps.is_empty())).map_or(self.primary, |w| w.monitor);
+        self.mon = self.setup().and_then(|s| s.workspaces.iter().find(|w| w.number == n && !w.apps.is_empty())).map_or(self.home(), |w| w.monitor);
         self.tile = None;
         self.shown_or_add();
     }
@@ -205,29 +230,95 @@ impl Editor {
         self.tile = None;
     }
 
-    /// The tiling area of monitor `m`; one that isn't connected is drawn as the primary.
+    /// How many monitors the open setup is laid out for.
+    fn count(&self) -> usize {
+        self.setup().map_or(1, |s| s.monitors.max(1))
+    }
+
+    /// Where an entry without a monitor goes: the primary's place.
+    fn home(&self) -> usize {
+        setups::monitor_slot(self.count(), None, self.primary)
+    }
+
+    /// The desktop areas a setup's `count` monitors are drawn with.
+    fn areas(&self, count: usize) -> Vec<Rect> {
+        let connected: Vec<Rect> = self.screens.iter().map(|s| s.area).collect();
+        setups::monitor_areas(count, &connected, self.primary)
+    }
+
+    /// The tiling area monitor `m` of the open setup is drawn with.
     fn area(&self, m: usize) -> Rect {
-        self.screens.get(m).or(self.screens.get(self.primary)).map_or(Rect::new(0, 0, 1920, 1040), |s| s.area)
+        let a = self.areas(self.count());
+        a.get(m).copied().unwrap_or(a[0])
+    }
+
+    /// The canvas for monitor `m`: big with one monitor, a carousel slide with more.
+    fn canvas_for(&self, m: usize) -> Canvas {
+        let a = self.area(m);
+        let (w, h) = if self.count() > 1 { (SLIDE_W, SLIDE_H) } else { (CANVAS_W, CANVAS_MAX_H) };
+        Canvas::new((a.w, a.h), w, h)
     }
 
     /// The canvas for the monitor shown.
     fn canvas(&self) -> Canvas {
-        let a = self.area(self.mon);
-        Canvas::new((a.w, a.h))
+        self.canvas_for(self.mon)
     }
 
-    /// Monitors to pick from for the workspace shown: the connected ones, and any others its
-    /// entries name. Empty with one monitor.
-    fn monitors(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = (0..self.screens.len()).collect();
-        if let Some(setup) = self.setup() {
-            for w in setup.workspaces.iter().filter(|w| w.number == self.ws && (!w.apps.is_empty() || w.monitor == self.mon)) {
-                if !out.contains(&w.monitor) {
-                    out.push(w.monitor);
-                }
-            }
+    /// Whether monitor `m` of the setup is connected now (a one-monitor setup's always is: it's
+    /// the primary).
+    fn connected(&self, m: usize) -> bool {
+        self.count() <= 1 || m < self.screens.len()
+    }
+
+    /// What monitor `m` is on this desktop: "Monitor 2 · right · primary".
+    fn monitor_name(&self, m: usize) -> String {
+        if self.count() <= 1 {
+            return "Your primary monitor".into();
         }
-        if out.len() < 2 { Vec::new() } else { out }
+        if !self.connected(m) {
+            return format!("Monitor {} \u{b7} not connected", m + 1);
+        }
+        let side = match (self.screens.len(), m) {
+            (2, 0) | (3, 0) => Some("left"),
+            (2, 1) | (3, 2) => Some("right"),
+            (3, 1) => Some("middle"),
+            _ => None,
+        };
+        let mut out = format!("Monitor {}", m + 1);
+        if let Some(side) = side {
+            out += &format!(" \u{b7} {side}");
+        }
+        if m == self.primary {
+            out += " \u{b7} primary";
+        }
+        out
+    }
+
+    /// Lays the setup out for one more monitor, and shows it.
+    fn add_monitor(&mut self) {
+        let Some(setup) = self.sel.and_then(|i| self.list.get_mut(i)) else { return };
+        setup.monitors += 1;
+        self.mon = setup.monitors - 1;
+        self.tile = None;
+    }
+
+    /// Takes the monitor shown out of the setup, with its apps on every workspace (the ones
+    /// right of it move down one); a setup keeps at least one. Returns how many apps went.
+    fn remove_monitor(&mut self) -> usize {
+        let m = self.mon;
+        let Some(setup) = self.sel.and_then(|i| self.list.get_mut(i)) else { return 0 };
+        if setup.monitors <= 1 {
+            return 0;
+        }
+        let gone = setup.workspaces.iter().filter(|w| w.monitor == m).map(|w| w.apps.len()).sum();
+        setup.workspaces.retain(|w| w.monitor != m);
+        for w in setup.workspaces.iter_mut().filter(|w| w.monitor > m) {
+            w.monitor -= 1;
+        }
+        setup.monitors -= 1;
+        self.mon = m.saturating_sub(1);
+        self.tile = None;
+        gone
     }
 
     /// Gives the shown workspace's other monitors its layout and master ratio, which lattice
@@ -340,6 +431,16 @@ fn defaults(s: &S) -> Defaults {
 }
 
 /// An entry as config (its monitor always written out, 1-based).
+/// A setup as config.
+fn setup_config(e: &SetupEdit) -> Setup {
+    Setup {
+        name: e.name.text.trim().to_string(),
+        key: None,
+        monitors: Some(e.monitors.max(1)),
+        workspaces: e.workspaces.iter().filter(|w| !w.apps.is_empty()).map(to_config).collect(),
+    }
+}
+
 fn to_config(w: &WsEdit) -> SetupWorkspace {
     SetupWorkspace {
         number: w.number,
@@ -361,9 +462,9 @@ struct Canvas {
 }
 
 impl Canvas {
-    /// A screen of this size fitted into the canvas's room (a portrait monitor is narrower).
-    fn new(screen: (i32, i32)) -> Self {
-        let scale = (CANVAS_W / screen.0 as f32).min(CANVAS_MAX_H / screen.1 as f32);
+    /// A screen of this size fitted into `max_w` × `max_h` (a portrait monitor is narrower).
+    fn new(screen: (i32, i32), max_w: f32, max_h: f32) -> Self {
+        let scale = (max_w / screen.0 as f32).min(max_h / screen.1 as f32);
         Canvas {
             w: (screen.0 as f32 * scale).round(),
             h: (screen.1 as f32 * scale).round(),
@@ -373,16 +474,9 @@ impl Canvas {
     }
 }
 
-/// A workspace of `setup` drawn small: every monitor it has apps on.
+/// A workspace of `setup` drawn small: each of its monitors.
 fn ws_thumb(ed: &Editor, setup: &SetupEdit, n: usize, d: &Defaults) -> setups::Thumb {
-    let entries: Vec<SetupWorkspace> = setup.workspaces.iter().filter(|w| w.number == n && !w.apps.is_empty()).map(to_config).collect();
-    let refs: Vec<&SetupWorkspace> = entries.iter().collect();
-    if refs.is_empty() {
-        // An empty workspace: the shown monitor, blank.
-        let a = ed.area(ed.mon);
-        return setups::Thumb { aspect: a.w as f32 / a.h as f32, screens: vec![[0.0, 0.0, 1.0, 1.0]], tiles: Vec::new() };
-    }
-    setups::thumb(&refs, |m| ed.area(m.map_or(ed.primary, |m| m - 1)), d)
+    setups::ws_thumb(&setup_config(setup), n, &ed.areas(setup.monitors.max(1)), ed.primary, d)
 }
 
 /// Where each app's tile is drawn on the canvas, as (x, y, w, h). Monocle stacks every window on
@@ -470,8 +564,8 @@ pub fn validate(s: &S) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes the setups as `[[setup]]` tables, replacing the ones there. An entry on the primary
-/// monitor leaves `monitor` out.
+/// Writes the setups as `[[setup]]` tables, replacing the ones there. A one-monitor setup
+/// leaves `monitor` out (it goes on the primary); others say how many monitors and which.
 pub fn write(doc: &mut DocumentMut, ed: &Editor) {
     let list = &ed.list;
     doc.remove("setup");
@@ -490,11 +584,14 @@ pub fn write(doc: &mut DocumentMut, ed: &Editor) {
         if !key.is_empty() {
             t["key"] = toml_edit::value(key);
         }
+        if s.monitors > 1 {
+            t["monitors"] = toml_edit::value(s.monitors as i64);
+        }
         let mut wss = toml_edit::ArrayOfTables::new();
         for w in s.workspaces.iter().filter(|w| !w.apps.is_empty()) {
             let mut wt = toml_edit::Table::new();
             wt["number"] = toml_edit::value(w.number as i64);
-            if w.monitor != ed.primary {
+            if s.monitors > 1 {
                 wt["monitor"] = toml_edit::value(w.monitor as i64 + 1);
             }
             if let Some(l) = w.layout {
@@ -635,10 +732,11 @@ pub fn poll(s: &mut S) -> bool {
             Ok(wss) => {
                 let name = unique_name(&s.ed.list, "Current layout");
                 let id = s.ed.id();
-                let mut setup = SetupEdit { id, name: TextEdit::new(name.clone()), key: TextEdit::new(""), workspaces: Vec::new() };
+                let _ = id;
+                let mut setup = s.ed.blank(name.clone());
                 for c in wss {
                     let apps = c.apps.iter().map(|(exe, run)| s.ed.app(exe, run)).collect();
-                    let monitor = c.monitor.unwrap_or(s.ed.primary);
+                    let monitor = setups::monitor_slot(setup.monitors, c.monitor.map(|m| m + 1), s.ed.primary);
                     setup.workspaces.push(WsEdit { number: c.number, monitor, layout: c.layout, splits: Vec::new(), master_ratio: None, apps });
                 }
                 s.ed.list.push(setup);
@@ -760,7 +858,9 @@ fn list_section(s: &S, p: &P) -> El {
     let new = Button::new("New setup").on_press(|s: &mut S| {
         let name = unique_name(&s.ed.list, "New workspace");
         let id = s.ed.id();
-        s.ed.list.push(SetupEdit { id, name: TextEdit::new(name), key: TextEdit::new(""), workspaces: Vec::new() });
+        let _ = id;
+        let blank = s.ed.blank(name);
+        s.ed.list.push(blank);
         let i = s.ed.list.len() - 1;
         s.ed.select(i);
     });
@@ -806,13 +906,7 @@ struct SetupPreview {
 
 impl SetupPreview {
     fn of(e: &SetupEdit) -> Self {
-        SetupPreview {
-            setup: Setup {
-                name: e.name.text.trim().to_string(),
-                key: None,
-                workspaces: e.workspaces.iter().filter(|w| !w.apps.is_empty()).map(to_config).collect(),
-            },
-        }
+        SetupPreview { setup: setup_config(e) }
     }
 }
 
@@ -936,94 +1030,108 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
         .py(space::S2)
         .gap(space::S2)
         .items_center()
-        .child(canvas(s, p, &shown, &d))
+        .child(carousel(s, p, &d, shown.layout))
         .child(small(&help, p.t.text_secondary));
     let name = s.ed.setup().map_or("", |e| e.name.text.trim());
     let title = if name.is_empty() { "Where its apps go".to_string() } else { format!("Where {name} puts its apps") };
-    let mut rows = vec![ws_cards(s, p, overlays)];
-    rows.extend(monitor_picker(s, p));
-    rows.extend([toolbar, canvas, inspector(s, p)]);
-    section(p, "setup-layout", &title, rows)
+    section(p, "setup-layout", &title, vec![ws_cards(s, p, overlays), toolbar, monitor_bar(s, p), canvas, inspector(s, p)])
 }
 
-/// With more than one monitor: a map of them, as Windows arranges them, to pick the one the
-/// canvas shows. Each monitor of a workspace tiles its own apps.
-fn monitor_picker(s: &S, p: &P) -> Option<El> {
+/// The monitor shown, the arrows to slide to the others, and adding and removing monitors.
+fn monitor_bar(s: &S, p: &P) -> El {
+    let k = kit(p);
     let ed = &s.ed;
-    let mons = ed.monitors();
-    if mons.is_empty() {
-        return None;
+    let (n, m) = (ed.count(), ed.mon);
+    let mut bar = row().key("setup-monitors").px(space::S3).pt(space::S2).gap(space::S2).center_y();
+    if n > 1 {
+        let arrow = |label: &str, to: usize, disabled: bool| {
+            Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.show_mon(to)).build(&k)
+        };
+        bar = bar
+            .child(arrow("\u{2039}", m.saturating_sub(1), m == 0))
+            .child(text(format!("{} of {n}", m + 1)).font(type_::BODY).color(p.t.text_secondary).w(44.0).align(rune::Align::Center))
+            .child(arrow("\u{203a}", (m + 1).min(n - 1), m + 1 >= n));
     }
-    let setup = ed.setup()?;
-    let count = |m: usize| setup.workspaces.iter().filter(|w| w.number == ed.ws && w.monitor == m).map(|w| w.apps.len()).sum::<usize>();
-    // The connected monitors' arrangement, scaled to MAP_H tall; others follow on the right.
-    const MAP_H: f32 = 46.0;
-    let connected: Vec<Rect> = ed.screens.iter().map(|sc| sc.area).collect();
-    let (x0, y0) = connected.iter().fold((i32::MAX, i32::MAX), |(x, y), r| (x.min(r.x), y.min(r.y)));
-    let (x1, y1) = connected.iter().fold((i32::MIN, i32::MIN), |(x, y), r| (x.max(r.x + r.w), y.max(r.y + r.h)));
-    let f = (MAP_H / (y1 - y0).max(1) as f32).min(360.0 / (x1 - x0).max(1) as f32);
-    let mut map_w = (x1 - x0) as f32 * f;
-    let mut map = el();
-    for &m in &mons {
+    let name = text(ed.monitor_name(m)).font(TextStyle::new(13.0, 600.0)).color(p.t.text);
+    bar = bar.child(name).child(el().grow(1.0));
+    let add = Button::new("+ Add monitor").variant(ButtonVariant::Ghost).on_press(|s: &mut S| s.ed.add_monitor()).build(&k);
+    bar = bar.child(add);
+    if n > 1 {
+        let remove = Button::new("Remove monitor")
+            .variant(ButtonVariant::GhostMuted)
+            .on_press(move |s: &mut S| {
+                let gone = s.ed.remove_monitor();
+                s.status = match gone {
+                    0 => format!("Removed monitor {}.", m + 1),
+                    1 => format!("Removed monitor {} and its app. Close without saving to undo.", m + 1),
+                    g => format!("Removed monitor {} and its {g} apps. Close without saving to undo.", m + 1),
+                };
+                s.status_ok = true;
+            })
+            .build(&k);
+        bar = bar.child(remove);
+    }
+    bar
+}
+
+/// The canvas of each monitor of the workspace, side by side: the one shown in the middle, the
+/// others either side, smaller and dimmed, to click or slide to. With one monitor, its canvas.
+fn carousel(s: &S, p: &P, d: &Defaults, layout: Option<LayoutKind>) -> El {
+    let ed = &s.ed;
+    let n = ed.count();
+    let entry = |m: usize| {
+        let mine = ed.setup().and_then(|e| e.workspaces.iter().find(|w| w.number == ed.ws && w.monitor == m)).map(to_config);
+        // An empty monitor shows the layout the workspace has on its others.
+        mine.unwrap_or_else(|| SetupWorkspace { layout, monitor: Some(m + 1), ..empty_ws(ed.ws) })
+    };
+    if n <= 1 {
+        return canvas(s, p, &entry(0), d, 0, true);
+    }
+    let pitch = SLIDE_W + SLIDE_GAP;
+    // As tall as the tallest monitor's canvas.
+    let tall = (0..n).map(|m| ed.canvas_for(m).h).fold(0.0, f32::max);
+    let mut strip = row()
+        .key("monitor-strip")
+        .gap(SLIDE_GAP)
+        .center_y()
+        .motion(SLIDE)
+        // The strip is centred in the carousel; this puts the monitor shown in the middle.
+        .offset(-(ed.mon as f32 - (n - 1) as f32 / 2.0) * pitch, 0.0);
+    for m in 0..n {
+        let live = m == ed.mon;
+        let mut slide = col()
+            .key(format!("slide-{m}"))
+            .size(SLIDE_W, tall)
+            .center()
+            .motion(SLIDE)
+            .scale(if live { 1.0 } else { 0.9 })
+            .opacity(if live { 1.0 } else { 0.55 })
+            .child(canvas(s, p, &entry(m), d, m, live));
+        if !live {
+            slide = slide.hit().cursor(Cursor::Pointer).label(format!("Show monitor {}", m + 1)).on_press(move |s: &mut S| s.ed.show_mon(m));
+        }
+        strip = strip.child(slide);
+    }
+    let mut dots = row().key("monitor-dots").gap(2.0).center_y();
+    for m in 0..n {
         let on = m == ed.mon;
-        let (x, y, w, h) = match connected.get(m) {
-            Some(r) => ((r.x - x0) as f32 * f, (r.y - y0) as f32 * f, r.w as f32 * f, r.h as f32 * f),
-            None => {
-                let a = ed.area(m);
-                let (w, h) = (a.w as f32 * f, a.h as f32 * f);
-                let x = map_w + 10.0;
-                map_w = x + w;
-                (x, 0.0, w, h)
-            }
-        };
-        let n = count(m);
-        let label = match (connected.get(m).is_some(), n) {
-            (false, _) => "not connected".to_string(),
-            (true, 0) => "empty".to_string(),
-            (true, 1) => "1 app".to_string(),
-            (true, n) => format!("{n} apps"),
-        };
-        map = map.child(
-            col()
-                .key(format!("mon-{m}"))
-                .absolute(x + 1.0, y + 1.0)
-                .size((w - 2.0).max(8.0), (h - 2.0).max(8.0))
+        dots = dots.child(
+            el().key(format!("dot-{m}"))
+                .px(4.0).py(4.0)
                 .hit()
                 .cursor(Cursor::Pointer)
-                .label(format!("Monitor {}, {label}", m + 1))
+                .label(format!("Monitor {}", m + 1))
                 .on_press(move |s: &mut S| s.ed.show_mon(m))
-                .center()
-                .gap(0.0)
-                .radius(6.0)
-                .fill(if on { p.accent.alpha(0.18) } else { p.t.bg })
-                .hover(if on { p.accent.alpha(0.22) } else { p.t.text.alpha(0.06) })
-                .border(if on { 1.5 } else { p.hair }, if on { p.accent } else { p.t.card_border })
-                .child(text((m + 1).to_string()).font(TextStyle::new(13.0, 700.0)).color(if on { p.t.text } else { p.t.text_secondary }))
-                .child(text(label).font(TextStyle::new(10.0, 500.0)).color(p.t.text_secondary)),
+                .child(el().size(if on { 18.0 } else { 6.0 }, 6.0).radius(3.0).motion(SLIDE).fill(if on { p.accent } else { p.t.text_secondary.alpha(0.4) })),
         );
     }
-    let map = map.size(map_w, MAP_H);
-    let hint = if ed.screens.get(ed.mon).is_none() {
-        format!("Monitor {} isn't connected; its apps go on the primary monitor ({}).", ed.mon + 1, ed.primary + 1)
-    } else {
-        format!(
-            "Monitor {} of workspace {}. Each monitor tiles its own apps; {} is your primary.",
-            ed.mon + 1,
-            ed.ws,
-            ed.primary + 1
-        )
-    };
-    Some(
-        row()
-            .key("setup-monitors")
-            .px(space::S3)
-            .pt(space::S2)
-            .gap(space::S3)
-            .center_y()
-            .child(small("Monitor", p.t.text_secondary))
-            .child(map)
-            .child(small(&hint, p.t.text_secondary).grow(1.0).shrink().wrap()),
-    )
+    col()
+        .key("carousel")
+        .w_full()
+        .gap(space::S1)
+        .items_center()
+        .child(row().key("carousel-view").w_full().h(tall + 8.0).justify_center().center_y().clip_fade_linear(28.0, 0.0, 28.0, 0.0).child(strip))
+        .child(dots)
 }
 
 /// A workspace drawn small in a `bw` × `bh` box: its monitors side by side as they're
@@ -1204,18 +1312,17 @@ fn inspector(s: &S, p: &P) -> El {
         .child(field("Program (matched by file name)", exe, p))
         .child(field("Start with, if it isn't running", run, p).grow(1.0).shrink())
         .child(field("Workspace", mover, p));
-    let mons = s.ed.monitors();
-    if let (Some(&lo), Some(&hi)) = (mons.iter().min(), mons.iter().max()) {
+    let count = s.ed.count();
+    if count > 1 {
         let mstep = |label: &str, to: usize, disabled: bool| {
             Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.move_to_monitor(t, to)).build(&k)
         };
-        let hi = hi.max(s.ed.screens.len().saturating_sub(1));
         let mon_mover = row()
             .gap(0.0)
             .center_y()
-            .child(mstep("\u{2039}", mon.saturating_sub(1).max(lo), mon <= lo))
+            .child(mstep("\u{2039}", mon.saturating_sub(1), mon == 0))
             .child(text((mon + 1).to_string()).w(18.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
-            .child(mstep("\u{203a}", (mon + 1).min(hi), mon >= hi));
+            .child(mstep("\u{203a}", (mon + 1).min(count - 1), mon + 1 >= count));
         strip = strip.child(field("Monitor", mon_mover, p));
     }
     strip.child(remove)
@@ -1274,13 +1381,20 @@ fn running_apps() -> Vec<(String, String)> {
 }
 
 /// The screen, its tiles and the seams between them.
-fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults) -> El {
-    let c = s.ed.canvas();
+/// Monitor `m`'s canvas with workspace entry `w`. Only the `live` one (the monitor shown) takes
+/// drags and shows the selection; the others are a picture of it.
+fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults, m: usize, live: bool) -> El {
+    let c = s.ed.canvas_for(m);
     let rects = tile_rects(w, d, &c);
-    let drag = s.ed.drag.filter(|dr| dr.moved && dr.from < rects.len());
+    let drag = s.ed.drag.filter(|dr| live && dr.moved && dr.from < rects.len());
     let target = drag.and_then(|dr| tile_under(&rects, dr.pointer, dr.from));
+    let ids: Vec<u64> = s
+        .ed
+        .setup()
+        .and_then(|e| e.workspaces.iter().find(|x| x.number == w.number && x.monitor == m))
+        .map_or_else(Vec::new, |x| x.apps.iter().map(|a| a.id).collect());
     let mut screen = el()
-        .key(format!("canvas-{}-{}", s.ed.ws, s.ed.mon))
+        .key(format!("canvas-{}-{m}", s.ed.ws))
         .size(c.w, c.h)
         .radius(12.0)
         .fill(crate::bar::color("#11111b", Color::BLACK))
@@ -1293,7 +1407,11 @@ fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults) -> El {
                 .size(c.w, c.h)
                 .center()
                 .gap(6.0)
-                .child(text(format!("Workspace {} is empty", w.number)).font(TextStyle::new(15.0, 600.0)).color(p.t.text_secondary))
+                .child(
+                    text(if s.ed.count() > 1 { format!("Nothing on monitor {} of workspace {}", m + 1, w.number) } else { format!("Workspace {} is empty", w.number) })
+                        .font(TextStyle::new(15.0, 600.0))
+                        .color(p.t.text_secondary),
+                )
                 .child(small("Use \u{201c}+ Add app\u{201d} to place one here", p.t.text_secondary.alpha(0.7))),
         );
     }
@@ -1304,23 +1422,39 @@ fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults) -> El {
             TileLook::Placeholder
         } else if target == Some(i) {
             TileLook::Target
-        } else if s.ed.tile == Some(i) {
+        } else if live && s.ed.tile == Some(i) {
             TileLook::Selected
         } else {
             TileLook::Normal
         };
         let origin = (r.0, r.1);
-        let tile = tile_el(&names[i], i, r.2, r.3, state, p)
-            .key(format!("tile-{}", s.ed.shown().map_or(i as u64, |ws| ws.apps.get(i).map_or(i as u64, |a| a.id))))
-            .absolute(r.0, r.1)
-            .hit()
-            .cursor(if dragged { Cursor::Grabbing } else { Cursor::Grab })
-            .label(setups::app_label(&names[i]))
-            .on_drag(move |s: &mut S, d: &mut Drag, _tx: &mut Tx| tile_drag(s, i, origin, d));
+        let mut tile = tile_el(&names[i], i, r.2, r.3, state, p)
+            .key(format!("tile-{}", ids.get(i).map_or(format!("{m}-{i}"), |id| id.to_string())))
+            .absolute(r.0, r.1);
+        if live {
+            tile = tile
+                .hit()
+                .cursor(if dragged { Cursor::Grabbing } else { Cursor::Grab })
+                .label(setups::app_label(&names[i]))
+                .on_drag(move |s: &mut S, d: &mut Drag, _tx: &mut Tx| tile_drag(s, i, origin, d));
+        }
         screen = screen.child(tile);
     }
+    // A monitor that isn't connected: where its apps go instead.
+    if !s.ed.connected(m) {
+        screen = screen.child(
+            row()
+                .absolute(10.0, 10.0)
+                .h(22.0)
+                .px(8.0)
+                .radius(6.0)
+                .center()
+                .fill(crate::bar::color("#f9e2af", Color::WHITE).alpha(0.9))
+                .child(text("Not connected: restores onto your primary monitor").font(TextStyle::new(11.0, 650.0)).color(Color::BLACK)),
+        );
+    }
     // Seams: drawn over the tiles, grabbed anywhere along their length.
-    if drag.is_none() {
+    if live && drag.is_none() {
         for (k, seam) in seams(w, d, &c).into_iter().enumerate() {
             let pos = seam.pos() * c.scale;
             let reg = seam.region;
@@ -1540,7 +1674,8 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
         let cfg: config::Config = toml::from_str(src).unwrap();
         // Two monitors, the right one primary: entries without a monitor are on it.
         let mut ed = Editor::load_on(&cfg, two_screens(), 1);
-        assert_eq!(ed.list[0].workspaces[0].monitor, 1);
+        // No monitors named: a one-monitor setup (the primary).
+        assert_eq!((ed.list[0].monitors, ed.list[0].workspaces[0].monitor), (1, 0));
         // An empty workspace isn't written.
         ed.select(0);
         ed.ws = 5;
@@ -1567,14 +1702,17 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
         let cfg: config::Config = toml::from_str("[[setup]]\nname = \"Dev\"\n[[setup.workspace]]\nnumber = 1\nlayout = \"master\"\napps = [{ exe = \"a.exe\" }, { exe = \"b.exe\" }]").unwrap();
         let mut ed = Editor::load_on(&cfg, two_screens(), 1);
         ed.select(0);
-        assert_eq!((ed.ws, ed.mon), (1, 1));
+        assert_eq!((ed.ws, ed.mon, ed.count()), (1, 0, 1));
         assert_eq!(ed.cards(), vec![1]);
-        assert_eq!(ed.monitors(), vec![0, 1]);
-        // b to the left monitor: a new entry there, with the workspace's layout.
-        ed.move_to_monitor(1, 0);
-        assert_eq!((ed.ws, ed.mon, ed.tile), (1, 0, Some(0)));
-        let left = ed.shown().unwrap();
-        assert_eq!((left.apps.len(), left.layout), (1, Some(LayoutKind::Master)));
+        // A second monitor, shown as it's added; then b moves onto it: a new entry there, with
+        // the workspace's layout.
+        ed.add_monitor();
+        assert_eq!((ed.mon, ed.count()), (1, 2));
+        ed.show_mon(0);
+        ed.move_to_monitor(1, 1);
+        assert_eq!((ed.ws, ed.mon, ed.tile), (1, 1, Some(0)));
+        let right = ed.shown().unwrap();
+        assert_eq!((right.apps.len(), right.layout), (1, Some(LayoutKind::Master)));
         // Changing the layout on one monitor changes it on the other.
         ed.shown_mut().unwrap().layout = Some(LayoutKind::Dwindle);
         ed.sync_siblings();
@@ -1583,9 +1721,41 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
         let mut doc = DocumentMut::new();
         write(&mut doc, &ed);
         let back: config::Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(back.setups[0].monitors, Some(2));
         let w = &back.setups[0].workspaces;
-        assert_eq!((w[0].monitor, w[0].apps[0].exe.as_str()), (Some(1), "b.exe"));
-        assert_eq!((w[1].monitor, w[1].apps[0].exe.as_str()), (None, "a.exe"));
+        assert_eq!((w[0].monitor, w[0].apps[0].exe.as_str()), (Some(1), "a.exe"));
+        assert_eq!((w[1].monitor, w[1].apps[0].exe.as_str()), (Some(2), "b.exe"));
+        // A third, empty monitor is kept by the count.
+        ed.add_monitor();
+        let mut doc = DocumentMut::new();
+        write(&mut doc, &ed);
+        let back: config::Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(setups::monitor_count(&back.setups[0]), 3);
+        // Removing monitor 2 takes b with it and moves 3 down; one monitor stays.
+        ed.show_mon(1);
+        assert_eq!(ed.remove_monitor(), 1);
+        assert_eq!((ed.count(), ed.mon), (2, 0));
+        ed.show_mon(1);
+        ed.remove_monitor();
+        assert_eq!(ed.count(), 1);
+        assert_eq!(ed.remove_monitor(), 0);
+        assert_eq!(ed.count(), 1);
+        let apps: Vec<&str> = ed.list[0].workspaces.iter().flat_map(|w| &w.apps).map(|a| a.exe.text.as_str()).collect();
+        assert_eq!(apps, vec!["a.exe"]);
+    }
+
+    #[test]
+    fn missing_monitors_are_marked() {
+        let cfg: config::Config =
+            toml::from_str("[[setup]]\nname = \"Big\"\nmonitors = 3\n[[setup.workspace]]\nnumber = 1\nmonitor = 3\napps = [{ exe = \"a.exe\" }]").unwrap();
+        let mut ed = Editor::load_on(&cfg, two_screens(), 1);
+        ed.select(0);
+        assert_eq!((ed.count(), ed.mon), (3, 2));
+        assert!(ed.connected(1) && !ed.connected(2));
+        assert_eq!(ed.monitor_name(1), "Monitor 2 \u{b7} right \u{b7} primary");
+        assert_eq!(ed.monitor_name(2), "Monitor 3 \u{b7} not connected");
+        // Drawn past the right edge, the primary's size.
+        assert_eq!(ed.area(2), Rect::new(1920, 0, 1920, 1008));
     }
 
     #[test]
@@ -1703,6 +1873,19 @@ pub fn sample(s: &mut S) {
 /// Monitor 2 of workspace 1.
 pub fn sample_monitor(s: &mut S) {
     s.ed.show_mon(1);
+    s.ed.tile = Some(0);
+}
+
+/// A third monitor, which isn't connected, with an app on it.
+pub fn sample_missing(s: &mut S) {
+    s.ed.add_monitor();
+    s.ed.add("Spotify.exe", "", NewWindow::End);
+    s.ed.tile = None;
+}
+
+/// A setup on one monitor.
+pub fn sample_one(s: &mut S) {
+    s.ed.select(1);
     s.ed.tile = Some(0);
 }
 

@@ -300,6 +300,10 @@ pub struct Setup {
     /// A key chord that restores it, like a keybind ("super+alt+1").
     #[serde(default)]
     pub key: Option<String>,
+    /// How many monitors it's laid out for; missing is the highest `monitor` its entries name
+    /// (1 if none). A one-monitor setup goes on the primary monitor.
+    #[serde(default)]
+    pub monitors: Option<usize>,
     #[serde(default, rename = "workspace", alias = "workspaces")]
     pub workspaces: Vec<SetupWorkspace>,
 }
@@ -310,7 +314,8 @@ pub struct SetupWorkspace {
     pub number: usize,
     /// The monitor these apps go on, 1-based from the left (as Windows arranges them); none
     /// is the primary monitor. A workspace spans every monitor, so a setup can have an entry
-    /// for each monitor of a workspace. A monitor that isn't connected means the primary.
+    /// for each monitor of a workspace. A monitor that isn't connected folds onto the primary
+    /// (see `setups::placed`).
     #[serde(default)]
     pub monitor: Option<usize>,
     #[serde(default)]

@@ -267,11 +267,13 @@ float = true
 # `lattice msg restore-setup Dev`, or by typing "workspaces" in the launcher. The settings
 # window's Setups tab edits them with a drag-and-drop layout editor. Each [[setup.workspace]]
 # is one monitor of a workspace: `monitor` counts from the left (from 1), and none is the
-# primary. Apps tile in `apps` order; `splits` (dwindle) and `master_ratio` (master) are
-# optional.
+# primary; `monitors` says how many the setup is for. A monitor that isn't connected puts its
+# apps on the primary. Apps tile in `apps` order; `splits` (dwindle) and `master_ratio`
+# (master) are optional.
 # [[setup]]
 # name = "Dev"
 # key = "super+alt+1"
+# monitors = 2
 # [[setup.workspace]]
 # number = 1
 # layout = "dwindle"

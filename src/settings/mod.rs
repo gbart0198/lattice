@@ -1086,6 +1086,16 @@ pub fn run() {
                 setups_tab::sample(s);
                 setups_tab::sample_monitor(s);
             }),
+            ("workspaces-missing", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_missing(s);
+            }),
+            ("workspaces-one", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_one(s);
+            }),
             ("workspaces-list", |s: &mut S| {
                 s.tab = 2;
                 setups_tab::sample(s);

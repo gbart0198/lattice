@@ -222,8 +222,11 @@ you have open, and clicking one opens it:
 - Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
 - A card for each workspace the setup uses shows that workspace's layout and the apps it puts
   there. Click a card to edit that workspace; **Add workspace** puts apps on another one.
-- A workspace spans all your monitors, and each monitor tiles its own windows. With more than
-  one monitor, a map of them (arranged as in Windows' display settings) picks the one to edit.
+- A setup is laid out for one or more monitors: **+ Add monitor** and **Remove monitor** (which
+  takes that monitor's apps with it) change how many; a new setup starts with the monitors you
+  have. A workspace spans them all and each tiles its own windows, so the editor is a carousel:
+  the monitor you're editing in the middle, the others either side to click or step to with
+  ‹ ›.
 - The layout editor shows that monitor as lattice will tile it, one box per app. Drag a box
   onto another to swap them. Drag the gap between two boxes to resize them; the split shows as
   a percentage while you drag. Pick dwindle, master or monocle (for the whole workspace, as in
@@ -244,9 +247,11 @@ tables at the end of the config:
 [[setup]]
 name = "Dev"
 key = "super+alt+1"
+monitors = 2
 
 [[setup.workspace]]
 number = 1
+monitor = 1
 layout = "dwindle"
 splits = [0.6]
 apps = [
@@ -267,8 +272,13 @@ apps = [{ exe = "slack.exe" }]
 
 Each `[[setup.workspace]]` is one monitor of a workspace: `monitor` counts from the left, as
 `lattice query monitors` lists them (but from 1), and leaving it out means your primary
-monitor. A setup naming a monitor that isn't connected puts those apps on the primary one.
-`splits` are that monitor's; `layout` and `master_ratio` are the workspace's.
+monitor. `monitors = N` on the `[[setup]]` says how many it's laid out for (by default the
+highest `monitor` it names). `splits` are that monitor's; `layout` and `master_ratio` are the
+workspace's.
+
+A one-monitor setup always goes on your primary monitor, however many you have. One made for
+more monitors than are connected still restores: the apps of a missing monitor join your
+primary's, after its own, and the launcher's picker says so.
 
 Windows are matched by `exe`, the program's file name (as `lattice --list` shows it). An open
 window already where it goes stays there, and one already on the right monitor stays on it;
@@ -606,6 +616,7 @@ soundtrack.
   Win+− instead.
 - Setups match apps by program file name, so they can't tell apart two windows of a Store app
   (all are `ApplicationFrameHost.exe`). Monitors are numbered by position, so after you
-  rearrange your displays a setup's monitor 2 may be a different screen.
+  rearrange your displays a setup's monitor 2 may be a different screen; with fewer monitors
+  than a setup was made for, the missing ones' apps share the primary.
 - Apps with a large minimum size can't shrink to small tiles and overflow them. Spread windows
   across monitors or workspaces, or use the `master` layout.

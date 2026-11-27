@@ -1176,10 +1176,9 @@ impl Wm {
         self.monitors.iter().position(|m| m.info.primary).unwrap_or(0)
     }
 
-    /// A setup's monitor (1-based from the left; none for the primary) as an index. One that
-    /// isn't connected is the primary.
-    fn setup_monitor(&self, m: Option<usize>) -> usize {
-        m.and_then(|n| n.checked_sub(1)).filter(|i| *i < self.monitors.len()).unwrap_or_else(|| self.primary_monitor())
+    /// Each connected monitor's tiling area, left to right.
+    fn tiling_areas(&self) -> Vec<Rect> {
+        (0..self.monitors.len()).map(|m| self.tiling_area(m)).collect()
     }
 
     /// Restores the setup `name`: open windows of its apps move into place, the others
@@ -1200,17 +1199,29 @@ impl Wm {
             .iter()
             .map(|(h, w)| setups::OpenWindow { hwnd: *h, exe: w.exe.as_str(), ws: w.ws, mon: w.mon, place: place(*h, w.ws) })
             .collect();
-        let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n), |m| self.setup_monitor(m));
+        let (connected, primary) = (self.monitors.len().max(1), self.primary_monitor());
+        let plan = setups::plan(&setup, &open_ref, |n| self.ws_index(n), connected, primary);
         log::info!(
             "restoring setup '{}': {} in place, starting {}",
             setup.name, plan.claims.len(), plan.launch.len()
         );
+        let placed = setups::placed(&setup, |n| self.ws_index(n), connected, primary);
+        let mut missing: Vec<usize> = placed.iter().filter(|p| p.folded && !p.entry.apps.is_empty()).filter_map(|p| p.entry.monitor).collect();
+        missing.sort_unstable();
+        missing.dedup();
+        if !missing.is_empty() {
+            log::info!(
+                "setup '{}' is for {} monitors and {connected} are connected: the apps of monitor {missing:?} go on the primary",
+                setup.name,
+                setups::monitor_count(&setup)
+            );
+        }
         self.finish_animations();
         let g = self.cfg.general.clone();
         let mut saved_splits = HashMap::new();
         let mut laid_out = Vec::new();
-        for w in &setup.workspaces {
-            let (i, mon) = (self.ws_index(w.number), self.setup_monitor(w.monitor));
+        for p in &placed {
+            let (w, i, mon) = (p.entry, p.ws, p.mon);
             let ws = &mut self.workspaces[i];
             // The layout is the workspace's, on every monitor: its first entry sets it.
             if !laid_out.contains(&i) {
@@ -1220,9 +1231,11 @@ impl Wm {
                 ws.split_ratio = g.split_ratio;
                 ws.fullscreen = None;
             }
-            let splits: Vec<f32> = w.splits.iter().map(|r| r.clamp(0.1, 0.9)).collect();
-            ws.splits.insert(mon, splits.clone());
-            saved_splits.insert((i, mon), splits);
+            if p.splits {
+                let splits: Vec<f32> = w.splits.iter().map(|r| r.clamp(0.1, 0.9)).collect();
+                ws.splits.insert(mon, splits.clone());
+                saved_splits.insert((i, mon), splits);
+            }
         }
         let mut filled = vec![None; plan.slots.len()];
         for &(i, h) in &plan.claims {
@@ -1309,7 +1322,7 @@ impl Wm {
     /// monitors).
     fn publish_setups(&self) {
         let d = setups::Defaults::from(&self.cfg.general);
-        let area = |m: Option<usize>| if self.monitors.is_empty() { Rect::new(0, 0, 1920, 1080) } else { self.tiling_area(self.setup_monitor(m)) };
+        let (connected, primary) = (self.tiling_areas(), self.primary_monitor());
         let entries = self
             .cfg
             .setups
@@ -1317,14 +1330,22 @@ impl Wm {
             .map(|s| crate::launcher::SetupEntry {
                 name: s.name.clone(),
                 key: s.key.clone().unwrap_or_default(),
-                detail: setups::summary(s),
-                workspaces: setups::numbers(&s.workspaces)
-                    .into_iter()
-                    .map(|n| {
-                        let entries: Vec<&config::SetupWorkspace> = s.workspaces.iter().filter(|w| w.number == n).collect();
-                        crate::launcher::SetupThumb { number: n, thumb: setups::thumb(&entries, area, &d) }
-                    })
-                    .collect(),
+                detail: {
+                    // Made for more monitors than are connected: say where the rest go.
+                    let count = setups::monitor_count(s);
+                    if count > 1 && count > connected.len() {
+                        format!("For {count} monitors, {} connected (the rest go on the primary)  \u{b7}  {}", connected.len(), setups::summary(s))
+                    } else {
+                        setups::summary(s)
+                    }
+                },
+                workspaces: {
+                    let areas = setups::monitor_areas(setups::monitor_count(s), &connected, primary);
+                    setups::numbers(&s.workspaces)
+                        .into_iter()
+                        .map(|n| crate::launcher::SetupThumb { number: n, thumb: setups::ws_thumb(s, n, &areas, primary, &d) })
+                        .collect()
+                },
             })
             .collect();
         crate::launcher::set_setups(entries);
