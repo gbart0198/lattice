@@ -214,20 +214,22 @@ already open into place, starts the ones that aren't, gives each workspace its l
 split sizes, and switches you to its first workspace. Apps it starts take their spot as their
 window opens (for up to a minute), so a slow app still lands in the right place.
 
-Make and edit them on the **Workspaces** tab of the settings window:
+Make and edit them on the **Workspaces** tab of the settings window. It lists your saved
+workspaces; **New saved workspace** starts an empty one, **Save what's open now** makes one
+from the windows you have open, and clicking one opens it:
 
-- **New saved workspace** starts empty; **Save what's open now** makes one from the windows
-  you have open, workspace by workspace.
 - Give it a name and, if you like, a shortcut (`super+alt+1`) that restores it from anywhere.
-- The layout editor shows each workspace as lattice will tile it on your primary monitor, one
+- A card for each workspace it uses shows that workspace's layout and how many apps it holds.
+  Click a card to edit that workspace; **Add workspace** picks another number.
+- The layout editor shows the workspace as lattice will tile it on your primary monitor, one
   box per app. Drag a box onto another to swap them. Drag the gap between two boxes to resize
-  them; the split shows as a percentage while you drag. Pick dwindle, master or monocle per
-  workspace.
-- **Add an app** lists the programs you have open (or "Other program…" to type one in). It
+  them; the split shows as a percentage while you drag. Pick dwindle, master or monocle.
+- **+ Add app** lists the programs you have open (or "Other program…" to type one in). It
   drops in exactly where a new window would: after the selected box with `new_window =
-  "after_focused"`, else at the end. Click a box to change its program, the command line that
-  starts it, or its workspace, or to remove it.
-- **Restore** saves and restores it right away.
+  "after_focused"`, else at the end.
+- Click a box and the strip under the editor edits it: its program, the command line that
+  starts it, which workspace it's on, or remove it.
+- **Restore** saves and restores it right away; **‹ Saved workspaces** goes back to the list.
 
 Restore one with its shortcut, by typing `workspaces` in the launcher (a picker with a
 thumbnail of each layout; type to filter, Enter to restore), with the `workspace-picker`

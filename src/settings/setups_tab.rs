@@ -1,5 +1,10 @@
 //! The Workspaces tab: saved workspaces (`[[setup]]`) and their layout editor.
 //!
+//! The tab lists them; clicking one opens it on a page of its own (back with "‹ Saved
+//! workspaces"). That page has its name and shortcut, a card for each workspace it uses, the
+//! layout canvas, and under the canvas a strip for the selected window. The strip is always
+//! there, so clicking a window changes what's in it rather than growing the page.
+//!
 //! The editor draws a saved workspace the way lattice will tile it, from the same `layout`
 //! code: drag a window onto another to swap them, drag the seam between windows to resize, and
 //! an app you add drops in where a new window would (after the selected one, or at the end,
@@ -13,7 +18,7 @@ use rune::{Color, Cursor, Drag, El, Phase, TextEdit, TextStyle, Tx, col, el, row
 use rune_kit::{Button, ButtonVariant, Combobox, ComboboxOption, ComboboxState, SegmentedControl, TextInput};
 use toml_edit::DocumentMut;
 
-use super::{LAYOUTS, NEW_WINDOW, P, S, kit, section, setting_row};
+use super::{LAYOUTS, NEW_WINDOW, P, S, kit, section};
 use crate::config::{self, NewWindow, Setup, SetupApp, SetupWorkspace};
 use crate::layout::{self, LayoutKind, Rect};
 use crate::setups::{self, Defaults};
@@ -76,6 +81,8 @@ pub struct Editor {
     pub seam: Option<usize>,
     pub seam_undo: (Vec<f32>, Option<f32>),
     pub picker: ComboboxState,
+    /// The "Add workspace" menu.
+    pub ws_picker: ComboboxState,
     /// The primary monitor's tiling area, in pixels: the canvas has its shape.
     pub screen: (i32, i32),
     pub next_id: u64,
@@ -93,15 +100,13 @@ impl Editor {
             seam: None,
             seam_undo: (Vec::new(), None),
             picker: ComboboxState::default(),
+            ws_picker: ComboboxState::default(),
             screen: primary_area(cfg),
             next_id: 1,
             capturing: false,
         };
         let list: Vec<SetupEdit> = cfg.setups.iter().map(|s| ed.from_config(s)).collect();
         ed.list = list;
-        if !ed.list.is_empty() {
-            ed.select(0);
-        }
         ed
     }
 
@@ -129,13 +134,41 @@ impl Editor {
         SetupEdit { id: self.id(), name: TextEdit::new(s.name.clone()), key: TextEdit::new(s.key.clone().unwrap_or_default()), workspaces }
     }
 
-    /// Edits saved workspace `i`, showing its first workspace with apps.
+    /// Opens saved workspace `i`, showing its first workspace with apps.
     fn select(&mut self, i: usize) {
         self.sel = Some(i);
         self.ws = self.list[i].workspaces.iter().find(|w| !w.apps.is_empty()).map_or(1, |w| w.number);
         self.tile = None;
         self.drag = None;
         self.seam = None;
+    }
+
+    /// Back to the list.
+    fn close(&mut self) {
+        self.sel = None;
+        self.tile = None;
+        self.drag = None;
+        self.seam = None;
+        self.picker.close();
+        self.ws_picker.close();
+    }
+
+    /// Shows workspace `n`, adding it (empty) if the saved workspace doesn't use it yet.
+    fn show_ws(&mut self, n: usize) {
+        self.ws = n;
+        self.tile = None;
+        self.shown_or_add();
+    }
+
+    /// Workspace numbers with a card: those with apps, and the one shown.
+    fn cards(&self) -> Vec<usize> {
+        let Some(setup) = self.setup() else { return Vec::new() };
+        let mut out: Vec<usize> = setup.workspaces.iter().filter(|w| !w.apps.is_empty()).map(|w| w.number).collect();
+        if !out.contains(&self.ws) {
+            out.push(self.ws);
+        }
+        out.sort_unstable();
+        out
     }
 
     fn setup(&self) -> Option<&SetupEdit> {
@@ -540,7 +573,10 @@ fn small(t: &str, c: Color) -> El {
 }
 
 pub fn tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
-    let mut out = vec![
+    if let Some(i) = s.ed.sel.filter(|i| *i < s.ed.list.len()) {
+        return editor_page(s, p, i, overlays);
+    }
+    vec![
         col().key("setups-help").gap(4.0).mx(space::S3).w_full().child(
             small(
                 "Save a set of apps with their workspaces and layout. Restoring one starts what isn't running and moves everything into place: with its shortcut, by typing \u{201c}workspaces\u{201d} in the launcher, or `lattice msg restore-workspace NAME`.",
@@ -550,27 +586,16 @@ pub fn tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
             .wrap(),
         ),
         list_section(s, p),
-    ];
-    if let Some(i) = s.ed.sel.filter(|i| *i < s.ed.list.len()) {
-        out.push(details_section(s, p, i));
-        out.push(layout_section(s, p, overlays));
-        if let Some(t) = s.ed.tile.filter(|t| s.ed.shown().is_some_and(|w| *t < w.apps.len())) {
-            out.push(app_section(s, p, t));
-        }
-    }
-    out
+    ]
 }
 
 fn list_section(s: &S, p: &P) -> El {
     let k = kit(p);
     let mut rows = Vec::new();
     for (i, setup) in s.ed.list.iter().enumerate() {
-        let on = s.ed.sel == Some(i);
         let preview = SetupPreview::of(setup);
         let name = setup.name.text.trim();
-        let title = text(if name.is_empty() { "Untitled".to_string() } else { name.to_string() })
-            .font(TextStyle::new(13.5, if on { 650.0 } else { 550.0 }))
-            .color(p.t.text);
+        let title = text(if name.is_empty() { "Untitled".to_string() } else { name.to_string() }).font(TextStyle::new(13.5, 600.0)).color(p.t.text);
         let detail = small(&setups::summary(&preview.setup), p.t.text_secondary).truncate();
         let key = setup.key.text.trim();
         let mut right = row().gap(space::S2).center_y();
@@ -578,24 +603,27 @@ fn list_section(s: &S, p: &P) -> El {
             right = right.child(key_caps(key, p));
         }
         let restore_name = name.to_string();
-        right = right.child(
-            Button::new("Restore")
-                .variant(ButtonVariant::Outline)
-                .disabled(name.is_empty())
-                .on_press(move |s: &mut S| restore(s, restore_name.clone()))
-                .build(&k),
-        );
+        right = right
+            .child(
+                Button::new("Restore")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(name.is_empty())
+                    .on_press(move |s: &mut S| restore(s, restore_name.clone()))
+                    .build(&k),
+            )
+            .child(text("\u{203a}").font(TextStyle::new(20.0, 400.0)).color(p.t.text_secondary).ml(2.0));
         rows.push(
             row()
                 .key(format!("setup-{}", setup.id))
                 .hit()
                 .cursor(Cursor::Pointer)
+                .label(format!("Edit {name}"))
                 .px(space::S3)
                 .py(space::S2)
                 .gap(space::S3)
                 .center_y()
                 .radius(8.0)
-                .fill(if on { p.accent.alpha(0.12) } else { Color::TRANSPARENT })
+                .hover(p.t.text.alpha(0.05))
                 .on_press(move |s: &mut S| s.ed.select(i))
                 .child(mini_screens(&preview, s, p))
                 .child(col().gap(2.0).grow(1.0).shrink().child(title).child(detail))
@@ -629,6 +657,32 @@ fn list_section(s: &S, p: &P) -> El {
     section(p, "setups-list", &format!("Saved workspaces ({})", s.ed.list.len()), rows)
 }
 
+/// One saved workspace, on a page of its own.
+fn editor_page(s: &S, p: &P, i: usize, overlays: &mut Vec<El>) -> Vec<El> {
+    let k = kit(p);
+    let name = s.ed.list[i].name.text.trim().to_string();
+    let back = Button::new("\u{2039}  Saved workspaces").variant(ButtonVariant::Ghost).on_press(|s: &mut S| s.ed.close()).build(&k);
+    let restore_name = name.clone();
+    let restore_btn = Button::new("Restore")
+        .variant(ButtonVariant::Outline)
+        .disabled(name.is_empty())
+        .on_press(move |s: &mut S| restore(s, restore_name.clone()))
+        .build(&k);
+    let delete = Button::new("Delete")
+        .variant(ButtonVariant::Danger)
+        .on_press(move |s: &mut S| {
+            if i < s.ed.list.len() {
+                let gone = s.ed.list.remove(i);
+                s.ed.close();
+                s.status = format!("Deleted \u{201c}{}\u{201d}; Save to keep the change. Its apps stay open.", gone.name.text.trim());
+                s.status_ok = true;
+            }
+        })
+        .build(&k);
+    let nav = row().key("setup-nav").center_y().gap(space::S2).child(back).child(el().grow(1.0)).child(restore_btn).child(delete);
+    vec![nav, details_section(s, p, i), layout_section(s, p, overlays)]
+}
+
 /// A saved workspace in the form `setups` previews take.
 struct SetupPreview {
     setup: Setup,
@@ -650,18 +704,12 @@ impl SetupPreview {
 fn mini_screens(pv: &SetupPreview, s: &S, p: &P) -> El {
     let d = defaults(s);
     let c = Canvas::new(s.ed.screen);
-    let (mw, mh) = (40.0, (40.0 * c.h / c.w).round());
     let mut r = row().gap(4.0).center_y().w(3.0 * 40.0 + 8.0);
     for w in pv.setup.workspaces.iter().take(3) {
-        let mut screen = el().size(mw, mh).radius(4.0).fill(p.t.bg).border(p.hair, p.t.card_border);
-        for (i, t) in tile_rects(w, &d, &c).into_iter().enumerate() {
-            let f = mw / c.w;
-            screen = screen.child(el().absolute(t.0 * f, t.1 * f).size((t.2 * f).max(2.0), (t.3 * f).max(2.0)).radius(1.5).fill(color(i).alpha(0.7)));
-        }
-        r = r.child(screen);
+        r = r.child(mini_screen(w, &d, &c, 40.0, p));
     }
     if pv.setup.workspaces.is_empty() {
-        r = r.child(el().size(mw, mh).radius(4.0).border(p.hair, p.t.card_border));
+        r = r.child(el().size(40.0, (40.0 * c.h / c.w).round()).radius(4.0).border(p.hair, p.t.card_border));
     }
     r
 }
@@ -696,7 +744,7 @@ fn details_section(s: &S, p: &P, i: usize) -> El {
     let name = TextInput::new(&setup.name)
         .label("Name")
         .placeholder("Dev")
-        .width(Some(240.0))
+        .width(None)
         .invalid(setup.name.text.trim().is_empty())
         .on_edit(move |s: &mut S| &mut s.ed.list[i].name)
         .build(&k);
@@ -705,58 +753,35 @@ fn details_section(s: &S, p: &P, i: usize) -> El {
     let key = TextInput::new(&setup.key)
         .label("Shortcut")
         .placeholder("super+alt+1")
-        .width(Some(240.0))
+        .width(None)
         .invalid(key_err.is_some())
         .on_edit(move |s: &mut S| &mut s.ed.list[i].key)
         .build(&k);
-    let hint = key_err.unwrap_or_else(|| "Restores it from anywhere; empty for none".into());
-    let delete = Button::new("Delete").variant(ButtonVariant::Danger).on_press(move |s: &mut S| {
-        if i < s.ed.list.len() {
-            s.ed.list.remove(i);
-            s.ed.sel = None;
-            if !s.ed.list.is_empty() {
-                s.ed.select(i.min(s.ed.list.len() - 1));
-            }
-        }
-    });
-    section(p, "setup-details", "Saved workspace", vec![
-        setting_row(p, "setup-name", "Name", Some("Type it in the launcher's picker to find it"), name),
-        setting_row(p, "setup-key", "Shortcut", Some(&hint), key),
-        setting_row(p, "setup-delete", "Delete this saved workspace", Some("Its apps stay open; only the saved layout goes"), delete.build(&k)),
-    ])
+    let key_caption = match key_err {
+        Some(e) => e,
+        None => "Shortcut (optional), e.g. super+alt+1".into(),
+    };
+    // One row, so the layout editor starts high on the page.
+    col()
+        .key("setup-details")
+        .padding(space::S3)
+        .fill(p.t.card)
+        .radius(rune::tok::radius::LG)
+        .border(p.hair, p.t.card_border)
+        .child(row().gap(space::S3).child(field("Name", name, p).grow(1.0)).child(field(&key_caption, key, p).grow(1.0)))
+}
+
+fn empty_ws(number: usize) -> SetupWorkspace {
+    SetupWorkspace { number, layout: None, splits: Vec::new(), master_ratio: None, apps: Vec::new() }
 }
 
 fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let k = kit(p);
     let d = defaults(s);
-    let workspaces = (s.workspaces.round() as usize).max(1);
-    let setup = s.ed.setup().expect("a saved workspace is selected");
-    // Workspace picker: "2 · 3" for a workspace holding three apps.
-    let labels: Vec<String> = (1..=workspaces)
-        .map(|n| match setup.workspaces.iter().find(|w| w.number == n).map_or(0, |w| w.apps.len()) {
-            0 => n.to_string(),
-            c => format!("{n} \u{b7} {c}"),
-        })
-        .collect();
-    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let ws_pick = SegmentedControl::new(&label_refs, Some(s.ed.ws.clamp(1, workspaces) - 1))
-        .label("Workspace")
-        .fit()
-        .on_pick(|s: &mut S, i, _| {
-            s.ed.ws = i + 1;
-            s.ed.tile = None;
-        })
-        .build(&k);
-    let shown = s.ed.shown().map(to_config).unwrap_or(SetupWorkspace {
-        number: s.ed.ws,
-        layout: None,
-        splits: Vec::new(),
-        master_ratio: None,
-        apps: Vec::new(),
-    });
+    let shown = s.ed.shown().map(to_config).unwrap_or_else(|| empty_ws(s.ed.ws));
     let kind = setups::workspace_layout(&shown, d.layout);
     let layout_pick = SegmentedControl::new(&LAYOUTS, Some(LAYOUTS.iter().position(|l| *l == kind.name()).unwrap_or(0)))
-        .label("Layout")
+        .label("Tiling")
         .fit()
         .on_pick(|s: &mut S, i, _| {
             if let Some(w) = s.ed.shown_or_add() {
@@ -764,27 +789,200 @@ fn layout_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
             }
         })
         .build(&k);
-
-    let canvas = canvas(s, p, &shown, &d);
+    let toolbar = row()
+        .key("setup-toolbar")
+        .px(space::S3)
+        .pt(space::S2)
+        .gap(space::S3)
+        .center_y()
+        .child(small("Tiling", p.t.text_secondary))
+        .child(layout_pick)
+        .child(el().grow(1.0))
+        .child(add_picker(s, p, overlays));
     let help = if shown.apps.is_empty() {
-        "Add apps below. Each one tiles in where a new window would."
+        "Add an app to place it here.".to_string()
     } else {
+        let order = match d.new_window {
+            NewWindow::AfterFocused => "New apps go after the selected window",
+            NewWindow::End => "New apps go at the end",
+        };
         match kind {
-            LayoutKind::Monocle => "Monocle: every window fills the screen. Drag one onto another to reorder.",
-            _ => "Drag a window onto another to swap them. Drag the gap between windows to resize.",
+            LayoutKind::Monocle => format!("Monocle: every window fills the screen. Drag one onto another to reorder. {order}."),
+            _ => format!("Drag a window onto another to swap them, or the gap between two to resize. {order}."),
         }
     };
-    let add = add_picker(s, p, overlays);
-    let hint = match d.new_window {
-        NewWindow::AfterFocused => "Goes after the selected window, as new windows do",
-        NewWindow::End => "Goes at the end, as new windows do",
+    let canvas = col()
+        .key("canvas-wrap")
+        .px(space::S3)
+        .py(space::S2)
+        .gap(space::S2)
+        .items_center()
+        .child(canvas(s, p, &shown, &d))
+        .child(small(&help, p.t.text_secondary));
+    section(p, "setup-layout", "Apps and layout", vec![ws_cards(s, p, overlays), toolbar, canvas, inspector(s, p)])
+}
+
+/// A small screen with a workspace's tiles, `mw` wide.
+fn mini_screen(w: &SetupWorkspace, d: &Defaults, c: &Canvas, mw: f32, p: &P) -> El {
+    let mh = (mw * c.h / c.w).round();
+    let f = mw / c.w;
+    let mut screen = el().size(mw, mh).radius(4.0).fill(p.t.bg).border(p.hair, p.t.card_border);
+    for (i, t) in tile_rects(w, d, c).into_iter().enumerate() {
+        // A pixel of gap around each tile, so neighbours read apart.
+        screen = screen.child(
+            el().absolute(t.0 * f + 1.0, t.1 * f + 1.0).size((t.2 * f - 2.0).max(2.0), (t.3 * f - 2.0).max(2.0)).radius(1.5).fill(color(i).alpha(0.75)),
+        );
+    }
+    screen
+}
+
+/// A card for each workspace this saved workspace uses (click to show it), and one to add
+/// another.
+fn ws_cards(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
+    let k = kit(p);
+    let d = defaults(s);
+    let c = Canvas::new(s.ed.screen);
+    let setup = s.ed.setup().expect("a saved workspace is open");
+    let max = (s.workspaces.round() as usize).max(1);
+    let cards = s.ed.cards();
+    let mut strip = row().key("ws-cards").px(space::S3).pt(space::S3).pb(space::S1).gap(space::S2).flex_wrap();
+    for &n in &cards {
+        let w = setup.workspaces.iter().find(|w| w.number == n).map(to_config).unwrap_or_else(|| empty_ws(n));
+        let on = n == s.ed.ws;
+        let count = match w.apps.len() {
+            0 => "Empty".to_string(),
+            1 => "1 app".to_string(),
+            c => format!("{c} apps"),
+        };
+        strip = strip.child(
+            row()
+                .key(format!("ws-card-{n}"))
+                .hit()
+                .cursor(Cursor::Pointer)
+                .label(format!("Workspace {n}, {count}"))
+                .on_press(move |s: &mut S| {
+                    s.ed.ws = n;
+                    s.ed.tile = None;
+                })
+                .h(48.0)
+                .px(10.0)
+                .gap(10.0)
+                .center_y()
+                .radius(9.0)
+                .fill(if on { p.accent.alpha(0.14) } else { p.t.bg })
+                .hover(if on { p.accent.alpha(0.18) } else { p.t.text.alpha(0.05) })
+                .border(if on { 1.5 } else { p.hair }, if on { p.accent } else { p.t.card_border })
+                .child(mini_screen(&w, &d, &c, 44.0, p))
+                .child(
+                    col()
+                        .gap(1.0)
+                        .child(text(format!("Workspace {n}")).font(TextStyle::new(12.5, 650.0)).color(if on { p.t.text } else { p.t.text.alpha(0.85) }))
+                        .child(small(&count, p.t.text_secondary)),
+                ),
+        );
+    }
+    let free: Vec<usize> = (1..=max).filter(|n| !cards.contains(n)).collect();
+    if !free.is_empty() {
+        let options: Vec<ComboboxOption> = free.iter().map(|n| ComboboxOption::new(n.to_string(), format!("Workspace {n}"))).collect();
+        let trigger = row()
+            .h(48.0)
+            .px(14.0)
+            .gap(6.0)
+            .center_y()
+            .radius(9.0)
+            .border(p.hair, p.t.card_border)
+            .hover(p.t.text.alpha(0.05))
+            .cursor(Cursor::Pointer)
+            .child(text("+").font(TextStyle::new(16.0, 500.0)).color(p.t.text_secondary))
+            .child(text("Add workspace").font(TextStyle::new(12.5, 600.0)).color(p.t.text_secondary));
+        strip = strip.child(
+            Combobox::new("setup-add-ws", &s.ed.ws_picker, &options, |s: &mut S| &mut s.ed.ws_picker)
+                .label("Add workspace")
+                .search_placeholder("Workspace number…")
+                .width(200.0)
+                .trigger(trigger)
+                .on_choose(|s: &mut S, chosen: &str, _tx: &mut Tx| {
+                    s.ed.ws_picker.close();
+                    if let Ok(n) = chosen.parse() {
+                        s.ed.show_ws(n);
+                    }
+                })
+                .build(&k, overlays),
+        );
+    }
+    strip
+}
+
+/// A caption over a control.
+fn field(label: &str, control: El, p: &P) -> El {
+    col().gap(4.0).child(small(label, p.t.text_secondary)).child(control)
+}
+
+/// The selected window's program, start command and workspace, under the canvas. Always the
+/// same height, so selecting a window doesn't move anything.
+fn inspector(s: &S, p: &P) -> El {
+    let strip = row()
+        .key("inspector")
+        .h(66.0)
+        .mx(space::S1)
+        .mb(space::S1)
+        .px(space::S3)
+        .gap(space::S3)
+        .center_y()
+        .radius(8.0)
+        .fill(p.t.bg);
+    let selected = s.ed.tile.filter(|t| s.ed.shown().is_some_and(|w| *t < w.apps.len()));
+    let Some(t) = selected else {
+        let msg = if s.ed.shown().is_some_and(|w| !w.apps.is_empty()) {
+            "Click a window to change its program, move it to another workspace, or remove it."
+        } else {
+            "Nothing here yet. Add an app above, or pick another workspace."
+        };
+        return strip.child(small(msg, p.t.text_secondary).grow(1.0).shrink().wrap());
     };
-    section(p, "setup-layout", "Layout", vec![
-        setting_row(p, "setup-ws", "Workspace", None, ws_pick),
-        setting_row(p, "setup-kind", "Tiling", None, layout_pick),
-        col().key("canvas-wrap").px(space::S3).py(space::S3).gap(space::S2).items_center().child(canvas).child(small(help, p.t.text_secondary)),
-        setting_row(p, "setup-add", "Add an app", Some(hint), add),
-    ])
+    let k = kit(p);
+    let ws = s.ed.ws;
+    let workspaces = (s.workspaces.round() as usize).max(1);
+    let si = s.ed.sel.expect("open");
+    let wi = s.ed.list[si].workspaces.iter().position(|w| w.number == ws).expect("shown workspace");
+    let app = &s.ed.list[si].workspaces[wi].apps[t];
+    let exe_text = app.exe.text.trim();
+    let initial = setups::app_label(exe_text).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
+    let badge = el()
+        .size(32.0, 32.0)
+        .radius(9.0)
+        .fill(color(t))
+        .center()
+        .child(text(initial).font(TextStyle::new(15.0, 750.0)).color(crate::bar::color("#11111b", Color::BLACK)));
+    let exe = TextInput::new(&app.exe)
+        .label("Program")
+        .placeholder("Code.exe")
+        .width(Some(170.0))
+        .invalid(exe_text.is_empty() || super::bad_exe(&app.exe.text))
+        .on_edit(move |s: &mut S| &mut s.ed.list[si].workspaces[wi].apps[t].exe)
+        .build(&k);
+    let run = TextInput::new(&app.run)
+        .label("Start with")
+        .placeholder(if exe_text.is_empty() { "code" } else { exe_text })
+        .width(None)
+        .on_edit(move |s: &mut S| &mut s.ed.list[si].workspaces[wi].apps[t].run)
+        .build(&k);
+    let step = |label: &str, to: usize, disabled: bool| {
+        Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.move_to(t, to)).build(&k)
+    };
+    let mover = row()
+        .gap(0.0)
+        .center_y()
+        .child(step("\u{2039}", ws.saturating_sub(1).max(1), ws <= 1))
+        .child(text(ws.to_string()).w(18.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
+        .child(step("\u{203a}", (ws + 1).min(workspaces), ws >= workspaces));
+    let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| s.ed.remove(t)).build(&k);
+    strip
+        .child(badge)
+        .child(field("Program (matched by file name)", exe, p))
+        .child(field("Start with, if it isn't running", run, p).grow(1.0).shrink())
+        .child(field("Workspace", mover, p))
+        .child(remove)
 }
 
 fn add_picker(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
@@ -792,20 +990,16 @@ fn add_picker(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let mut options = Vec::new();
     if s.ed.picker.is_open() {
         for (exe, path) in running_apps() {
-            let mut o = ComboboxOption::new(path.clone(), setups::app_label(&exe));
-            o.detail = exe;
-            options.push(o);
+            options.push(ComboboxOption::new(path.clone(), setups::app_label(&exe)));
         }
     }
-    let mut other = ComboboxOption::new(OTHER, "Other program…");
-    other.detail = "type it in".into();
-    options.push(other);
+    options.push(ComboboxOption::new(OTHER, "Other program…"));
     Combobox::new("setup-add-app", &s.ed.picker, &options, |s: &mut S| &mut s.ed.picker)
         .label("Add an app")
-        .placeholder("Choose an app…")
+        .placeholder("+ Add app")
         .search_placeholder("Search open apps…")
-        .width(280.0)
-        .placement(rune_kit::Placement::TopEnd)
+        .width(190.0)
+        .max_height(320.0)
         .on_choose(|s: &mut S, chosen: &str, _tx: &mut Tx| {
             s.ed.picker.close();
             let nw = defaults(s).new_window;
@@ -864,7 +1058,7 @@ fn canvas(s: &S, p: &P, w: &SetupWorkspace, d: &Defaults) -> El {
                 .center()
                 .gap(6.0)
                 .child(text(format!("Workspace {} is empty", w.number)).font(TextStyle::new(15.0, 600.0)).color(p.t.text_secondary))
-                .child(small("Add an app below to place it here", p.t.text_secondary.alpha(0.7))),
+                .child(small("Use \u{201c}+ Add app\u{201d} to place one here", p.t.text_secondary.alpha(0.7))),
         );
     }
     let names: Vec<String> = w.apps.iter().map(|a| a.exe.clone()).collect();
@@ -1063,48 +1257,6 @@ fn seam_drag(s: &mut S, k: usize, handle: (f32, f32), d: &mut Drag) {
     }
 }
 
-fn app_section(s: &S, p: &P, t: usize) -> El {
-    let k = kit(p);
-    let ws = s.ed.ws;
-    let workspaces = (s.workspaces.round() as usize).max(1);
-    let (si, wi) = {
-        let si = s.ed.sel.expect("selected");
-        let wi = s.ed.list[si].workspaces.iter().position(|w| w.number == ws).expect("shown workspace");
-        (si, wi)
-    };
-    let app = &s.ed.list[si].workspaces[wi].apps[t];
-    let exe = TextInput::new(&app.exe)
-        .label("Program")
-        .placeholder("Code.exe")
-        .width(Some(240.0))
-        .invalid(app.exe.text.trim().is_empty() || super::bad_exe(&app.exe.text))
-        .on_edit(move |s: &mut S| &mut s.ed.list[si].workspaces[wi].apps[t].exe)
-        .build(&k);
-    let run = TextInput::new(&app.run)
-        .label("Start with")
-        .placeholder(if app.exe.text.trim().is_empty() { "code" } else { app.exe.text.trim() })
-        .width(Some(320.0))
-        .on_edit(move |s: &mut S| &mut s.ed.list[si].workspaces[wi].apps[t].run)
-        .build(&k);
-    let step = |label: &str, to: usize, disabled: bool| {
-        Button::new(label).variant(ButtonVariant::Ghost).disabled(disabled).on_press(move |s: &mut S| s.ed.move_to(t, to)).build(&k)
-    };
-    let mover = row()
-        .gap(2.0)
-        .center_y()
-        .child(step("-", ws.saturating_sub(1).max(1), ws <= 1))
-        .child(text(ws.to_string()).w(20.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
-        .child(step("+", (ws + 1).min(workspaces), ws >= workspaces));
-    let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| s.ed.remove(t)).build(&k);
-    let label = setups::app_label(&app.exe.text);
-    section(p, "setup-app", &format!("Selected: {}", if app.exe.text.trim().is_empty() { "new app" } else { &label }), vec![
-        setting_row(p, "app-exe", "Program", Some("Its file name: windows are matched by it"), exe),
-        setting_row(p, "app-run", "Start with", Some("Command line, when it isn't running"), run),
-        setting_row(p, "app-ws", "Workspace", Some("Moves it to the end of that workspace"), mover),
-        setting_row(p, "app-remove", "Remove from this saved workspace", None, remove),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1183,7 +1335,9 @@ apps = [{ exe = "msedge.exe", run = "\"C:\\Program Files\\Edge\\msedge.exe\"" }]
             "[[setup]]\nname = \"Dev\"\n[[setup.workspace]]\nnumber = 1\napps = [{ exe = \"a.exe\" }, { exe = \"b.exe\" }]",
         )
         .unwrap());
-        assert_eq!(ed.sel, Some(0));
+        // The list shows first; opening one shows its first workspace with apps.
+        assert_eq!(ed.sel, None);
+        ed.select(0);
         assert_eq!(ed.ws, 1);
         ed.tile = Some(0);
         ed.add("c.exe", "c", NewWindow::AfterFocused);
@@ -1244,8 +1398,25 @@ pub fn sample(s: &mut S) {
     .expect("sample setups parse");
     let mut ed = Editor::load(&cfg);
     ed.screen = (1920, 1050);
+    ed.select(0);
     ed.tile = Some(0);
     s.ed = ed;
+}
+
+/// The list, before one is opened.
+pub fn sample_list(s: &mut S) {
+    s.ed.close();
+}
+
+/// Nothing selected on the canvas.
+pub fn sample_none(s: &mut S) {
+    s.ed.tile = None;
+}
+
+/// The "Add workspace" menu open.
+pub fn sample_add_ws(s: &mut S) {
+    s.ed.tile = None;
+    s.ed.ws_picker.step(rune_kit::ComboboxEvent::Toggle { current: None });
 }
 
 /// Terminal being dragged onto Code.

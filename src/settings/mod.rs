@@ -1081,6 +1081,21 @@ pub fn run() {
                 setups_tab::sample(s);
                 setups_tab::sample_add(s);
             }),
+            ("workspaces-list", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_list(s);
+            }),
+            ("workspaces-none", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_none(s);
+            }),
+            ("workspaces-add-ws", |s: &mut S| {
+                s.tab = 2;
+                setups_tab::sample(s);
+                setups_tab::sample_add_ws(s);
+            }),
             ("workspaces-empty", |s: &mut S| {
                 s.tab = 2;
                 s.ed.list.clear();
