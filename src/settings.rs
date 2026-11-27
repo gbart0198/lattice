@@ -441,8 +441,8 @@ fn save(s: &mut S) -> Result<String, String> {
         s.saved_ui = ui;
     }
     Ok(match (reloaded, s.restart_needed) {
-        (false, _) => "Saved. lattice isn't running, so it'll use these next time it starts.".into(),
-        (true, true) => "Saved and reloaded. Bar and border changes apply after a restart.".into(),
+        (false, _) => "Saved; applies when lattice starts.".into(),
+        (true, true) => "Saved. Bar and border changes need a restart.".into(),
         (true, false) => "Saved and applied.".into(),
     })
 }
@@ -605,7 +605,7 @@ fn count(v: f32) -> String {
 fn general_tab(s: &S, p: &P) -> Vec<El> {
     vec![
         section(p, "layout-sec", "Tiling", vec![
-            choice(p, "layout", "Default layout", Some("Win+Space cycles it per workspace"), &LAYOUTS, s.layout, |s| &mut s.layout),
+            choice(p, "layout", "Default layout", Some("Win+\\ cycles it per workspace"), &LAYOUTS, s.layout, |s| &mut s.layout),
             choice(p, "new-window", "New windows go", None, &["after focused", "at the end"], s.new_window, |s| &mut s.new_window),
             slider(p, "split", "Dwindle split", s.split_ratio, 0.1, 0.9, 0.05, pct, |s| &mut s.split_ratio),
             slider(p, "master", "Master width", s.master_ratio, 0.1, 0.9, 0.05, pct, |s| &mut s.master_ratio),
@@ -616,19 +616,19 @@ fn general_tab(s: &S, p: &P) -> Vec<El> {
         ]),
         section(p, "ws-sec", "Workspaces", vec![
             slider(p, "workspaces", "Number of workspaces", s.workspaces, 1.0, 10.0, 1.0, count, |s| &mut s.workspaces),
-            toggle(p, "follow", "Follow app activation", Some("Switch to a workspace when its app asks for attention"), s.follow_activation, |s| &mut s.follow_activation),
+            toggle(p, "follow", "Follow app activation", Some("Jump to apps that ask for attention"), s.follow_activation, |s| &mut s.follow_activation),
         ]),
         section(p, "anim-sec", "Animations", vec![
-            toggle(p, "anim-on", "Animate windows", Some("Moves, swaps, fullscreen, minimize and workspace switches. Applies on save"), s.anim_enabled, |s| &mut s.anim_enabled),
-            choice(p, "anim-style", "Style", Some(if s.anim_style == 0 { "Smooth, with a slight overshoot" } else { "Quick and plain" }), &ANIM_STYLES, s.anim_style, |s| &mut s.anim_style),
+            toggle(p, "anim-on", "Animate windows", Some("Moves, swaps and workspace switches"), s.anim_enabled, |s| &mut s.anim_enabled),
+            choice(p, "anim-style", "Style", Some(if s.anim_style == 0 { "Smooth, slight overshoot" } else { "Quick and plain" }), &ANIM_STYLES, s.anim_style, |s| &mut s.anim_style),
         ]),
         section(p, "behavior-sec", "Behaviour", vec![
-            toggle(p, "float-unres", "Float fixed-size windows", Some("Dialogs and pickers that can't be resized"), s.float_unresizable, |s| &mut s.float_unresizable),
-            toggle(p, "mouse-follow", "Mouse follows focus", Some("Move the cursor to windows focused by keyboard"), s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
-            setting_row(p, "rules", &format!("Other window rules ({})", s.other_rules), Some("Float or ignore apps: edit them in the config file"), open_config_button(p)),
+            toggle(p, "float-unres", "Float fixed-size windows", Some("Dialogs and other non-resizable windows"), s.float_unresizable, |s| &mut s.float_unresizable),
+            toggle(p, "mouse-follow", "Mouse follows focus", Some("Cursor moves with keyboard focus"), s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
+            setting_row(p, "rules", &format!("Other window rules ({})", s.other_rules), Some("Float or ignore apps in config.toml"), open_config_button(p)),
         ]),
         section(p, "update-sec", "Updates", vec![
-            toggle(p, "check-updates", "Check for updates", Some("Once a day, from GitHub releases. Nothing installs until you say so"), s.check_updates, |s| &mut s.check_updates),
+            toggle(p, "check-updates", "Check for updates", Some("Daily; never installs on its own"), s.check_updates, |s| &mut s.check_updates),
             update_row(s, p),
         ]),
     ]
@@ -645,7 +645,7 @@ fn update_row(s: &S, p: &P) -> El {
         update::Status::UpToDate => ("Up to date".into(), check()),
         update::Status::CheckFailed(e) => (format!("Check failed: {e}"), check()),
         update::Status::Available(r) if !installed => (
-            format!("{} is out. This copy isn't the installed one, so get it from GitHub releases", r.version_str()),
+            format!("{} is out; get it from GitHub releases", r.version_str()),
             check(),
         ),
         update::Status::Available(r) | update::Status::InstallFailed(r, _) => {
@@ -848,7 +848,7 @@ fn apps_tab(s: &S, p: &P) -> Vec<El> {
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
     vec![
         col().key("apps-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Open an app's windows on a workspace. Match by program file name (lattice --list shows them) and, optionally, text in the window title. Applies when a window opens and when lattice starts; saving a new or changed entry also moves that app's open windows.".to_string())
+            text("Send an app's windows to a workspace, matched by program file name (see lattice --list) and optional title text. Saving also moves its open windows.".to_string())
                 .w_full()
                 .wrap()
                 .font(TextStyle::new(11.5, 400.0))
@@ -891,7 +891,7 @@ fn font_row(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
             s.font_picker.close();
         })
         .build(&k, overlays);
-    setting_row(p, "font-family", "Font", Some("Any font installed on this PC"), picker)
+    setting_row(p, "font-family", "Font", Some("Any installed font"), picker)
 }
 
 /// A line of bar-like text drawn in the chosen font and size.
@@ -974,7 +974,7 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
                 .on_press(|s: &mut S| match restart_lattice() {
                     Ok(()) => {
                         s.restart_needed = false;
-                        s.status = "lattice restarted with the new settings.".into();
+                        s.status = "Restarted with the new settings.".into();
                         s.status_ok = true;
                     }
                     Err(e) => {
