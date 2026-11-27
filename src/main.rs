@@ -65,12 +65,15 @@ USAGE: lattice [--list | --bar-preview | --settings | --tour | --animation-previ
 
 Scripting a running lattice:
   msg COMMAND     run a command as a keybind would (`lattice msg workspace 3`,
-                  `lattice msg restore-setup Dev` for a setup)
+                  `lattice msg restore-setup Dev` for a setup; add --wait to return only once
+                  its apps are in place, printing its setup-restored event, exit 1 if some
+                  never appeared)
   query WHAT      print JSON: workspaces, windows, monitors, focused, or state (all of them)
   subscribe [EVENT...]  print one JSON line per event (all, or the ones named) until Ctrl+C
                   Events: startup, config-reloaded, workspace-changed, layout-changed,
                   focus-changed, window-opened, window-closed, window-moved, monitor-changed,
-                  display-changed. Run commands on them with [[hook]] in the config.
+                  display-changed, setup-restored. Run commands on them with [[hook]] in the
+                  config.
   Exit codes: 0 ok, 1 lattice not running or the request failed, 2 bad arguments
 
 Config: %APPDATA%\\lattice\\config.toml   Log: %APPDATA%\\lattice\\lattice.log";

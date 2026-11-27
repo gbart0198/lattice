@@ -478,6 +478,54 @@ pub fn join_args(args: &[String]) -> String {
     args.iter().map(|a| if a.contains(char::is_whitespace) { format!("\"{a}\"") } else { a.clone() }).collect::<Vec<_>>().join(" ")
 }
 
+/// Takes `--wait` out of `lattice msg` arguments: as a word of its own anywhere, or right
+/// after the command in a line given as one argument (`"restore-setup --wait Dev"`).
+fn take_wait(args: &[String]) -> (bool, Vec<String>) {
+    let rest: Vec<String> = args.iter().filter(|a| *a != "--wait").cloned().collect();
+    if rest.len() < args.len() {
+        return (true, rest);
+    }
+    if let [one] = args {
+        let (verb, tail) = one.trim().split_once(char::is_whitespace).unwrap_or((one.trim(), ""));
+        let tail = tail.trim_start();
+        if let Some(after) = tail.strip_prefix("--wait").filter(|a| a.is_empty() || a.starts_with(char::is_whitespace)) {
+            return (true, vec![format!("{verb} {}", after.trim_start()).trim_end().to_string()]);
+        }
+    }
+    (false, rest)
+}
+
+/// How long `msg restore-setup --wait` waits for `setup-restored`: lattice gives up on apps
+/// after 60 s, so this only runs out if something is badly wrong.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// `msg restore-setup --wait`, after lattice took the command: waits for the
+/// `setup-restored` event of restore `id` and prints it. Exit code 0 if every app took its
+/// spot, else 1.
+fn wait_restored(client: &Client, id: u64, fail: impl Fn(i32, &str) -> i32) -> i32 {
+    let found = client.wait(Some(RESTORE_TIMEOUT), || {
+        INBOX.with(|q| {
+            let mut q = q.borrow_mut();
+            let events: Vec<_> = q.drain(..).filter(|(k, _)| *k == KIND_EVENT).collect();
+            events
+                .into_iter()
+                .filter_map(|(_, b)| serde_json::from_slice::<Value>(&b).ok())
+                .find(|v| v["event"] == "setup-restored" && v["restore"] == id)
+        })
+    });
+    match found {
+        Waited::Got(v) => {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{v}");
+            let _ = out.flush();
+            let missing: Vec<&str> = v["missing"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            if missing.is_empty() { 0 } else { fail(1, &format!("never appeared: {}", missing.join(", "))) }
+        }
+        Waited::Gone => fail(1, "lattice exited before the setup was restored"),
+        Waited::TimedOut => fail(1, "the setup wasn't restored in time"),
+    }
+}
+
 /// `lattice msg|query|subscribe ...`; returns the process exit code.
 pub fn cli(args: &[String]) -> i32 {
     let (verb, rest) = match args.split_first() {
@@ -490,17 +538,35 @@ pub fn cli(args: &[String]) -> i32 {
     };
     match verb {
         "msg" => {
-            let line = join_args(rest);
+            let (wait, rest) = take_wait(rest);
+            let line = join_args(&rest);
             let cmd = match config::parse_command(&line) {
                 Ok(Some(c)) => c,
                 Ok(None) => return fail(2, "give a command, as in a keybind (e.g. `lattice msg workspace 3`)"),
                 Err(e) => return fail(2, &e),
             };
+            if wait && !matches!(cmd, Command::RestoreSetup(_)) {
+                return fail(2, "--wait only goes with restore-setup");
+            }
             let client = match Client::connect() {
                 Ok(c) => c,
                 Err(e) => return fail(1, &e),
             };
+            // Subscribed before the restore starts, so its `setup-restored` can't be missed
+            // (a restore with nothing to start finishes in the same batch).
+            if wait {
+                match client.call("subscribe", "", Duration::from_secs(10)) {
+                    Waited::Got(Ok(_)) => {}
+                    Waited::Got(Err(e)) => return fail(1, &e),
+                    Waited::Gone => return fail(1, "lattice exited"),
+                    Waited::TimedOut => return fail(1, "lattice didn't answer in time"),
+                }
+            }
             match client.call("msg", &line, Duration::from_secs(10)) {
+                Waited::Got(Ok(data)) if wait => match data["restore"].as_u64() {
+                    Some(id) => wait_restored(&client, id, fail),
+                    None => fail(1, "the running lattice can't wait for a restore; it's older than this one (restart it)"),
+                },
                 Waited::Got(Ok(_)) => 0,
                 Waited::Got(Err(e)) => fail(1, &e),
                 // `quit` takes lattice down before its answer can leave.
@@ -581,6 +647,17 @@ pub fn cli(args: &[String]) -> i32 {
 pub(crate) mod tests {
     use super::*;
     use crate::config::WsTarget;
+
+    #[test]
+    fn wait_flag() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(take_wait(&v(&["restore-setup", "--wait", "Dev"])), (true, v(&["restore-setup", "Dev"])));
+        assert_eq!(take_wait(&v(&["restore-setup", "Deep Work", "--wait"])), (true, v(&["restore-setup", "Deep Work"])));
+        assert_eq!(take_wait(&v(&["restore-setup --wait Deep Work"])), (true, v(&["restore-setup Deep Work"])));
+        assert_eq!(take_wait(&v(&["restore-setup --wait"])), (true, v(&["restore-setup"])));
+        assert_eq!(take_wait(&v(&["restore-setup --waiting"])), (false, v(&["restore-setup --waiting"])));
+        assert_eq!(take_wait(&v(&["workspace", "3"])), (false, v(&["workspace", "3"])));
+    }
 
     #[test]
     fn requests_round_trip() {

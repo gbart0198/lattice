@@ -335,8 +335,11 @@ pub fn run(cfg: Config) {
                         // So is a window lattice doesn't manage (`close 1234`).
                         Op::Msg(c) => match wm.check_command(&c) {
                             Ok(()) => {
+                                let restore = matches!(c, Command::RestoreSetup(_));
                                 wm.command(c);
-                                req.reply.send(Ok(serde_json::Value::Null));
+                                // A restore's id, for `--wait` to know its `setup-restored`.
+                                let data = if restore { serde_json::json!({ "restore": wm.last_restore() }) } else { serde_json::Value::Null };
+                                req.reply.send(Ok(data));
                             }
                             Err(e) => req.reply.send(Err(e)),
                         },

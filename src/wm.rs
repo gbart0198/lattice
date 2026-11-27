@@ -110,6 +110,8 @@ pub struct Wm {
     pending_events: Vec<events::Event>,
     /// The setup being restored, while it waits for apps it started.
     restore: Option<Restore>,
+    /// Counts restores, to tell a script's `setup-restored` from another's.
+    restore_seq: u64,
     /// Something that `state.json` keeps may have changed; and what was last written to it.
     state_dirty: bool,
     state_written: Option<String>,
@@ -128,9 +130,19 @@ struct Restored {
 }
 
 /// A setup being restored: where its apps go, and which windows fill each spot. Apps
-/// it started take their spot when their window opens, until `until`.
+/// it started take their spot when their window opens, until `until`. `setup-restored` is
+/// announced once every spot is filled, or at `until` (`check_restore`); spots stay claimable
+/// until then either way.
 struct Restore {
+    /// `restore_seq` when it started: the `restore` of its `setup-restored` event.
+    id: u64,
     name: String,
+    /// For `setup-restored`: windows already open that moved into place, apps started, and
+    /// the setup's monitors (from 1) that aren't connected.
+    in_place: usize,
+    started: usize,
+    folded: Vec<usize>,
+    announced: bool,
     slots: Vec<setups::Slot>,
     filled: Vec<Option<Hwnd>>,
     /// Each workspace's saved split ratios. Retiling forgets ratios past the last split, so
@@ -138,6 +150,14 @@ struct Restore {
     /// By (workspace, monitor).
     splits: HashMap<(usize, usize), Vec<f32>>,
     until: Instant,
+}
+
+impl Restore {
+    /// Its `setup-restored` event, with the spots still empty as `missing`.
+    fn finished(&self) -> events::Event {
+        let missing: Vec<String> = self.slots.iter().zip(&self.filled).filter(|(_, f)| f.is_none()).map(|(s, _)| s.exe.clone()).collect();
+        events::Event::setup_restored(self.id, &self.name, self.in_place, self.started, &missing, &self.folded)
+    }
 }
 
 /// How long a restore waits for the apps it started to open a window.
@@ -174,6 +194,7 @@ impl Wm {
             state_dirty: true,
             state_written: None,
             restore: None,
+            restore_seq: 0,
             cfg,
         };
         wm.build_workspaces();
@@ -1328,12 +1349,12 @@ impl Wm {
             setup.name, plan.claims.len(), plan.launch.len()
         );
         let placed = setups::placed(&setup, |n| self.ws_index(n), connected, primary);
-        let mut missing: Vec<usize> = placed.iter().filter(|p| p.folded && !p.entry.apps.is_empty()).filter_map(|p| p.entry.monitor).collect();
-        missing.sort_unstable();
-        missing.dedup();
-        if !missing.is_empty() {
+        let mut folded: Vec<usize> = placed.iter().filter(|p| p.folded && !p.entry.apps.is_empty()).filter_map(|p| p.entry.monitor).collect();
+        folded.sort_unstable();
+        folded.dedup();
+        if !folded.is_empty() {
             log::info!(
-                "setup '{}' is for {} monitors and {connected} are connected: the apps of monitor {missing:?} go on the primary",
+                "setup '{}' is for {} monitors and {connected} are connected: the apps of monitor {folded:?} go on the primary",
                 setup.name,
                 setups::monitor_count(&setup)
             );
@@ -1382,12 +1403,29 @@ impl Wm {
         }
         let first = plan.slots.first().map(|s| s.ws);
         let first_window = plan.slots.iter().zip(&filled).find(|(s, _)| Some(s.ws) == first).and_then(|(_, f)| *f);
+        // One still waiting is over: it reports what it got so far.
+        if let Some(old) = self.restore.take().filter(|r| !r.announced) {
+            log::info!("setup '{}' is restored again before its apps all appeared", old.name);
+            self.pending_events.push(old.finished());
+        }
+        self.restore_seq += 1;
         self.restore = Some(Restore {
+            id: self.restore_seq,
             name: setup.name.clone(),
+            in_place: plan.claims.len(),
+            started: plan.launch.len(),
+            folded,
+            announced: false,
             slots: plan.slots,
             filled,
             splits: saved_splits,
             until: Instant::now() + RESTORE_WAIT,
+        });
+        // A wakeup when the wait is over, for `check_restore` to see it even if nothing else
+        // happens by then.
+        let _ = std::thread::Builder::new().name("lattice-restore-wait".into()).spawn(|| {
+            std::thread::sleep(RESTORE_WAIT + Duration::from_millis(50));
+            shared::wake_wm();
         });
         self.arrange_restored();
         if let Some(ws) = first {
@@ -1410,12 +1448,32 @@ impl Wm {
     fn claim_slot(&mut self, hwnd: Hwnd, exe: &str) -> Option<(usize, usize)> {
         let r = self.restore.as_mut()?;
         if Instant::now() > r.until {
-            self.restore = None;
             return None;
         }
         let i = r.slots.iter().zip(&r.filled).position(|(s, f)| f.is_none() && s.exe.eq_ignore_ascii_case(exe))?;
         r.filled[i] = Some(hwnd);
         Some((r.slots[i].ws, r.slots[i].mon))
+    }
+
+    /// The id of the last restore started, as `lattice msg restore-setup` is answered.
+    pub fn last_restore(&self) -> u64 {
+        self.restore_seq
+    }
+
+    /// `setup-restored`, once per restore: when every spot is filled, or when the wait is up
+    /// (which also ends the restore). Called once per batch, from `emit_events`.
+    fn check_restore(&mut self) -> Option<events::Event> {
+        let r = self.restore.as_mut()?;
+        let full = r.filled.iter().all(Option::is_some);
+        let over = Instant::now() > r.until;
+        let event = (!r.announced && (full || over)).then(|| {
+            r.announced = true;
+            r.finished()
+        });
+        if over {
+            self.restore = None;
+        }
+        event
     }
 
     /// Puts the restored windows first on their workspaces, in the saved order.
@@ -1552,14 +1610,19 @@ impl Wm {
         for e in std::mem::take(&mut self.pending_events) {
             events::emit(e);
         }
-        if !std::mem::take(&mut self.events_dirty) {
-            return;
+        // After the moves that finished it, so a hook on it sees every window in place.
+        let restored = self.check_restore();
+        if std::mem::take(&mut self.events_dirty) {
+            if events::listening() {
+                for e in self.events.update(self.state(false)) {
+                    events::emit(e);
+                }
+            } else {
+                self.events.reset();
+            }
         }
-        if !events::listening() {
-            self.events.reset();
-            return;
-        }
-        for e in self.events.update(self.state(false)) {
+        if let Some(e) = restored {
+            log::info!("setup restored: {}", e.to_json());
             events::emit(e);
         }
     }

@@ -164,7 +164,8 @@ float = true
 
 # Hooks: run a command line when something happens. `on` is an event, a list of them, or "*".
 # Events: startup, config-reloaded, workspace-changed, layout-changed, focus-changed,
-# window-opened, window-closed, window-moved, monitor-changed, display-changed.
+# window-opened, window-closed, window-moved, monitor-changed, display-changed,
+# setup-restored (a setup's apps are all in place: run your dev server after "Dev").
 # The command runs through `cmd /C` with LATTICE_EVENT and LATTICE_<FIELD> environment
 # variables set, and gets the event as one line of JSON on stdin. Fields and examples are in
 # the README's "Scripting" section; `lattice msg`, `query` and `subscribe` are there too.
@@ -264,7 +265,8 @@ float = true
 # Setups: a named set of apps, the workspaces they go on, and each workspace's layout.
 # Restoring one moves the apps that are open into place, starts the ones that aren't (with
 # `run`, or the exe), and switches to its first workspace. Restore it with its `key`,
-# `lattice msg restore-setup Dev`, or by typing "workspaces" in the launcher. The settings
+# `lattice msg restore-setup Dev` (add --wait to return once its apps are in place), or by
+# typing "workspaces" in the launcher. The settings
 # window's Setups tab edits them with a drag-and-drop layout editor. Each [[setup.workspace]]
 # is one monitor of a workspace: `monitor` counts from the left (from 1), and none is the
 # primary; `monitors` says how many the setup is for. A monitor that isn't connected puts its

@@ -32,9 +32,10 @@ pub enum Kind {
     WindowMoved,
     MonitorChanged,
     DisplayChanged,
+    SetupRestored,
 }
 
-const KINDS: [(Kind, &str); 10] = [
+const KINDS: [(Kind, &str); 11] = [
     (Kind::Startup, "startup"),
     (Kind::ConfigReloaded, "config-reloaded"),
     (Kind::WorkspaceChanged, "workspace-changed"),
@@ -45,10 +46,11 @@ const KINDS: [(Kind, &str); 10] = [
     (Kind::WindowMoved, "window-moved"),
     (Kind::MonitorChanged, "monitor-changed"),
     (Kind::DisplayChanged, "display-changed"),
+    (Kind::SetupRestored, "setup-restored"),
 ];
 
 pub const NAMES: &str = "startup, config-reloaded, workspace-changed, layout-changed, focus-changed, window-opened, \
-                         window-closed, window-moved, monitor-changed, display-changed";
+                         window-closed, window-moved, monitor-changed, display-changed, setup-restored";
 
 impl Kind {
     pub fn name(self) -> &'static str {
@@ -79,6 +81,21 @@ impl Event {
         self
     }
 
+    /// A setup restore has finished (`wm.rs` `check_restore`): `restore` is the id
+    /// `lattice msg restore-setup` was answered with, `missing` the apps (by exe, one per spot)
+    /// whose window never took its spot, `folded` the setup's monitors (from 1) that aren't
+    /// connected and went on the primary.
+    pub fn setup_restored(restore: u64, name: &str, in_place: usize, started: usize, missing: &[String], folded: &[usize]) -> Self {
+        Event::new(Kind::SetupRestored)
+            .with("restore", restore)
+            .with("name", name)
+            .with("complete", missing.is_empty())
+            .with("in_place", in_place)
+            .with("started", started)
+            .with("missing", missing)
+            .with("folded", folded)
+    }
+
     fn window(self, w: &WindowState) -> Self {
         self.with("hwnd", w.hwnd)
             .with("title", w.title.as_str())
@@ -102,6 +119,8 @@ impl Event {
             let text = match val {
                 Value::String(s) => s.clone(),
                 Value::Null => String::new(),
+                // Lists as words, easy to `for` over in cmd: `Code.exe slack.exe`.
+                Value::Array(a) => a.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).collect::<Vec<_>>().join(" "),
                 other => other.to_string(),
             };
             (format!("LATTICE_{}", k.to_ascii_uppercase()), text)
@@ -479,6 +498,25 @@ mod tests {
         assert_eq!(env["LATTICE_WORKSPACE"], "1");
         assert_eq!(env["LATTICE_FLOATING"], "false");
         assert_eq!(env["LATTICE_PREVIOUS_WORKSPACE"], "");
+    }
+
+    #[test]
+    fn setup_restored_fields() {
+        let e = Event::setup_restored(3, "Dev", 1, 2, &["slack.exe".into(), "Code.exe".into()], &[2]);
+        assert_eq!(
+            e.to_json(),
+            serde_json::json!({
+                "event": "setup-restored", "restore": 3, "name": "Dev", "complete": false,
+                "in_place": 1, "started": 2, "missing": ["slack.exe", "Code.exe"], "folded": [2],
+            })
+        );
+        let env: HashMap<String, String> = e.env().into_iter().collect();
+        assert_eq!(env["LATTICE_MISSING"], "slack.exe Code.exe");
+        assert_eq!(env["LATTICE_FOLDED"], "2");
+        assert_eq!(env["LATTICE_COMPLETE"], "false");
+        let done = Event::setup_restored(4, "Dev", 3, 0, &[], &[]);
+        assert_eq!(done.to_json()["complete"], true);
+        assert_eq!(done.env().into_iter().find(|(k, _)| k == "LATTICE_MISSING").map(|(_, v)| v), Some(String::new()));
     }
 
     #[test]
