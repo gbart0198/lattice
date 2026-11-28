@@ -73,7 +73,7 @@ pub(super) struct Screen {
 /// The monitors, left to right as lattice numbers them, and which is the primary. The bar is
 /// on the primary only, so its tiling area starts below it.
 fn screens(cfg: &config::Config) -> (Vec<Screen>, usize) {
-    let monitors = crate::win::monitors();
+    let monitors = crate::platform::win::monitors();
     let primary = monitors.iter().position(|m| m.primary).unwrap_or(0);
     let screens: Vec<Screen> = monitors
         .iter()

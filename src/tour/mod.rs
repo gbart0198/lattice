@@ -6,7 +6,7 @@
 //!
 //! It runs as its own process (`lattice --tour`), so the GPU device its translucent overlay
 //! needs (tens of MB) goes away with it instead of staying in lattice for good. It learns where
-//! things are and what you did by asking lattice's "lattice-control" window (`shared::WM_TOUR_*`);
+//! things are and what you did by asking the running lattice (`platform::control`);
 //! lattice's keyboard hook turns Escape into "end the tour" while it runs, whatever has focus.
 //! The overlay never takes the keyboard from your apps.
 //!
@@ -25,12 +25,9 @@ use rune::{
     App, AppSpec, Color, DisplayTarget, Key, KeyEvent, KeyPolicy, OverlayHandle, OverlayInput, OverlayLevel, OverlayOptions,
     OverlayPlacement, OverlaySpec, Tx, WindowSpec,
 };
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SMTO_ABORTIFHUNG, SendMessageTimeoutW};
-use windows::core::w;
-
 use crate::config;
-use crate::shared::{Anchor, TourStatus, WM_TOUR_RECT, WM_TOUR_STATUS, unpack_rect};
+use crate::platform::{control, process};
+use crate::shared::{Anchor, TourStatus, unpack_rect};
 
 /// A rectangle in overlay points.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -412,7 +409,7 @@ impl Tour {
 
     /// Asks lattice what changed; true when the view should rebuild.
     fn query(&mut self, tx: &mut Tx) -> bool {
-        let Some(h) = control_window() else {
+        let Some(lattice) = control::find() else {
             // lattice quit under us: there's nothing left to point at.
             if self.live {
                 self.live = false;
@@ -421,7 +418,7 @@ impl Tour {
             }
             return false;
         };
-        let Some(status) = send(h, WM_TOUR_STATUS, 1).map(TourStatus::unpack) else { return false };
+        let Some(status) = lattice.tour_status(true).map(TourStatus::unpack) else { return false };
         let mut changed = false;
         if status.escapes != self.last.escapes && self.phase != Phase::Entering {
             self.last = status;
@@ -434,7 +431,7 @@ impl Tour {
         self.last = status;
         for (i, slot) in self.anchors.iter_mut().enumerate() {
             let Some(a) = Anchor::from_index(i) else { continue };
-            let r = send(h, WM_TOUR_RECT, a as usize).and_then(unpack_rect).map(|r| self.screen.to_points(r));
+            let r = lattice.tour_rect(a as usize).and_then(unpack_rect).map(|r| self.screen.to_points(r));
             let r = r.map(|r| R::new(r.x.round(), r.y.round(), r.w.round(), r.h.round()));
             if *slot != r {
                 *slot = r;
@@ -465,23 +462,12 @@ impl Tour {
     }
 }
 
-fn control_window() -> Option<HWND> {
-    unsafe { FindWindowW(w!("lattice-display-listener"), w!("lattice-control")).ok().filter(|h| !h.is_invalid()) }
-}
-
-/// One question to lattice's control window; None when it doesn't answer in time.
-fn send(h: HWND, msg: u32, wp: usize) -> Option<u64> {
-    let mut result = 0usize;
-    let ok = unsafe { SendMessageTimeoutW(h, msg, WPARAM(wp), LPARAM(0), SMTO_ABORTIFHUNG, 250, Some(&mut result)) };
-    (ok.0 != 0).then_some(result as u64)
-}
-
 fn poll(s: &mut Tour, t: f64, tx: &mut Tx) -> bool {
     if s.preview {
         return false;
     }
     let mut changed = false;
-    if QUIT.get().is_some_and(|q| q.signaled()) {
+    if QUIT.get().is_some_and(|q| q.is_set()) {
         s.leave(tx);
         changed = true;
     }
@@ -542,20 +528,16 @@ pub fn seen() -> bool {
 fn finish(live: bool) {
     let _ = std::fs::create_dir_all(config::config_dir());
     let _ = std::fs::write(marker(), "The lattice tour was shown. Delete this file to see it again on the next start.\n");
-    if live && let Some(h) = control_window() {
-        let _ = send(h, WM_TOUR_STATUS, 0);
+    if live && let Some(lattice) = control::find() {
+        let _ = lattice.tour_status(false);
     }
 }
 
 /// Starts the tour process (lattice's `tour` command, and its first run). Starting it while it
 /// shows ends it.
 pub fn start() {
-    unsafe {
-        // We're handling the user's key press: let the tour come to the front.
-        let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
-            windows::Win32::UI::WindowsAndMessaging::ASFW_ANY,
-        );
-    }
+    // We're handling the user's key press: let the tour come to the front.
+    process::allow_set_foreground();
     match std::env::current_exe() {
         Ok(exe) => {
             if let Err(e) = std::process::Command::new(exe).arg("--tour").env_remove(crate::CPU_FIRST_ENV).spawn() {
@@ -578,53 +560,33 @@ pub fn start_if_new() {
     });
 }
 
-/// A named event another `--tour` sets to end this one.
-struct QuitEvent(windows::Win32::Foundation::HANDLE);
-
-// SAFETY: an event handle may be waited on from any thread.
-unsafe impl Send for QuitEvent {}
-unsafe impl Sync for QuitEvent {}
-
-impl QuitEvent {
-    fn signaled(&self) -> bool {
-        use windows::Win32::System::Threading::WaitForSingleObject;
-        unsafe { WaitForSingleObject(self.0, 0) }.0 == 0
-    }
-}
-
-static QUIT: OnceLock<QuitEvent> = OnceLock::new();
+/// Set by another `--tour` to end this one.
+static QUIT: OnceLock<process::Signal> = OnceLock::new();
 
 /// `lattice --tour`: shows the tour over the desktop until it's finished or skipped.
 pub fn run(args: &[String]) {
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, SetEvent};
-    use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
-
     if args.iter().any(|a| a == "--tour-preview") {
         preview::run();
         return;
     }
-    unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        let quit = CreateEventW(None, true, false, w!("Local\\lattice-tour-quit"));
-        let mutex = CreateMutexW(None, true, w!("Local\\lattice-tour"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            // One is showing: this asks it to end.
-            if let Ok(e) = quit {
-                let _ = SetEvent(e);
-            }
-            return;
+    process::set_dpi_aware();
+    let quit = process::Signal::open("lattice-tour-quit");
+    let Some(lock) = process::single_instance("lattice-tour") else {
+        // One is showing: this asks it to end.
+        if let Some(q) = quit {
+            q.set();
         }
-        if let Ok(e) = quit {
-            let _ = QUIT.set(QuitEvent(e));
-        }
-        std::mem::forget(mutex);
+        return;
+    };
+    if let Some(q) = quit {
+        let _ = QUIT.set(q);
     }
+    std::mem::forget(lock);
 
     let cfg = config::load();
     let pal = Palette::from_config(&cfg.bar);
     let families = crate::bar::font_families(&cfg.bar.font);
-    let live = control_window().is_some();
+    let live = control::find().is_some();
 
     rune::run_windows(move |displays| {
         let display = displays.iter().find(|d| d.primary).or(displays.first());

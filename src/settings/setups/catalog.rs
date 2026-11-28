@@ -66,12 +66,12 @@ fn catalog(apps: &[crate::launcher::CatalogApp]) -> Vec<Program> {
 /// Programs with a window lattice would tile, by full path.
 fn running() -> Vec<Program> {
     let mut out: Vec<Program> = Vec::new();
-    for h in crate::win::enum_windows() {
-        let Some(c) = crate::win::candidate(h) else { continue };
+    for h in crate::platform::win::enum_windows() {
+        let Some(c) = crate::platform::win::candidate(h) else { continue };
         if c.exe.eq_ignore_ascii_case("lattice.exe") || c.exe.eq_ignore_ascii_case("ApplicationFrameHost.exe") {
             continue;
         }
-        let path = crate::win::exe_path(h);
+        let path = crate::platform::win::exe_path(h);
         if path.is_empty() || out.iter().any(|p| p.exe.eq_ignore_ascii_case(&c.exe)) {
             continue;
         }

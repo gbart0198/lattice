@@ -4,14 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use windows::Win32::Foundation::{LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
-
 use crate::config::Command;
-use crate::win::{self, Hwnd};
-
-/// Posted to the WM thread: "drain your queues".
-pub const WM_LATTICE_WAKE: u32 = WM_APP + 1;
+use crate::platform::{WindowId, win};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WsInfo {
@@ -40,30 +34,21 @@ pub struct BarModel {
     pub layout: String,
 }
 
-static WM_THREAD: AtomicU32 = AtomicU32::new(0);
 static BAR_MODEL: Mutex<Option<BarModel>> = Mutex::new(None);
 pub static BAR_GEN: AtomicU64 = AtomicU64::new(0);
 static BAR_WAKER: OnceLock<rune::Waker> = OnceLock::new();
 static COMMANDS: Mutex<Vec<Command>> = Mutex::new(Vec::new());
 /// Every window lattice has hidden, so they can be shown again on exit or crash.
-static HIDDEN: Mutex<Option<HashSet<Hwnd>>> = Mutex::new(None);
+static HIDDEN: Mutex<Option<HashSet<WindowId>>> = Mutex::new(None);
 /// The hidden set changed since `hidden.txt` was last written (`flush_hidden`).
 static HIDDEN_DIRTY: AtomicBool = AtomicBool::new(false);
 /// Windows made transparent for an animation, so they can be made opaque again on exit or
 /// crash (an app left invisible is worse than one left hidden).
-static FADED: Mutex<Option<HashMap<Hwnd, win::Faded>>> = Mutex::new(None);
+static FADED: Mutex<Option<HashMap<WindowId, win::Faded>>> = Mutex::new(None);
 
-pub fn set_wm_thread(id: u32) {
-    WM_THREAD.store(id, Ordering::SeqCst);
-}
-
+/// Wakes the WM thread to drain its queues (`hooks.rs`). Any thread.
 pub fn wake_wm() {
-    let id = WM_THREAD.load(Ordering::SeqCst);
-    if id != 0 {
-        unsafe {
-            let _ = PostThreadMessageW(id, WM_LATTICE_WAKE, WPARAM(0), LPARAM(0));
-        }
-    }
+    crate::platform::hooks::wake();
 }
 
 /// Queue a command for the WM thread (used by the bar's click handlers).
@@ -121,7 +106,7 @@ pub fn set_bar_suppressed(on: bool) {
     }
 }
 
-pub fn mark_hidden(hwnd: Hwnd, hidden: bool) {
+pub fn mark_hidden(hwnd: WindowId, hidden: bool) {
     let mut g = HIDDEN.lock().unwrap_or_else(|e| e.into_inner());
     let set = g.get_or_insert_with(HashSet::new);
     let changed = if hidden { set.insert(hwnd) } else { set.remove(&hwnd) };
@@ -130,7 +115,7 @@ pub fn mark_hidden(hwnd: Hwnd, hidden: bool) {
     }
 }
 
-pub fn mark_faded(hwnd: Hwnd, faded: Option<win::Faded>) {
+pub fn mark_faded(hwnd: WindowId, faded: Option<win::Faded>) {
     let mut g = FADED.lock().unwrap_or_else(|e| e.into_inner());
     let map = g.get_or_insert_with(HashMap::new);
     let changed = match faded {
@@ -190,7 +175,7 @@ fn hidden_path() -> std::path::PathBuf {
 }
 
 /// One "hwnd pid" line per hidden window; the pid guards against a reused handle.
-fn save_hidden(set: &HashSet<Hwnd>) {
+fn save_hidden(set: &HashSet<WindowId>) {
     let text: String = set.iter().map(|h| format!("{h:x} {}\n", win::pid(*h))).collect();
     let _ = std::fs::create_dir_all(crate::config::config_dir());
     let _ = std::fs::write(hidden_path(), text);
@@ -200,36 +185,25 @@ fn faded_path() -> std::path::PathBuf {
     crate::config::config_dir().join("faded.txt")
 }
 
-/// One "hwnd pid exstyle attrs" line per transparent window; attrs is "key:alpha:flags" or "-".
-fn save_faded(map: Option<&HashMap<Hwnd, win::Faded>>) {
+/// One "hwnd pid faded" line per transparent window, `faded` as `Faded::encode` writes it.
+fn save_faded(map: Option<&HashMap<WindowId, win::Faded>>) {
     let Some(map) = map.filter(|m| !m.is_empty()) else {
         let _ = std::fs::remove_file(faded_path());
         return;
     };
     let text: String = map
         .iter()
-        .map(|(h, f)| {
-            let attrs = f.attrs.map_or("-".to_string(), |(k, a, fl)| format!("{k:x}:{a}:{fl:x}"));
-            format!("{h:x} {} {:x} {attrs}\n", win::pid(*h), f.ex)
-        })
+        .map(|(h, f)| format!("{h:x} {} {}\n", win::pid(*h), f.encode()))
         .collect();
     let _ = std::fs::create_dir_all(crate::config::config_dir());
     let _ = std::fs::write(faded_path(), text);
 }
 
-fn parse_faded(line: &str) -> Option<(Hwnd, u32, win::Faded)> {
+fn parse_faded(line: &str) -> Option<(WindowId, u32, win::Faded)> {
     let mut p = line.split_whitespace();
     let hwnd = isize::from_str_radix(p.next()?, 16).ok()?;
     let pid = p.next()?.parse().ok()?;
-    let ex = isize::from_str_radix(p.next()?, 16).ok()?;
-    let attrs = match p.next()? {
-        "-" => None,
-        a => {
-            let mut q = a.split(':');
-            Some((u32::from_str_radix(q.next()?, 16).ok()?, q.next()?.parse().ok()?, u32::from_str_radix(q.next()?, 16).ok()?))
-        }
-    };
-    Some((hwnd, pid, win::Faded { ex, attrs }))
+    Some((hwnd, pid, win::Faded::decode(p)?))
 }
 
 /// Called at startup: shows windows a previous lattice hid and never got to restore.
@@ -266,17 +240,10 @@ pub fn recover_hidden_from_last_run() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The product tour (`lattice --tour`) runs as its own process and asks this one, through the
-// "lattice-control" window, where things are on screen and what the user just did. These are
-// the answers, kept current by the bar (anchors), the WM thread (workspace, layout, focus) and
-// the keyboard hook (Escape).
-
-/// Tour -> lattice: "what's going on?" `wParam` 1 while the tour runs, 0 as it ends. Returns
-/// [`TourStatus::pack`].
-pub const WM_TOUR_STATUS: u32 = WM_APP + 4;
-/// Tour -> lattice: "where is this?" `wParam` an [`Anchor`]. Returns [`pack_rect`], 0 for
-/// nowhere.
-pub const WM_TOUR_RECT: u32 = WM_APP + 5;
+// The product tour (`lattice --tour`) runs as its own process and asks this one
+// (`platform::control`) where things are on screen and what the user just did. These are the
+// answers, kept current by the bar (anchors), the WM thread (workspace, layout, focus) and the
+// keyboard hook (Escape).
 
 /// Things the tour points at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,7 +269,7 @@ static BAR_ANCHORS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static FOCUSED: AtomicIsize = AtomicIsize::new(0);
 /// Active workspace index (low byte) and layout (next byte), from the WM's last publish.
 static WS_LAYOUT: AtomicU32 = AtomicU32::new(0);
-/// When the tour last checked in (`GetTickCount64` ms), and how often Escape was pressed for it.
+/// When the tour last checked in (`now_ms`), and how often Escape was pressed for it.
 static TOUR_SEEN: AtomicU64 = AtomicU64::new(0);
 static TOUR_ESC: AtomicU32 = AtomicU32::new(0);
 
@@ -331,7 +298,7 @@ pub fn set_bar_anchor(a: Anchor, r: crate::layout::Rect) {
     }
 }
 
-pub fn set_focus_state(focused: Option<Hwnd>, workspace: usize, layout: u8) {
+pub fn set_focus_state(focused: Option<WindowId>, workspace: usize, layout: u8) {
     // Keep the last managed window while focus is elsewhere (the tour's card, the launcher):
     // it's still the one with the border. One that has gone or been hidden reads as none.
     if let Some(h) = focused {
@@ -360,11 +327,13 @@ impl TourStatus {
     }
 }
 
+/// Milliseconds on a monotonic clock, never 0 (0 means "never" in `TOUR_SEEN`).
 fn now_ms() -> u64 {
-    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
 }
 
-/// The control window's answer to [`WM_TOUR_STATUS`] (on the WM thread).
+/// The answer to the tour's status call (`platform::control::tour_status`), on the WM thread.
 pub fn tour_status(running: bool) -> u64 {
     TOUR_SEEN.store(if running { now_ms() } else { 0 }, Ordering::Relaxed);
     let wl = WS_LAYOUT.load(Ordering::Relaxed);
@@ -377,7 +346,7 @@ pub fn tour_status(running: bool) -> u64 {
     .pack()
 }
 
-/// The control window's answer to [`WM_TOUR_RECT`] (on the WM thread).
+/// The answer to the tour's "where is this?" (`platform::control::tour_rect`), on the WM thread.
 pub fn tour_rect(anchor: usize) -> u64 {
     match Anchor::from_index(anchor) {
         Some(Anchor::Launcher) => crate::launcher::screen_rect().map_or(0, |(x, y, w, h)| pack_rect(crate::layout::Rect::new(x, y, w, h))),

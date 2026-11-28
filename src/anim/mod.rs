@@ -15,9 +15,10 @@
 //! exists only while something moves, and so does the frame clock: a small thread that waits
 //! for each DWM composition (`DwmFlush`) and wakes the WM thread to move the previews. Idle or
 //! off, nothing here exists.
-
-mod dwm;
-pub mod preview;
+//!
+//! This file is the timing, curves and bookkeeping, the same on every OS; the previews and the
+//! frame clock are the OS back end's (`platform::anim`, the Windows one described above). A back
+//! end that can't preview a window makes it move instantly.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::AnimStyle;
 use crate::layout::Rect;
-use crate::win::{Faded, Hwnd};
+use crate::platform::{self, WindowId, win::Faded};
 
 /// What a window is doing, which picks its timing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,23 +142,24 @@ pub const WARMUP: Duration = Duration::from_millis(50);
 /// A live preview's handle (a DWM thumbnail).
 pub type Thumb = isize;
 
-/// What the animator needs from Windows (the real one is `dwm::Dwm`; tests record calls).
+/// What the animator needs from the OS (the real one is `platform::anim::Native`; tests record
+/// calls).
 pub trait Backend {
     /// Makes `h` invisible while it keeps drawing. None if it can't be.
-    fn fade(&mut self, h: Hwnd) -> Option<Faded>;
-    fn unfade(&mut self, h: Hwnd, f: Faded);
+    fn fade(&mut self, h: WindowId) -> Option<Faded>;
+    fn unfade(&mut self, h: WindowId, f: Faded);
     /// Starts a live preview of `h` (making the overlay if needed). None if it can't.
-    fn preview(&mut self, h: Hwnd) -> Option<Thumb>;
+    fn preview(&mut self, h: WindowId) -> Option<Thumb>;
     /// Draws preview `t` at screen rect `at`, cut off outside `clip`.
     fn show(&mut self, t: Thumb, at: Rect, clip: Option<Rect>);
     fn drop_preview(&mut self, t: Thumb);
     /// No previews are left: the overlay can go.
     fn idle(&mut self);
-    fn is_visible(&self, h: Hwnd) -> bool;
+    fn is_visible(&self, h: WindowId) -> bool;
     /// Moves the real window to `r` (its visible frame).
-    fn place(&mut self, h: Hwnd, r: Rect);
+    fn place(&mut self, h: WindowId, r: Rect);
     /// Whether the real window is at `r` yet (moves reach apps asynchronously).
-    fn arrived(&self, h: Hwnd, r: Rect) -> bool;
+    fn arrived(&self, h: WindowId, r: Rect) -> bool;
 }
 
 /// One animation: a window's preview going from `from` to `to`.
@@ -279,10 +281,10 @@ const SETTLE_MAX: Duration = Duration::from_millis(250);
 /// is still, not as a hitch after it stops.
 const MOVE_AT: f32 = 0.6;
 
-pub struct Animator<B: Backend = dwm::Dwm> {
-    anims: HashMap<Hwnd, Anim>,
+pub struct Animator<B: Backend = platform::anim::Native> {
+    anims: HashMap<WindowId, Anim>,
     /// Windows that slid away and are being hidden: made opaque once they're gone.
-    unfading: Vec<(Hwnd, Faded, Instant)>,
+    unfading: Vec<(WindowId, Faded, Instant)>,
     /// The running frame clock's keep-going flag; None when no clock thread exists.
     clock: Option<Arc<AtomicBool>>,
     backend: B,
@@ -292,7 +294,7 @@ pub struct Animator<B: Backend = dwm::Dwm> {
 
 impl Animator {
     pub fn new() -> Self {
-        Self::with(dwm::Dwm::default(), crate::shared::wake_wm)
+        Self::with(platform::anim::Native::default(), crate::shared::wake_wm)
     }
 }
 
@@ -306,23 +308,23 @@ impl<B: Backend> Animator<B> {
         !self.anims.is_empty() || !self.unfading.is_empty()
     }
 
-    pub fn is_animating(&self, h: Hwnd) -> bool {
+    pub fn is_animating(&self, h: WindowId) -> bool {
         self.anims.contains_key(&h)
     }
 
     /// Where an animating window is headed.
-    pub fn target(&self, h: Hwnd) -> Option<Rect> {
+    pub fn target(&self, h: WindowId) -> Option<Rect> {
         self.anims.get(&h).map(|a| a.to)
     }
 
     /// Where an animating window appears to be right now (its preview).
-    pub fn current(&self, h: Hwnd) -> Option<Rect> {
+    pub fn current(&self, h: WindowId) -> Option<Rect> {
         self.anims.get(&h).map(|a| a.shown)
     }
 
     /// Starts animating `h` (see `Glide`). A window already animating turns around from where
     /// it appears to be. False when `h` can't be animated: the caller moves it itself, at once.
-    pub fn glide(&mut self, h: Hwnd, g: Glide) -> bool {
+    pub fn glide(&mut self, h: WindowId, g: Glide) -> bool {
         let start = Instant::now() + g.delay;
         if let Some(a) = self.anims.get_mut(&h) {
             if a.stage == Stage::Landing {
@@ -382,7 +384,7 @@ impl<B: Backend> Animator<B> {
 
     /// Puts `h`'s preview on top of the others (the window you moved crosses over the one it
     /// swaps with). Previews stack in the order they were made, so it gets a new one.
-    pub fn raise(&mut self, h: Hwnd) {
+    pub fn raise(&mut self, h: WindowId) {
         let Some(a) = self.anims.get(&h) else { return };
         let (old, shown, clip) = (a.thumb, a.shown, a.clip);
         let Some(t) = self.backend.preview(h) else { return };
@@ -393,7 +395,7 @@ impl<B: Backend> Animator<B> {
 
     /// Stops animating `h`; returns what it was going to do at the end. With `hiding`, the
     /// caller is hiding it: it's made opaque again once it's gone, so it never flashes.
-    pub fn cancel(&mut self, h: Hwnd, hiding: bool) -> Option<After> {
+    pub fn cancel(&mut self, h: WindowId, hiding: bool) -> Option<After> {
         let a = self.anims.remove(&h)?;
         self.backend.drop_preview(a.thumb);
         if a.moves {
@@ -412,13 +414,13 @@ impl<B: Backend> Animator<B> {
     }
 
     /// Whether `h` is sliding away to be hidden.
-    pub fn is_hiding(&self, h: Hwnd) -> bool {
+    pub fn is_hiding(&self, h: WindowId) -> bool {
         self.anims.get(&h).is_some_and(|a| a.after == After::Hide)
     }
 
     /// Drops a pending end-of-slide hide (the window's workspace came back before it finished
     /// sliding away). True if there was one: the window is still on screen.
-    pub fn take_hide(&mut self, h: Hwnd) -> bool {
+    pub fn take_hide(&mut self, h: WindowId) -> bool {
         match self.anims.get_mut(&h) {
             Some(a) if a.after == After::Hide => {
                 a.after = After::Nothing;
@@ -429,7 +431,7 @@ impl<B: Backend> Animator<B> {
     }
 
     /// A window that slid away won't be hidden after all: make it opaque now.
-    pub fn unfade_now(&mut self, h: Hwnd) {
+    pub fn unfade_now(&mut self, h: WindowId) {
         if let Some(i) = self.unfading.iter().position(|u| u.0 == h) {
             let (h, f, _) = self.unfading.remove(i);
             self.backend.unfade(h, f);
@@ -439,7 +441,7 @@ impl<B: Backend> Animator<B> {
 
     /// Moves every preview one frame on; returns the windows whose animation ended, with what's
     /// left to do (for `After::Hide`: hide it; it's made opaque once it's gone).
-    pub fn tick(&mut self, now: Instant) -> Vec<(Hwnd, After)> {
+    pub fn tick(&mut self, now: Instant) -> Vec<(WindowId, After)> {
         let mut done = Vec::new();
         let mut gone = Vec::new();
         for (h, a) in self.anims.iter_mut() {
@@ -516,7 +518,7 @@ impl<B: Backend> Animator<B> {
 
     /// Ends every animation now, each window where it was going (shutdown, animations turned
     /// off). Windows that slid away are returned for hiding; call `flush` after hiding them.
-    pub fn finish_all(&mut self) -> Vec<(Hwnd, After)> {
+    pub fn finish_all(&mut self) -> Vec<(WindowId, After)> {
         let mut done = Vec::new();
         for (h, a) in std::mem::take(&mut self.anims) {
             self.backend.drop_preview(a.thumb);
@@ -563,8 +565,8 @@ impl<B: Backend> Animator<B> {
         let wake = self.wake;
         let spawned = std::thread::Builder::new().name("lattice-frames".into()).stack_size(64 * 1024).spawn(move || {
             while flag.load(Ordering::Relaxed) {
-                // Blocks until DWM composes the next frame; sleep if it can't (no compositor).
-                if unsafe { windows::Win32::Graphics::Dwm::DwmFlush() }.is_err() {
+                // Blocks until the compositor composes the next frame; sleep if it can't.
+                if !platform::anim::wait_frame() {
                     std::thread::sleep(Duration::from_millis(8));
                 }
                 wake();
@@ -658,22 +660,22 @@ mod tests {
     struct Fake {
         log: Vec<String>,
         /// Windows that refuse to be made transparent.
-        stubborn: Vec<Hwnd>,
-        hidden: Vec<Hwnd>,
+        stubborn: Vec<WindowId>,
+        hidden: Vec<WindowId>,
         /// Windows slow to get where they're put.
-        slow: Vec<Hwnd>,
+        slow: Vec<WindowId>,
         next: Thumb,
     }
 
     impl Backend for Fake {
-        fn fade(&mut self, h: Hwnd) -> Option<Faded> {
+        fn fade(&mut self, h: WindowId) -> Option<Faded> {
             self.log.push(format!("fade {h}"));
-            (!self.stubborn.contains(&h)).then_some(Faded { ex: 0, attrs: None })
+            (!self.stubborn.contains(&h)).then_some(Faded::default())
         }
-        fn unfade(&mut self, h: Hwnd, _: Faded) {
+        fn unfade(&mut self, h: WindowId, _: Faded) {
             self.log.push(format!("unfade {h}"));
         }
-        fn preview(&mut self, h: Hwnd) -> Option<Thumb> {
+        fn preview(&mut self, h: WindowId) -> Option<Thumb> {
             self.next += 1;
             self.log.push(format!("preview {h}"));
             Some(self.next)
@@ -687,13 +689,13 @@ mod tests {
         fn idle(&mut self) {
             self.log.push("idle".into());
         }
-        fn is_visible(&self, h: Hwnd) -> bool {
+        fn is_visible(&self, h: WindowId) -> bool {
             !self.hidden.contains(&h)
         }
-        fn place(&mut self, h: Hwnd, r: Rect) {
+        fn place(&mut self, h: WindowId, r: Rect) {
             self.log.push(format!("place {h} {} {}", r.x, r.y));
         }
-        fn arrived(&self, h: Hwnd, _: Rect) -> bool {
+        fn arrived(&self, h: WindowId, _: Rect) -> bool {
             !self.slow.contains(&h)
         }
     }

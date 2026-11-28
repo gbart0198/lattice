@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::config::Hook;
 use crate::ipc::{State, WindowState};
-use crate::win::Hwnd;
+use crate::platform::{WindowId, ipc::Peer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -133,8 +133,8 @@ impl Event {
 /// going first, then where you are, then what has focus.
 pub fn diff(prev: &State, next: &State) -> Vec<Event> {
     let mut out = Vec::new();
-    let before: HashMap<Hwnd, &WindowState> = prev.windows.iter().map(|w| (w.hwnd, w)).collect();
-    let after: HashMap<Hwnd, &WindowState> = next.windows.iter().map(|w| (w.hwnd, w)).collect();
+    let before: HashMap<WindowId, &WindowState> = prev.windows.iter().map(|w| (w.hwnd, w)).collect();
+    let after: HashMap<WindowId, &WindowState> = next.windows.iter().map(|w| (w.hwnd, w)).collect();
     for w in &prev.windows {
         if !after.contains_key(&w.hwnd) {
             out.push(Event::new(Kind::WindowClosed).window(w));
@@ -265,15 +265,12 @@ pub fn compile(hooks: &[Hook]) -> (Vec<HookSpec>, Vec<String>) {
     (ok, errors)
 }
 
-/// Runs a hook's command line through `cmd /C`, with the event in its environment and as one
-/// line of JSON on stdin. Console programs share cmd's hidden console, so nothing flashes.
+/// Runs a hook's command line through the shell (`cmd /C` on Windows), with the event in its
+/// environment and as one line of JSON on stdin.
 fn run_hook(run: &str, e: &Event) {
-    use std::os::windows::process::CommandExt;
     use std::process::Stdio;
     let json = e.to_json().to_string();
-    // `/S` with the line in quotes: cmd takes everything inside them literally.
-    let child = crate::wm::background_command("cmd")
-        .raw_arg(format!("/D /S /C \"{run}\""))
+    let child = crate::platform::process::shell_run(crate::wm::background_command, run)
         .envs(e.env())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -309,7 +306,7 @@ fn run_hook(run: &str, e: &Event) {
 enum Msg {
     Event(Event),
     Hooks(Vec<HookSpec>),
-    Subscribe(Hwnd),
+    Subscribe(Peer),
 }
 
 /// A burst of focus changes (Alt+Tab, clicking around) delivers only where focus settled.
@@ -326,7 +323,7 @@ fn dispatcher() -> &'static Sender<Msg> {
             .name("lattice-events".into())
             .spawn(move || {
                 let mut hooks: Vec<HookSpec> = Vec::new();
-                let mut subs: Vec<Hwnd> = Vec::new();
+                let mut subs: Vec<Peer> = Vec::new();
                 let mut focus: Option<(Event, Instant)> = None;
                 loop {
                     let msg = match &focus {
@@ -358,7 +355,7 @@ fn dispatcher() -> &'static Sender<Msg> {
     })
 }
 
-fn deliver(e: &Event, hooks: &[HookSpec], subs: &mut Vec<Hwnd>) {
+fn deliver(e: &Event, hooks: &[HookSpec], subs: &mut Vec<Peer>) {
     for h in hooks.iter().filter(|h| h.wants(e.kind)) {
         run_hook(&h.run, e);
     }
@@ -367,7 +364,7 @@ fn deliver(e: &Event, hooks: &[HookSpec], subs: &mut Vec<Hwnd>) {
     }
     let bytes = e.to_json().to_string().into_bytes();
     // A subscriber that's gone (or stuck for half a second) is dropped.
-    subs.retain(|h| crate::ipc::send_copydata(*h, crate::ipc::KIND_EVENT, &bytes, Duration::from_millis(500)));
+    subs.retain(|h| crate::platform::ipc::send(*h, crate::ipc::KIND_EVENT, &bytes, Duration::from_millis(500)));
     SUBSCRIBERS.store(subs.len(), Ordering::Relaxed);
 }
 
@@ -392,10 +389,10 @@ pub fn set_hooks(hooks: &[Hook]) {
     let _ = dispatcher().send(Msg::Hooks(specs));
 }
 
-/// A `lattice subscribe` client's window, to send every event to.
-pub fn subscribe(hwnd: Hwnd) {
+/// A `lattice subscribe` client, to send every event to.
+pub fn subscribe(peer: Peer) {
     SUBSCRIBERS.fetch_add(1, Ordering::Relaxed);
-    let _ = dispatcher().send(Msg::Subscribe(hwnd));
+    let _ = dispatcher().send(Msg::Subscribe(peer));
 }
 
 pub fn emit(e: Event) {

@@ -1,4 +1,4 @@
-//! The Windows side of command mode: what the system offers (sleep states, audio outputs,
+//! Command mode on Windows: what the system offers (sleep states, audio outputs,
 //! Wi-Fi) and running the system commands.
 //!
 //! - power: `LockWorkStation`, `SetSuspendState` and `ExitWindowsEx` (with SeShutdownPrivilege);
@@ -20,7 +20,7 @@ use windows::Win32::Security::{
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{GUID, HRESULT, Interface, PCWSTR};
 
-use super::commands::{AudioOutput, Network, Snapshot, System, Wifi};
+use crate::launcher::commands::{AudioOutput, Network, Snapshot, System, Wifi};
 
 /// What the system offers now. Each part that fails is left out (and logged).
 pub fn snapshot() -> Snapshot {

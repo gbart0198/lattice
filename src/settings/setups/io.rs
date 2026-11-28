@@ -175,7 +175,7 @@ fn parse_capture(v: &serde_json::Value) -> Result<Vec<CapturedWs>, String> {
         if exe.is_empty() || exe.eq_ignore_ascii_case("ApplicationFrameHost.exe") {
             continue;
         }
-        let path = w["hwnd"].as_i64().map(|h| crate::win::exe_path(h as isize)).unwrap_or_default();
+        let path = w["hwnd"].as_i64().map(|h| crate::platform::win::exe_path(h as isize)).unwrap_or_default();
         let run = if path.is_empty() { String::new() } else { setups::run_for_path(&path) };
         let number = number as usize;
         let monitor = w["monitor"].as_u64().map(|m| m as usize);

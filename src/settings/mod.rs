@@ -11,7 +11,7 @@ use toml_edit::DocumentMut;
 
 use crate::config::{self, Config};
 use crate::update;
-use crate::win;
+use crate::platform::win;
 
 mod setups;
 
@@ -460,33 +460,19 @@ fn save(s: &mut S) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Talking to the running lattice (its hidden "lattice-control" window)
-
-fn control_window() -> Option<windows::Win32::Foundation::HWND> {
-    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
-    use windows::core::w;
-    unsafe { FindWindowW(w!("lattice-display-listener"), w!("lattice-control")).ok().filter(|h| !h.is_invalid()) }
-}
+// Talking to the running lattice (`platform::control`)
 
 fn notify_reload() -> bool {
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
-    match control_window() {
-        Some(h) => unsafe { PostMessageW(Some(h), WM_APP + 2, WPARAM(0), LPARAM(0)).is_ok() },
-        None => false,
-    }
+    crate::platform::control::find().is_some_and(|l| l.reload())
 }
 
 /// Quits the running lattice the clean way (restores hidden windows) and starts it again.
 fn restart_lattice() -> Result<(), String> {
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-    if let Some(h) = control_window() {
-        unsafe {
-            let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
-        }
+    use crate::platform::control;
+    if let Some(lattice) = control::find() {
+        lattice.quit();
         let start = std::time::Instant::now();
-        while control_window().is_some() && start.elapsed() < std::time::Duration::from_secs(5) {
+        while control::find().is_some() && start.elapsed() < std::time::Duration::from_secs(5) {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         // The process lingers a moment after its window goes; let its single-instance lock go.
@@ -1124,25 +1110,14 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
 // Entry
 
 pub fn run() {
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows::Win32::System::Threading::CreateMutexW;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow};
-    use windows::core::{HSTRING, w};
-    unsafe {
-        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        // One settings window: a second Win+Alt+Comma brings the first to the front.
-        let guard = CreateMutexW(None, true, w!("Local\\lattice-settings"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            if let Ok(h) = FindWindowW(None, &HSTRING::from(TITLE))
-                && !h.is_invalid()
-            {
-                let _ = ShowWindow(h, SW_RESTORE);
-                let _ = SetForegroundWindow(h);
-            }
-            return;
-        }
-        std::mem::forget(guard);
-    }
+    use crate::platform::process;
+    process::set_dpi_aware();
+    // One settings window: a second Win+Alt+Comma brings the first to the front.
+    let Some(guard) = process::single_instance("lattice-settings") else {
+        process::bring_to_front(TITLE);
+        return;
+    };
+    std::mem::forget(guard);
 
     // Centre on the primary monitor's work area.
     let (lw, lh) = (760.0_f32, 700.0_f32);

@@ -1,5 +1,6 @@
 //! Thin, safe-ish wrappers over the Win32 calls lattice needs. Window handles are stored as
-//! `isize` (`Hwnd`) so they can live in maps and cross threads; `h()` turns one back into HWND.
+//! `isize` (`Hwnd`, which is `platform::WindowId`) so they can live in maps and cross threads;
+//! `h()` turns one back into HWND.
 
 use std::ffi::c_void;
 
@@ -21,8 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PWSTR};
 
 use crate::layout::Rect;
-
-pub type Hwnd = isize;
+pub use crate::platform::{Candidate, MonitorInfo, WindowId as Hwnd};
 
 pub fn h(hwnd: Hwnd) -> HWND {
     HWND(hwnd as *mut c_void)
@@ -131,14 +131,6 @@ const IGNORED_CLASSES: &[&str] = &[
 ];
 
 const IGNORED_EXES: &[&str] = &["ShellExperienceHost.exe", "StartMenuExperienceHost.exe", "SearchHost.exe", "LockApp.exe"];
-
-/// Facts about a window that decide whether (and how) lattice manages it.
-pub struct Candidate {
-    pub exe: String,
-    pub class: String,
-    pub title: String,
-    pub resizable: bool,
-}
 
 /// Returns `Some` for real application windows: visible, top-level, uncloaked, unowned (or
 /// app-windowed), not a tool window, not shell UI, not ours.
@@ -262,12 +254,34 @@ pub fn place_quiet(hwnd: Hwnd, target: Rect) {
 
 /// A window lattice made invisible (it keeps drawing, so its live preview can be animated), and
 /// what it takes to put it back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Faded {
     /// Its extended style before.
     pub ex: isize,
     /// Its own layered-window attributes (colour key, alpha, flags), when it was layered already.
     pub attrs: Option<(u32, u8, u32)>,
+}
+
+impl Faded {
+    /// As `faded.txt` keeps it (after the window and its pid): "exstyle attrs", attrs being
+    /// "key:alpha:flags" or "-".
+    pub fn encode(&self) -> String {
+        let attrs = self.attrs.map_or("-".to_string(), |(k, a, fl)| format!("{k:x}:{a}:{fl:x}"));
+        format!("{:x} {attrs}", self.ex)
+    }
+
+    /// Reads what `encode` wrote, from the fields after the window and its pid.
+    pub fn decode<'a>(mut fields: impl Iterator<Item = &'a str>) -> Option<Faded> {
+        let ex = isize::from_str_radix(fields.next()?, 16).ok()?;
+        let attrs = match fields.next()? {
+            "-" => None,
+            a => {
+                let mut q = a.split(':');
+                Some((u32::from_str_radix(q.next()?, 16).ok()?, q.next()?.parse().ok()?, u32::from_str_radix(q.next()?, 16).ok()?))
+            }
+        };
+        Some(Faded { ex, attrs })
+    }
 }
 
 /// Makes a window fully transparent without hiding it: DWM still composes it, so previews of it
@@ -444,16 +458,6 @@ pub fn set_cursor(x: i32, y: i32) {
 
 // ---------------------------------------------------------------------------------------------
 // Monitors
-
-#[derive(Clone, Debug)]
-pub struct MonitorInfo {
-    pub handle: isize,
-    pub rect: Rect,
-    /// Work area: the monitor minus the Windows taskbar.
-    pub work: Rect,
-    pub primary: bool,
-    pub scale: f32,
-}
 
 pub fn monitors() -> Vec<MonitorInfo> {
     unsafe extern "system" fn cb(hm: HMONITOR, _: HDC, _: *mut RECT, lp: LPARAM) -> BOOL {

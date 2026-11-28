@@ -1,45 +1,33 @@
 //! Scripting a running lattice: `lattice msg`, `lattice query` and `lattice subscribe`.
 //!
-//! Transport: the CLI makes a message-only window and sends its request as `WM_COPYDATA` to the
-//! running lattice's hidden "lattice-control" window (`wParam` is the CLI's window). lattice
-//! answers with a `WM_COPYDATA` back to that window, sent from a short-lived thread so a client
-//! that stops pumping messages can never hold up the WM thread. Commands and queries go through
-//! the WM thread's queue (`hooks.rs`), in order with keybinds, so `msg` then `query` sees the
-//! command's result. Every payload is UTF-8 JSON.
-//!
-//! The control window doesn't lift UIPI's filter for `WM_COPYDATA`: a lower-integrity process
-//! (a browser sandbox) must not be able to `exec` through lattice. An elevated lattice therefore
-//! only takes requests from an elevated shell.
+//! The transport is the OS back end's (`platform::ipc`; on Windows `WM_COPYDATA` between the
+//! CLI's window and lattice's hidden control window). This file is the rest: the state queries
+//! print, the wire format, what lattice does with a request, and the CLI. lattice answers from a
+//! short-lived thread, so a client that stops reading can never hold up the WM thread. Commands
+//! and queries go through the WM thread's queue (`hooks.rs`), in order with keybinds, so `msg`
+//! then `query` sees the command's result. Every payload is UTF-8 JSON.
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::ffi::c_void;
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-use windows::Win32::UI::WindowsAndMessaging::{
-    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, HWND_MESSAGE, IsWindow, MSG, MSGFLT_ALLOW,
-    MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RegisterClassW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_COPYDATA, WNDCLASSW,
-};
-use windows::core::w;
 
 use crate::config::{self, Command};
 use crate::layout::Rect;
-use crate::win::Hwnd;
+use crate::platform::ipc::{self as os, Peer};
+use crate::platform::WindowId;
 
-/// `COPYDATASTRUCT::dwData` tags: client -> lattice request, lattice -> client reply and event.
+/// What a message is: client -> lattice request, lattice -> client reply and event. (On Windows,
+/// `COPYDATASTRUCT::dwData`.)
 pub const KIND_REQUEST: usize = 0x4C54_5251; // "LTRQ"
 pub const KIND_REPLY: usize = 0x4C54_5250; // "LTRP"
 pub const KIND_EVENT: usize = 0x4C54_4556; // "LTEV"
 /// Bumped if the request format ever changes incompatibly.
 const PROTOCOL: u32 = 1;
 /// Requests are a command line or a query name; anything this big is not one.
-const MAX_REQUEST: usize = 64 * 1024;
+pub const MAX_REQUEST: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------------------------
 // State, as `lattice query` prints it (and as `events.rs` diffs it)
@@ -69,13 +57,13 @@ pub struct WorkspaceState {
     /// Monitors that hold at least one of its windows (a workspace spans every monitor).
     pub monitors: Vec<usize>,
     /// The window last focused on it.
-    pub focused: Option<Hwnd>,
-    pub fullscreen: Option<Hwnd>,
+    pub focused: Option<WindowId>,
+    pub fullscreen: Option<WindowId>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct WindowState {
-    pub hwnd: Hwnd,
+    pub hwnd: WindowId,
     pub title: String,
     pub exe: String,
     pub class: String,
@@ -110,11 +98,11 @@ pub struct State {
     /// 1-based.
     pub active_workspace: usize,
     pub focused_monitor: usize,
-    pub focused_window: Option<Hwnd>,
+    pub focused_window: Option<WindowId>,
 }
 
 impl State {
-    pub fn window(&self, hwnd: Hwnd) -> Option<&WindowState> {
+    pub fn window(&self, hwnd: WindowId) -> Option<&WindowState> {
         self.windows.iter().find(|w| w.hwnd == hwnd)
     }
 
@@ -242,10 +230,10 @@ fn decode_reply(bytes: &[u8]) -> Option<(u32, Result<Value, String>)> {
 // ---------------------------------------------------------------------------------------------
 // lattice's side
 
-/// Who to answer: the client's window and its request id.
+/// Who to answer: the client and its request id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReplyTo {
-    pub hwnd: Hwnd,
+    pub peer: Peer,
     pub id: u32,
 }
 
@@ -255,7 +243,7 @@ impl ReplyTo {
     pub fn send(self, result: Result<Value, String>) {
         let bytes = encode_reply(self.id, result);
         let spawned = std::thread::Builder::new().name("lattice-ipc-reply".into()).spawn(move || {
-            send_copydata(self.hwnd, KIND_REPLY, &bytes, Duration::from_secs(2));
+            os::send(self.peer, KIND_REPLY, &bytes, Duration::from_secs(2));
         });
         if let Err(e) = spawned {
             log::warn!("ipc reply: {e}");
@@ -270,9 +258,9 @@ pub struct Request {
     pub op: Op,
 }
 
-/// What the control window's `WM_COPYDATA` handler does with a message.
+/// What the transport does with a message.
 pub enum Received {
-    /// Not ours: let `DefWindowProc` have it.
+    /// Not ours: let the OS have it.
     NotOurs,
     /// Answered already (bad requests, subscriptions).
     Handled,
@@ -280,26 +268,13 @@ pub enum Received {
     Queue(Request),
 }
 
-/// Reads a `WM_COPYDATA` sent to the control window. Copies the payload out: it's only valid
-/// while the message is being handled.
-pub fn receive(wp: WPARAM, lp: LPARAM) -> Received {
-    if lp.0 == 0 {
-        return Received::NotOurs;
-    }
-    let cds = unsafe { &*(lp.0 as *const COPYDATASTRUCT) };
-    if cds.dwData != KIND_REQUEST {
-        return Received::NotOurs;
-    }
-    let bytes = if cds.lpData.is_null() || cds.cbData as usize > MAX_REQUEST {
-        Vec::new()
-    } else {
-        unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) }.to_vec()
-    };
-    let (id, op) = decode_request(&bytes);
-    let reply = ReplyTo { hwnd: wp.0 as Hwnd, id };
+/// A request (`bytes`, as the client sent them) from `peer`, which the transport received.
+pub fn received(peer: Peer, bytes: &[u8]) -> Received {
+    let (id, op) = decode_request(bytes);
+    let reply = ReplyTo { peer, id };
     match op {
         Ok(Op::Subscribe) => {
-            crate::events::subscribe(reply.hwnd);
+            crate::events::subscribe(reply.peer);
             reply.send(Ok(Value::Null));
             Received::Handled
         }
@@ -311,149 +286,41 @@ pub fn receive(wp: WPARAM, lp: LPARAM) -> Received {
     }
 }
 
-/// Sends `bytes` as `WM_COPYDATA` to `to`; false if it's gone, hung, or refused it.
-pub fn send_copydata(to: Hwnd, kind: usize, bytes: &[u8], timeout: Duration) -> bool {
-    let to = HWND(to as *mut c_void);
-    let cds = COPYDATASTRUCT { dwData: kind, cbData: bytes.len() as u32, lpData: bytes.as_ptr() as *mut c_void };
-    let mut result = 0usize;
-    let ok = unsafe {
-        SendMessageTimeoutW(to, WM_COPYDATA, WPARAM(0), LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, timeout.as_millis() as u32, Some(&mut result))
-    };
-    ok.0 != 0 && result != 0
-}
-
 // ---------------------------------------------------------------------------------------------
 // The CLI's side
 
-thread_local! {
-    /// `WM_COPYDATA` payloads that reached the client window: (kind, bytes).
-    static INBOX: RefCell<VecDeque<(usize, Vec<u8>)>> = const { RefCell::new(VecDeque::new()) };
-}
+/// What the client got so far: (kind, bytes) per message.
+pub type Inbox = VecDeque<(usize, Vec<u8>)>;
 
-unsafe extern "system" fn client_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if msg == WM_COPYDATA && lp.0 != 0 {
-        let cds = unsafe { &*(lp.0 as *const COPYDATASTRUCT) };
-        if matches!(cds.dwData, KIND_REPLY | KIND_EVENT) {
-            let bytes = if cds.lpData.is_null() {
-                Vec::new()
-            } else {
-                unsafe { std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize) }.to_vec()
-            };
-            INBOX.with(|q| q.borrow_mut().push_back((cds.dwData, bytes)));
-            return LRESULT(1);
-        }
-    }
-    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
-}
-
-struct Client {
-    hwnd: HWND,
-    control: HWND,
-}
-
-enum Waited<T> {
+pub enum Waited<T> {
     Got(T),
     TimedOut,
-    /// lattice's control window went away.
+    /// lattice went away.
     Gone,
 }
 
+/// The CLI's connection to the running lattice.
+struct Client(os::Client);
+
 impl Client {
     fn connect() -> Result<Client, String> {
-        let control = unsafe { FindWindowW(w!("lattice-display-listener"), w!("lattice-control")) }
-            .ok()
-            .filter(|h| !h.is_invalid())
-            .ok_or("lattice isn't running")?;
-        unsafe {
-            let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map_err(|e| e.to_string())?;
-            let class = w!("lattice-ipc-client");
-            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(client_proc), hInstance: instance.into(), lpszClassName: class, ..Default::default() });
-            let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                class,
-                None,
-                WINDOW_STYLE::default(),
-                0,
-                0,
-                0,
-                0,
-                Some(HWND_MESSAGE),
-                None,
-                Some(instance.into()),
-                None,
-            )
-            .map_err(|e| format!("couldn't create a window for replies: {e}"))?;
-            // From an elevated shell to a lattice that isn't, Windows would drop the replies.
-            let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, None);
-            Ok(Client { hwnd, control })
-        }
+        os::Client::connect().map(Client)
     }
 
-    /// Sends one request; Ok once lattice took it (the answer comes later, as a reply).
-    fn send(&self, id: u32, op: &str, arg: &str) -> Result<(), String> {
-        let bytes = encode_request(id, op, arg);
-        let cds = COPYDATASTRUCT { dwData: KIND_REQUEST, cbData: bytes.len() as u32, lpData: bytes.as_ptr() as *mut c_void };
-        let mut accepted = 0usize;
-        let sent = unsafe {
-            SendMessageTimeoutW(
-                self.control,
-                WM_COPYDATA,
-                WPARAM(self.hwnd.0 as usize),
-                LPARAM(&cds as *const _ as isize),
-                SMTO_ABORTIFHUNG,
-                5000,
-                Some(&mut accepted),
-            )
-        };
-        if sent.0 == 0 {
-            return Err("lattice isn't responding (or runs elevated and this shell doesn't)".into());
-        }
-        if accepted == 0 {
-            return Err("the running lattice doesn't take commands; it's older than this one (restart it)".into());
-        }
-        Ok(())
-    }
-
-    /// Pumps messages until `take` finds what it wants, the time is up, or lattice exits.
-    fn wait<T>(&self, timeout: Option<Duration>, mut take: impl FnMut() -> Option<T>) -> Waited<T> {
-        let start = Instant::now();
-        loop {
-            if let Some(v) = take() {
-                return Waited::Got(v);
-            }
-            if !unsafe { IsWindow(Some(self.control)) }.as_bool() {
-                return Waited::Gone;
-            }
-            let mut left = Duration::from_millis(500);
-            if let Some(t) = timeout {
-                let rest = t.saturating_sub(start.elapsed());
-                if rest.is_zero() {
-                    return Waited::TimedOut;
-                }
-                left = left.min(rest);
-            }
-            unsafe {
-                MsgWaitForMultipleObjects(None, false, left.as_millis() as u32, QS_ALLINPUT);
-                let mut msg = MSG::default();
-                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                    DispatchMessageW(&msg);
-                }
-            }
-        }
+    /// Waits until `take` finds what it wants in the inbox, the time is up, or lattice exits.
+    fn wait<T>(&self, timeout: Option<Duration>, take: impl FnMut(&mut Inbox) -> Option<T>) -> Waited<T> {
+        self.0.wait(timeout, take)
     }
 
     /// One request and its reply.
     fn call(&self, op: &str, arg: &str, timeout: Duration) -> Waited<Result<Value, String>> {
         const ID: u32 = 1;
-        if let Err(e) = self.send(ID, op, arg) {
+        if let Err(e) = self.0.send(&encode_request(ID, op, arg)) {
             return Waited::Got(Err(e));
         }
-        self.wait(Some(timeout), || {
-            INBOX.with(|q| {
-                let mut q = q.borrow_mut();
-                let at = q.iter().position(|(k, b)| *k == KIND_REPLY && decode_reply(b).is_some_and(|(id, _)| id == ID))?;
-                q.remove(at).and_then(|(_, b)| decode_reply(&b)).map(|(_, r)| r)
-            })
+        self.wait(Some(timeout), |q| {
+            let at = q.iter().position(|(k, b)| *k == KIND_REPLY && decode_reply(b).is_some_and(|(id, _)| id == ID))?;
+            q.remove(at).and_then(|(_, b)| decode_reply(&b)).map(|(_, r)| r)
         })
     }
 }
@@ -503,15 +370,12 @@ const RESTORE_TIMEOUT: Duration = Duration::from_secs(90);
 /// `setup-restored` event of restore `id` and prints it. Exit code 0 if every app took its
 /// spot, else 1.
 fn wait_restored(client: &Client, id: u64, fail: impl Fn(i32, &str) -> i32) -> i32 {
-    let found = client.wait(Some(RESTORE_TIMEOUT), || {
-        INBOX.with(|q| {
-            let mut q = q.borrow_mut();
-            let events: Vec<_> = q.drain(..).filter(|(k, _)| *k == KIND_EVENT).collect();
-            events
-                .into_iter()
-                .filter_map(|(_, b)| serde_json::from_slice::<Value>(&b).ok())
-                .find(|v| v["event"] == "setup-restored" && v["restore"] == id)
-        })
+    let found = client.wait(Some(RESTORE_TIMEOUT), |q| {
+        let events: Vec<_> = q.drain(..).filter(|(k, _)| *k == KIND_EVENT).collect();
+        events
+            .into_iter()
+            .filter_map(|(_, b)| serde_json::from_slice::<Value>(&b).ok())
+            .find(|v| v["event"] == "setup-restored" && v["restore"] == id)
     });
     match found {
         Waited::Got(v) => {
@@ -617,12 +481,8 @@ pub fn cli(args: &[String]) -> i32 {
             }
             // One JSON object per line until lattice exits or whoever reads us goes away.
             let mut out = std::io::stdout().lock();
-            let printing = client.wait(None, || {
-                let events: Vec<Vec<u8>> = INBOX.with(|q| {
-                    let mut q = q.borrow_mut();
-                    let all: Vec<_> = q.drain(..).collect();
-                    all.into_iter().filter(|(k, _)| *k == KIND_EVENT).map(|(_, b)| b).collect()
-                });
+            let printing = client.wait(None, |q| {
+                let events: Vec<Vec<u8>> = q.drain(..).filter(|(k, _)| *k == KIND_EVENT).map(|(_, b)| b).collect();
                 for bytes in events {
                     let Ok(v) = serde_json::from_slice::<Value>(&bytes) else { continue };
                     if !only.is_empty() && !v["event"].as_str().is_some_and(|e| only.contains(&e)) {

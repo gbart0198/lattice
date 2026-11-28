@@ -16,10 +16,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
 
-use super::{Backend, Thumb, clip_preview};
+use crate::anim::{Backend, Thumb, clip_preview};
 use crate::layout::Rect;
 use crate::shared;
-use crate::win::{self, Faded, Hwnd};
+use crate::platform::win::{self, Faded, Hwnd};
 
 #[derive(Default)]
 pub struct Dwm {

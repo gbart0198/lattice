@@ -16,10 +16,10 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use super::{After, Animator, Glide, Kind, WARMUP, timing};
+use crate::anim::{After, Animator, Glide, Kind, WARMUP, timing};
 use crate::config::AnimStyle;
 use crate::layout::{self, LayoutKind, Params, Rect};
-use crate::win::Hwnd;
+use crate::platform::win::Hwnd;
 
 pub const TITLE: &str = "lattice animation preview";
 const SCENES: [&str; 5] = ["move", "swap", "workspace", "fullscreen", "minimize"];
@@ -83,7 +83,7 @@ fn to_screen(r: Rect) -> Rect {
 fn place_child(h: Hwnd, r: Rect) {
     let r = to_screen(r);
     unsafe {
-        let _ = SetWindowPos(crate::win::h(h), None, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE);
+        let _ = SetWindowPos(crate::platform::win::h(h), None, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -173,7 +173,7 @@ impl Demo {
         });
         for w in &self.wins {
             unsafe {
-                let _ = InvalidateRect(Some(crate::win::h(w.hwnd)), None, false);
+                let _ = InvalidateRect(Some(crate::platform::win::h(w.hwnd)), None, false);
             }
         }
     }
@@ -201,7 +201,7 @@ impl Demo {
 fn child_rect(canvas: HWND, h: Hwnd) -> Rect {
     let mut r = RECT::default();
     unsafe {
-        let _ = GetWindowRect(crate::win::h(h), &mut r);
+        let _ = GetWindowRect(crate::platform::win::h(h), &mut r);
         let mut pts = [windows::Win32::Foundation::POINT { x: r.left, y: r.top }, windows::Win32::Foundation::POINT { x: r.right, y: r.bottom }];
         MapWindowPoints(None, Some(canvas), &mut pts);
         Rect::new(pts[0].x, pts[0].y, pts[1].x - pts[0].x, pts[1].y - pts[0].y)
@@ -210,13 +210,13 @@ fn child_rect(canvas: HWND, h: Hwnd) -> Rect {
 
 fn raise(h: Hwnd) {
     unsafe {
-        let _ = SetWindowPos(crate::win::h(h), Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let _ = SetWindowPos(crate::platform::win::h(h), Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 
 fn show(h: Hwnd, on: bool) {
     unsafe {
-        let _ = ShowWindow(crate::win::h(h), if on { SW_SHOWNA } else { SW_HIDE });
+        let _ = ShowWindow(crate::platform::win::h(h), if on { SW_SHOWNA } else { SW_HIDE });
     }
 }
 
@@ -423,7 +423,7 @@ pub fn run(args: &[String]) {
     register(w!("lattice-anim-canvas"), Some(canvas_proc));
     register(w!("lattice-anim-bar"), Some(bar_proc));
     register(w!("lattice-anim-demo"), Some(demo_proc));
-    let all = crate::win::monitors();
+    let all = crate::platform::win::monitors();
     let Some(primary) = all.iter().find(|m| m.primary).or(all.first()) else { return };
     let (x, y) = (primary.work.x + (primary.work.w - cw) / 2, primary.work.y + (primary.work.h - ch) / 2);
     let title: Vec<u16> = TITLE.encode_utf16().chain(Some(0)).collect();
@@ -458,10 +458,10 @@ pub fn run(args: &[String]) {
         _ => vec![(0, 0), (0, 0), (0, 0)],
     };
     let mut demo = Demo {
-        anim: Animator::with(super::dwm::Dwm::default(), || {}),
+        anim: Animator::with(super::Native::default(), || {}),
         style,
         canvas,
-        bar: crate::win::h(bar),
+        bar: crate::platform::win::h(bar),
         monitors,
         bar_h,
         wins: Vec::new(),
