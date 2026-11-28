@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use rune::{Align, App, AppSpec, Color, Cx, El, Image, ImageCache, SurfaceFit, TextStyle, Tx, WindowOptions, WindowsWindowOptions, col, el, row, text};
+use rune::{Align, App, AppHandle, AppSpec, Color, Cx, El, Image, ImageCache, SurfaceFit, TextStyle, Tx, WindowOptions, WindowsWindowOptions, col, el, row, text};
 
 use crate::config::{self, Command, WsTarget};
 use crate::shared::{self, Anchor, BAR_GEN, BarModel};
@@ -26,6 +26,8 @@ static CFG: OnceLock<config::Bar> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
 static SYS: Mutex<Option<SysInfo>> = Mutex::new(None);
 static SYS_GEN: AtomicU64 = AtomicU64::new(0);
+/// For hiding the bar from the WM thread (`set_hidden`).
+static APP: OnceLock<AppHandle<State>> = OnceLock::new();
 /// The bar window's top-left on screen (physical pixels) and its scale, to report where its
 /// parts are to the tour.
 static ORIGIN: OnceLock<(i32, i32, f32)> = OnceLock::new();
@@ -80,6 +82,23 @@ pub fn color(s: &str, fallback: Color) -> Color {
     Color { r: lin(r), g: lin(g), b: lin(b), a }
 }
 
+/// Hides the bar while a fullscreen app is in front, or shows it again (`Wm::update_bar`).
+/// Through Rune, not ShowWindow: Rune stops drawing a window it hid and starts again when it
+/// shows it, where a window hidden behind its back stays on its old frame once shown. Hidden,
+/// nothing wakes the bar; shown, one wake draws what changed meanwhile, queued after the show
+/// so it lands on the visible window. False when there's no bar.
+pub fn set_hidden(hidden: bool) -> bool {
+    let Some(app) = APP.get() else { return false };
+    if hidden {
+        shared::set_bar_suppressed(true);
+        app.hide();
+    } else {
+        app.show();
+        shared::set_bar_suppressed(false);
+    }
+    true
+}
+
 fn cfg() -> &'static config::Bar {
     CFG.get().expect("bar config set")
 }
@@ -114,7 +133,10 @@ fn setup(s: &mut State, wake: rune::Waker) {
                     *slot = Some(info);
                     drop(slot);
                     SYS_GEN.fetch_add(1, Ordering::SeqCst);
-                    wake();
+                    // Not while a fullscreen app hides the bar: it catches up when shown.
+                    if !shared::bar_suppressed() {
+                        wake();
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(1000));
             }
@@ -123,6 +145,11 @@ fn setup(s: &mut State, wake: rune::Waker) {
 }
 
 fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
+    // Hidden behind a fullscreen app. Rune still wakes for its own reasons (a display change
+    // as a game enters exclusive fullscreen); the generations stay unread until it's shown.
+    if shared::bar_suppressed() {
+        return false;
+    }
     let mut changed = false;
     let g = BAR_GEN.load(Ordering::SeqCst);
     if g != s.model_gen {
@@ -401,5 +428,6 @@ fn bar_spec(bar_cfg: config::Bar) -> Option<rune::WindowSpec<State>> {
         tx.quit();
     })
     .on_quit(|_, _| shared::restore_hidden());
+    let _ = APP.set(app.handle());
     Some(rune::WindowSpec::from_app("bar", app))
 }

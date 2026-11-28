@@ -99,6 +99,10 @@ pub struct Wm {
     border_watch: Option<Hwnd>,
     /// Something happened that may move the border; `update_border` looks once per batch.
     border_dirty: bool,
+    /// The bar's window (0 until found), and whether it's hidden behind a fullscreen app
+    /// (`update_bar`).
+    bar: Hwnd,
+    bar_hidden: bool,
     /// Windows gliding or sliding somewhere (empty, and free, when nothing moves).
     anim: Animator,
     /// Counts focus changes, to stamp `Window::focused_at`.
@@ -186,6 +190,8 @@ impl Wm {
             border: crate::border::Border::new(cfg.border.clone()),
             border_watch: None,
             border_dirty: true,
+            bar: 0,
+            bar_hidden: false,
             anim: Animator::new(),
             focus_seq: 0,
             events: events::Tracker::default(),
@@ -251,10 +257,11 @@ impl Wm {
         }
         self.focused_monitor = self.focused_monitor.min(self.monitors.len().saturating_sub(1));
         // Keep the bar across the top of the primary monitor's (possibly new) work area.
-        if let Some(m) = self.monitors.iter().find(|m| m.info.primary && m.bar_px > 0) {
-            let bar = win::find_own_window("lattice-bar");
+        // A hidden one is placed when it's shown again.
+        if let Some(r) = self.bar_rect().filter(|_| !self.bar_hidden) {
+            let bar = self.bar_hwnd();
             if bar != 0 {
-                win::place_overlay(bar, Rect::new(m.info.work.x, m.info.work.y, m.info.work.w, m.bar_px));
+                win::place_overlay(bar, r);
             }
         }
     }
@@ -1903,6 +1910,51 @@ impl Wm {
         });
         if let Some(b) = self.border.as_mut() {
             b.set(placed);
+        }
+    }
+
+    /// Where the bar goes: across the top of the primary monitor's work area. None with the
+    /// bar off.
+    fn bar_rect(&self) -> Option<Rect> {
+        let m = self.monitors.iter().find(|m| m.info.primary && m.bar_px > 0)?;
+        Some(Rect::new(m.info.work.x, m.info.work.y, m.info.work.w, m.bar_px))
+    }
+
+    /// The bar's window, found once (it opens on the main thread, maybe after `Wm::new`).
+    fn bar_hwnd(&mut self) -> Hwnd {
+        if self.bar == 0 || !win::is_window(self.bar) {
+            self.bar = win::find_own_window("lattice-bar");
+        }
+        self.bar
+    }
+
+    /// Hides the bar while the foreground window is a fullscreen app on its monitor (a game,
+    /// a video), and shows it again once focus moves on. Over a fullscreen game, an
+    /// always-on-top bar costs a frame of latency (Windows composes the game instead of
+    /// flipping it straight to the screen) and covers its top strip. Hidden, the bar doesn't
+    /// redraw either. Runs once per batch of events: a foreground change, or the foreground
+    /// window going fullscreen (a location change), lands in one.
+    pub fn update_bar(&mut self) {
+        let Some(m) = self.monitors.iter().find(|m| m.info.primary && m.bar_px > 0) else { return };
+        let hide = win::is_fullscreen_on(win::foreground(), m.info.rect);
+        if hide == self.bar_hidden {
+            return;
+        }
+        let Some(r) = self.bar_rect() else { return };
+        if !crate::bar::set_hidden(hide) {
+            return;
+        }
+        self.bar_hidden = hide;
+        if hide {
+            log::info!("fullscreen app in front: bar hidden");
+        } else {
+            // Back on top of everything (the fullscreen app may be topmost too), where the
+            // monitors say it goes now.
+            let bar = self.bar_hwnd();
+            if bar != 0 {
+                win::place_overlay(bar, r);
+            }
+            log::info!("bar shown");
         }
     }
 

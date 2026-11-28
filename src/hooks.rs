@@ -365,6 +365,7 @@ pub fn run(cfg: Config) {
         // Once per batch, not per item: a drag queues dozens of location changes, and a
         // workspace switch hides and shows every window on two workspaces.
         wm.update_border();
+        wm.update_bar();
         wm.emit_events();
         wm.save_state();
         shared::flush_hidden();
