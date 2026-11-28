@@ -9,13 +9,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_ESCAPE,
-};
-use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
-
+use super::platform::bench::{on_screen, press_escape, press_letter};
 use super::{HWND as LAUNCHER_HWND, Options};
 
 /// View builds and their total time, counted by `ui::view` (always on; two relaxed adds).
@@ -56,7 +50,7 @@ fn drive(cycles: usize, gap: Duration, settle: Duration) {
         let nanos0 = VIEW_NANOS.load(Ordering::SeqCst);
         let t0 = Instant::now();
         super::toggle(None);
-        if !wait(Duration::from_secs(5), on_screen) {
+        if !wait(Duration::from_secs(5), || on_screen(LAUNCHER_HWND.load(Ordering::SeqCst))) {
             println!("cycle {i}: never showed");
             return;
         }
@@ -69,7 +63,7 @@ fn drive(cycles: usize, gap: Duration, settle: Duration) {
         for c in ['c', 'h', 'r'] {
             let before = VIEWS.load(Ordering::SeqCst);
             let t = Instant::now();
-            key(VIRTUAL_KEY(c.to_ascii_uppercase() as u16));
+            press_letter(c);
             wait(Duration::from_secs(2), || VIEWS.load(Ordering::SeqCst) > before);
             keys.push(t.elapsed());
             std::thread::sleep(Duration::from_millis(60));
@@ -77,9 +71,9 @@ fn drive(cycles: usize, gap: Duration, settle: Duration) {
         std::thread::sleep(Duration::from_millis(200));
         let t = Instant::now();
         // Twice: the first clears the query, the second closes, as a person does.
-        key(VK_ESCAPE);
+        press_escape();
         std::thread::sleep(Duration::from_millis(30));
-        key(VK_ESCAPE);
+        press_escape();
         if !wait(Duration::from_secs(2), || !super::is_visible()) {
             super::hide();
         }
@@ -125,31 +119,4 @@ fn wait(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_micros(250));
     }
     false
-}
-
-/// Shown and not cloaked by DWM: on screen.
-fn on_screen() -> bool {
-    let hwnd = LAUNCHER_HWND.load(Ordering::SeqCst);
-    if hwnd == 0 {
-        return false;
-    }
-    let hwnd = HWND(hwnd as *mut _);
-    unsafe {
-        if !IsWindowVisible(hwnd).as_bool() {
-            return false;
-        }
-        let mut cloaked = 0u32;
-        let ok = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4).is_ok();
-        ok && cloaked == 0
-    }
-}
-
-fn key(vk: VIRTUAL_KEY) {
-    let input = |flags| INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, dwFlags: flags, ..Default::default() } },
-    };
-    unsafe {
-        SendInput(&[input(Default::default()), input(KEYEVENTF_KEYUP)], std::mem::size_of::<INPUT>() as i32);
-    }
 }

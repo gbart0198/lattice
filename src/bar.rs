@@ -12,7 +12,7 @@ use rune::{Align, App, AppHandle, AppSpec, Color, Cx, El, Image, ImageCache, Sur
 use crate::config::{self, Command, WsTarget};
 use crate::shared::{self, Anchor, BAR_GEN, BarModel};
 use crate::sysinfo::{Sampler, SysInfo};
-use crate::win;
+use crate::platform::win;
 
 struct Theme {
     bg: Color,

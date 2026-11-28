@@ -13,12 +13,13 @@
 //! global hotkey of its own.
 //!
 //! - `rank`: fuzzy matching and launch history (pure Rust);
-//! - `system`: the Windows parts (app catalog, icons, launching, file actions, focus);
+//! - `platform`: the OS parts, one back end per OS: `system` (app catalog, icons, launching,
+//!   file actions, focus), `control` (command mode's power, audio output and Wi-Fi), the
+//!   `everything` client;
 //! - `files`: file search on its own thread, through `everything` (voidtools Everything's IPC)
 //!   or, when that isn't running, lattice's own `index`;
-//! - `windows`: window search ranking (pure Rust; the host lists and switches windows);
-//! - `commands`: command mode's catalog and ranking (pure Rust), and `control`, its Windows
-//!   side (power, audio output, Wi-Fi);
+//! - `window_search`: window search ranking (pure Rust; the host lists and switches windows);
+//! - `commands`: command mode's catalog and ranking (pure Rust);
 //! - `ui`: the Rune state and view.
 //!
 //! Typing the setups keyword ("workspaces") on its own opens a picker of the host's saved
@@ -26,20 +27,21 @@
 
 mod bench;
 mod commands;
-mod control;
 mod everything;
 mod files;
 mod index;
+mod platform;
 mod rank;
-mod system;
-pub(crate) use system::{App as CatalogApp, com_init, scan as scan_apps, style_window, target_exe};
+pub(crate) use platform::App as CatalogApp;
+use platform::{control, system};
+pub(crate) use system::{com_init, scan as scan_apps, style_window, target_exe};
 mod ui;
-mod windows;
+mod window_search;
 
 pub use bench::run as bench;
 pub use commands::{CommandOptions, HostCommand};
 pub use files::{FileAction, FileActions, FileOptions};
-pub use windows::{WindowEntry, WindowIcon};
+pub use window_search::{WindowEntry, WindowIcon};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};

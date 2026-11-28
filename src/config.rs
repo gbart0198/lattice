@@ -373,8 +373,7 @@ impl Default for Config {
 }
 
 pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    base.join("lattice")
+    crate::platform::paths::config_base().join("lattice")
 }
 
 pub fn config_path() -> PathBuf {
@@ -452,16 +451,16 @@ pub enum Command {
     MoveWindow(Dir),
     Workspace(WsTarget),
     /// `window`: the window to move (`lattice msg`, by hwnd); `None` is the focused one.
-    MoveToWorkspace { target: WsTarget, follow: bool, window: Option<crate::win::Hwnd> },
+    MoveToWorkspace { target: WsTarget, follow: bool, window: Option<crate::platform::WindowId> },
     FocusMonitor(i32),
     MoveToMonitor(i32),
     Layout(Option<LayoutKind>),
     /// Expand the focused window toward a side by a ratio step (see `layout::resize_target`).
     ResizeDir(Dir, f32),
     /// These three act on the given window (`lattice msg`, by hwnd), else the focused one.
-    ToggleFloat(Option<crate::win::Hwnd>),
-    ToggleFullscreen(Option<crate::win::Hwnd>),
-    Close(Option<crate::win::Hwnd>),
+    ToggleFloat(Option<crate::platform::WindowId>),
+    ToggleFullscreen(Option<crate::platform::WindowId>),
+    Close(Option<crate::platform::WindowId>),
     Retile,
     Reload,
     Exec(String),
@@ -471,7 +470,7 @@ pub enum Command {
     WindowSearch,
     /// Switch to this window, its workspace and monitor (sent by the launcher and
     /// `lattice msg focus-window <hwnd>`; a keybind has no window to name).
-    FocusWindow(crate::win::Hwnd),
+    FocusWindow(crate::platform::WindowId),
     /// Hand the launcher the window list (sent by it, for the window prefix; not bindable).
     ListWindows,
     /// Open the settings window.
@@ -490,7 +489,7 @@ pub enum Command {
 impl Command {
     /// The window a command names explicitly, if any (`close 1234`): lattice refuses the
     /// command when it doesn't manage that window.
-    pub fn window(&self) -> Option<crate::win::Hwnd> {
+    pub fn window(&self) -> Option<crate::platform::WindowId> {
         match self {
             Command::MoveToWorkspace { window, .. } | Command::ToggleFloat(window) | Command::ToggleFullscreen(window) | Command::Close(window) => *window,
             Command::FocusWindow(h) => Some(*h),
@@ -501,16 +500,16 @@ impl Command {
 
 /// A window handle as `lattice query windows` prints it (decimal), or in hex (`0x1a2b`, as
 /// `lattice --list` and the log print it).
-fn parse_hwnd(s: &str) -> Result<crate::win::Hwnd, String> {
+fn parse_hwnd(s: &str) -> Result<crate::platform::WindowId, String> {
     let n = match s.strip_prefix("0x") {
-        Some(hex) => crate::win::Hwnd::from_str_radix(hex, 16).ok(),
-        None => s.parse::<crate::win::Hwnd>().ok(),
+        Some(hex) => crate::platform::WindowId::from_str_radix(hex, 16).ok(),
+        None => s.parse::<crate::platform::WindowId>().ok(),
     };
     n.filter(|h| *h > 0).ok_or_else(|| format!("bad window handle '{s}' (use an hwnd from `lattice query windows`)"))
 }
 
 /// An optional window handle: none given means the focused window.
-fn parse_opt_hwnd(s: &str) -> Result<Option<crate::win::Hwnd>, String> {
+fn parse_opt_hwnd(s: &str) -> Result<Option<crate::platform::WindowId>, String> {
     if s.is_empty() { Ok(None) } else { parse_hwnd(s).map(Some) }
 }
 

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Rect;
-use crate::win::Hwnd;
+use crate::platform::WindowId;
 
 /// Bumped if the format changes incompatibly; a file of another version is ignored.
 const VERSION: u32 = 1;
@@ -56,7 +56,7 @@ pub struct SavedWorkspace {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SavedWindow {
-    pub hwnd: Hwnd,
+    pub hwnd: WindowId,
     pub exe: String,
     pub title: String,
     pub ws: usize,
@@ -110,7 +110,7 @@ pub fn save(json: &str) -> bool {
 /// be managed. Handles match first, across every window, so a window matched by title can't
 /// take the entry of another that is the very same window; a handle only counts with the same
 /// exe, since Windows reuses handles. Then exe and title, each saved entry used once, in order.
-pub fn assign(saved: &[SavedWindow], live: &[(Hwnd, String, String)]) -> HashMap<Hwnd, usize> {
+pub fn assign(saved: &[SavedWindow], live: &[(WindowId, String, String)]) -> HashMap<WindowId, usize> {
     let mut out = HashMap::new();
     let mut used = vec![false; saved.len()];
     for (h, exe, _) in live {
@@ -149,11 +149,11 @@ pub fn remap_monitors(saved: &[SavedRect], now: &[Rect]) -> Vec<Option<usize>> {
 mod tests {
     use super::*;
 
-    fn win(hwnd: Hwnd, exe: &str, title: &str, ws: usize) -> SavedWindow {
+    fn win(hwnd: WindowId, exe: &str, title: &str, ws: usize) -> SavedWindow {
         SavedWindow { hwnd, exe: exe.into(), title: title.into(), ws, mon: 0, floating: false, focused: false }
     }
 
-    fn live(v: &[(Hwnd, &str, &str)]) -> Vec<(Hwnd, String, String)> {
+    fn live(v: &[(WindowId, &str, &str)]) -> Vec<(WindowId, String, String)> {
         v.iter().map(|(h, e, t)| (*h, e.to_string(), t.to_string())).collect()
     }
 

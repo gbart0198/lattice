@@ -1,11 +1,10 @@
-//! The Windows side of the launcher: the app catalog (`shell:AppsFolder`, the Start menu's own
+//! The launcher on Windows: the app catalog (`shell:AppsFolder`, the Start menu's own
 //! "All apps" list: desktop and Store apps alike), app icons, launching, and bringing the
 //! launcher window to the front.
 //!
 //! `scan` and `icon` use COM: call them on a thread that ran `com_init`.
 
 use std::ffi::c_void;
-use std::sync::Arc;
 
 use windows::Win32::Foundation::{HWND, SIZE};
 use windows::Win32::Graphics::Gdi::{
@@ -26,21 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, Interface};
 
-/// One launchable app.
-#[derive(Clone, Debug)]
-pub struct App {
-    /// What the Start menu calls it.
-    pub name: Arc<str>,
-    /// Its AppsFolder parsing name: an AppUserModelID ("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
-    /// or a path, possibly under a known-folder GUID ("{6D809377-...}\cmd.exe").
-    pub id: Arc<str>,
-}
-
-/// Icon pixels: straight-alpha RGBA, `size` x `size`.
-pub struct Icon {
-    pub size: u32,
-    pub rgba: Arc<[u8]>,
-}
+use crate::launcher::platform::{App, Icon};
 
 /// Prepares the calling thread for the shell's COM objects.
 pub fn com_init() {

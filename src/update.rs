@@ -19,8 +19,6 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "gbart0198/lattice";
-/// Inno Setup's uninstall key for the installer's AppId (installer/lattice.iss).
-const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F3A9C1E-2B7D-4E8A-9C5F-1D2E3B4A5C6D}_is1";
 /// Bigger than any installer we ship (about 10 MB today); stops an endless download.
 const MAX_INSTALLER: u64 = 64 * 1024 * 1024;
 const MAX_API_RESPONSE: u64 = 1024 * 1024;
@@ -273,38 +271,9 @@ pub fn installed() -> bool {
     };
     let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
     let here = norm(&dir);
-    if install_location().is_some_and(|l| norm(&l) == here) {
-        return true;
-    }
-    // install.ps1's location (the installer upgrades it in place).
-    std::env::var_os("LOCALAPPDATA").is_some_and(|l| norm(&Path::new(&l).join(r"Programs\lattice")) == here)
+    crate::platform::update::install_dirs().iter().any(|l| norm(l) == here)
 }
 
-fn install_location() -> Option<PathBuf> {
-    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
-    use windows::core::{HSTRING, w};
-    let key = HSTRING::from(UNINSTALL_KEY);
-    let mut buf = [0u16; 1024];
-    let mut len = std::mem::size_of_val(&buf) as u32;
-    let rc = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            &key,
-            w!("InstallLocation"),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buf.as_mut_ptr().cast()),
-            Some(&mut len),
-        )
-    };
-    if rc.is_err() {
-        return None;
-    }
-    let chars = (len as usize / 2).min(buf.len());
-    let s = String::from_utf16_lossy(&buf[..chars]);
-    let s = s.trim_end_matches('\0');
-    (!s.is_empty()).then(|| PathBuf::from(s))
-}
 
 // ---------------------------------------------------------------------------------------------
 // Actions

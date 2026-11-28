@@ -1,10 +1,14 @@
-//! lattice: a tiling window manager for Windows 11.
+//! lattice: a tiling window manager for Windows 11 (macOS in progress).
 //!
 //! Threads: the main thread runs Rune (the top bar and the app launcher); the WM thread owns all
-//! window-management state and the Win32 hooks (see `hooks.rs`).
+//! window-management state and the OS hooks (see `hooks.rs`). Everything OS-specific is in
+//! `platform`.
 
 // Release builds have no console window; logs go to %APPDATA%\lattice\lattice.log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The macOS back end is stubs (`platform/macos`): shared code that only a real back end calls
+// (window events, IPC, the tour's answers) looks unused there. Drop this once it's written.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
 
 mod anim;
 mod bar;
@@ -18,6 +22,7 @@ mod launcher;
 mod layout;
 mod logger;
 mod persist;
+mod platform;
 mod shared;
 mod settings;
 mod setups;
@@ -25,20 +30,9 @@ mod sysinfo;
 mod tour;
 mod update;
 mod update_toast;
-mod win;
 mod wm;
 
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-use windows::Win32::System::Console::SetConsoleCtrlHandler;
-use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
-use windows::core::{BOOL, w};
-
-unsafe extern "system" fn on_console_ctrl(_: u32) -> BOOL {
-    // Ctrl+C / closing the console: bring hidden windows back before Windows kills us.
-    shared::restore_hidden();
-    BOOL(0)
-}
+use platform::{process, win};
 
 const HELP: &str = "lattice - tiling window manager for Windows 11
 
@@ -215,7 +209,7 @@ fn file_options(l: &config::Launcher) -> launcher::FileOptions {
         })
     };
     let roots: Vec<std::path::PathBuf> = if l.index_roots.is_empty() {
-        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).into_iter().collect()
+        platform::paths::home().into_iter().collect()
     } else {
         l.index_roots.iter().map(|r| std::path::PathBuf::from(expand_env(r))).collect()
     };
@@ -268,9 +262,7 @@ fn main() {
     let has = |flag: &str| args.iter().any(|a| a == flag);
     if !args.is_empty() {
         // Release builds have no console of their own; print into the terminal that ran us.
-        unsafe {
-            let _ = windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS);
-        }
+        process::attach_parent_console();
     }
     if matches!(args.first().map(String::as_str), Some("msg" | "query" | "subscribe")) {
         // Talks to the running lattice (`ipc.rs`) and exits; touches no log or lock.
@@ -304,10 +296,8 @@ fn main() {
         unsafe { std::env::set_var(CPU_FIRST_ENV, "only") };
     }
     logger::init();
-    unsafe {
-        // Physical pixels everywhere; must happen before any window or monitor call.
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    }
+    // Physical pixels everywhere; must happen before any window or monitor call.
+    process::set_dpi_aware();
     if has("--list") {
         list();
         return;
@@ -339,7 +329,7 @@ fn main() {
         return;
     }
     if has("--animation-preview") {
-        anim::preview::run(&args);
+        platform::anim::preview::run(&args);
         return;
     }
     if has("--border-preview") {
@@ -347,16 +337,13 @@ fn main() {
         border::preview(config::load().border);
         return;
     }
-    unsafe {
-        let _guard = CreateMutexW(None, true, w!("Local\\lattice-window-manager"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            log::error!("lattice is already running");
-            return;
-        }
-        let _ = SetConsoleCtrlHandler(Some(on_console_ctrl), true);
-        // Keep the mutex for the life of the process.
-        std::mem::forget(_guard);
-    }
+    let Some(guard) = process::single_instance("lattice-window-manager") else {
+        log::error!("lattice is already running");
+        return;
+    };
+    process::restore_hidden_on_console_close();
+    // Keep the lock for the life of the process.
+    std::mem::forget(guard);
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

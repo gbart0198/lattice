@@ -1,4 +1,5 @@
-//! Minimal logger: stderr plus %APPDATA%\lattice\lattice.log (truncated on each start).
+//! Minimal logger: stderr plus lattice.log in the config folder (%APPDATA%\lattice on Windows),
+//! truncated on each start.
 //! `LATTICE_LOG=debug` turns on debug output.
 
 use std::fs::File;
@@ -19,13 +20,13 @@ impl log::Log for Logger {
         if !self.enabled(r.metadata()) {
             return;
         }
-        let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        let t = crate::platform::sysinfo::local_time();
         let line = format!(
             "{:02}:{:02}:{:02}.{:03} {:5} {}\n",
-            t.wHour,
-            t.wMinute,
-            t.wSecond,
-            t.wMilliseconds,
+            t.hour,
+            t.minute,
+            t.second,
+            t.millis,
             r.level(),
             r.args()
         );

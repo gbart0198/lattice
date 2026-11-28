@@ -19,23 +19,23 @@ use crate::layout::{self, LayoutKind, Params, Rect};
 use crate::persist;
 use crate::setups;
 use crate::shared::{self, BarModel, WsInfo};
-use crate::win::{self, Hwnd, MonitorInfo};
+use crate::platform::{self, MonitorInfo, WindowId, win};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
-    Show(Hwnd),
-    Hide(Hwnd),
-    Destroy(Hwnd),
-    Cloaked(Hwnd),
-    Uncloaked(Hwnd),
-    Foreground(Hwnd),
-    MinimizeStart(Hwnd),
-    MinimizeEnd(Hwnd),
-    MoveSizeEnd(Hwnd),
-    NameChange(Hwnd),
+    Show(WindowId),
+    Hide(WindowId),
+    Destroy(WindowId),
+    Cloaked(WindowId),
+    Uncloaked(WindowId),
+    Foreground(WindowId),
+    MinimizeStart(WindowId),
+    MinimizeEnd(WindowId),
+    MoveSizeEnd(WindowId),
+    NameChange(WindowId),
     /// A window (any window, system-wide) moved or resized; only the focused one matters, for
     /// the focus border.
-    Location(Hwnd),
+    Location(WindowId),
 }
 
 struct Window {
@@ -58,17 +58,17 @@ struct Window {
 
 struct Workspace {
     /// Every window on the workspace, all monitors; tiled ones are laid out in this order.
-    windows: Vec<Hwnd>,
+    windows: Vec<WindowId>,
     layout: LayoutKind,
     split_ratio: f32,
     master_ratio: f32,
     /// Dwindle per-split ratios on each monitor, from directional resizes; splits past the end
     /// use `split_ratio`.
     splits: HashMap<usize, Vec<f32>>,
-    last_focus: Option<Hwnd>,
+    last_focus: Option<WindowId>,
     /// Last focused window on each monitor, for focus-monitor and closing windows.
-    mon_focus: HashMap<usize, Hwnd>,
-    fullscreen: Option<Hwnd>,
+    mon_focus: HashMap<usize, WindowId>,
+    fullscreen: Option<WindowId>,
 }
 
 struct Monitor {
@@ -78,7 +78,7 @@ struct Monitor {
 
 pub struct Wm {
     cfg: Config,
-    windows: HashMap<Hwnd, Window>,
+    windows: HashMap<WindowId, Window>,
     workspaces: Vec<Workspace>,
     monitors: Vec<Monitor>,
     /// The workspace on screen (on every monitor).
@@ -86,22 +86,22 @@ pub struct Wm {
     focused_monitor: usize,
     /// Show/hide calls lattice made whose WinEvents haven't arrived yet, so they aren't
     /// mistaken for the app showing or hiding itself.
-    pending_show: HashMap<Hwnd, u32>,
-    pending_hide: HashMap<Hwnd, u32>,
+    pending_show: HashMap<WindowId, u32>,
+    pending_hide: HashMap<WindowId, u32>,
     /// Windows lattice has asked to be hidden, and when.
-    hidden: HashMap<Hwnd, Instant>,
+    hidden: HashMap<WindowId, Instant>,
     pub quit: bool,
     pub reload_keymap: bool,
     /// The focus border (None when turned off).
     border: Option<crate::border::Border>,
     /// The managed window that had focus at the last border update: its moves are the only
     /// location changes that matter.
-    border_watch: Option<Hwnd>,
+    border_watch: Option<WindowId>,
     /// Something happened that may move the border; `update_border` looks once per batch.
     border_dirty: bool,
     /// The bar's window (0 until found), and whether it's hidden behind a fullscreen app
     /// (`update_bar`).
-    bar: Hwnd,
+    bar: WindowId,
     bar_hidden: bool,
     /// Windows gliding or sliding somewhere (empty, and free, when nothing moves).
     anim: Animator,
@@ -148,7 +148,7 @@ struct Restore {
     folded: Vec<usize>,
     announced: bool,
     slots: Vec<setups::Slot>,
-    filled: Vec<Option<Hwnd>>,
+    filled: Vec<Option<WindowId>>,
     /// Each workspace's saved split ratios. Retiling forgets ratios past the last split, so
     /// they're put back as each window arrives.
     /// By (workspace, monitor).
@@ -170,7 +170,7 @@ const RESTORE_WAIT: Duration = Duration::from_secs(60);
 /// What a directional search can land on: a window, or an empty monitor.
 #[derive(Clone, Copy)]
 enum Target {
-    Window(Hwnd),
+    Window(WindowId),
     Monitor(usize),
 }
 
@@ -273,7 +273,7 @@ impl Wm {
     }
 
     /// `adopt_existing`, putting the windows in `restored` back where they were.
-    fn adopt(&mut self, restored: &HashMap<Hwnd, Restored>) {
+    fn adopt(&mut self, restored: &HashMap<WindowId, Restored>) {
         let mut all = win::enum_windows();
         all.reverse(); // bottom of the z-order first, so the topmost window ends up focused
         for hwnd in all {
@@ -301,13 +301,13 @@ impl Wm {
         }
         self.active = saved.active.min(self.workspaces.len() - 1);
 
-        let live: Vec<(Hwnd, String, String)> = win::enum_windows()
+        let live: Vec<(WindowId, String, String)> = win::enum_windows()
             .into_iter()
             .filter(|h| !self.windows.contains_key(h))
             .filter_map(|h| win::candidate(h).map(|c| (h, c.exe, c.title)))
             .collect();
         let last = self.workspaces.len() - 1;
-        let restored: HashMap<Hwnd, Restored> = persist::assign(&saved.windows, &live)
+        let restored: HashMap<WindowId, Restored> = persist::assign(&saved.windows, &live)
             .into_iter()
             .map(|(h, i)| {
                 let s = &saved.windows[i];
@@ -358,14 +358,14 @@ impl Wm {
     }
 
     /// The managed window that has keyboard focus, if any.
-    fn focused_window(&self) -> Option<Hwnd> {
+    fn focused_window(&self) -> Option<WindowId> {
         let fg = win::foreground();
         self.windows.contains_key(&fg).then_some(fg)
     }
 
     /// The window a command acts on: the one it names (if lattice manages it), else the
     /// focused one.
-    fn target_window(&self, named: Option<Hwnd>) -> Option<Hwnd> {
+    fn target_window(&self, named: Option<WindowId>) -> Option<WindowId> {
         match named {
             Some(h) => self.windows.contains_key(&h).then_some(h),
             None => self.focused_window(),
@@ -395,7 +395,7 @@ impl Wm {
     }
 
     /// Windows of workspace `ws` on monitor `mon`, in tiling order.
-    fn on_monitor(&self, ws: usize, mon: usize) -> Vec<Hwnd> {
+    fn on_monitor(&self, ws: usize, mon: usize) -> Vec<WindowId> {
         self.workspaces[ws].windows.iter().copied().filter(|h| self.windows.get(h).is_some_and(|w| w.mon == mon)).collect()
     }
 
@@ -403,13 +403,13 @@ impl Wm {
     // Managing windows
 
     /// `mon`: the monitor to put the window on (startup); `None` means the focused monitor.
-    fn try_manage(&mut self, hwnd: Hwnd, mon: Option<usize>, runtime: bool) -> bool {
+    fn try_manage(&mut self, hwnd: WindowId, mon: Option<usize>, runtime: bool) -> bool {
         self.try_manage_at(hwnd, mon, None, runtime)
     }
 
     /// `try_manage`; a `restored` window goes back to the workspace it was on and keeps its
     /// floating state, whatever the rules say (ignore rules still apply).
-    fn try_manage_at(&mut self, hwnd: Hwnd, mon: Option<usize>, restored: Option<Restored>, runtime: bool) -> bool {
+    fn try_manage_at(&mut self, hwnd: WindowId, mon: Option<usize>, restored: Option<Restored>, runtime: bool) -> bool {
         if self.windows.contains_key(&hwnd) {
             return false;
         }
@@ -478,7 +478,7 @@ impl Wm {
         true
     }
 
-    fn unmanage(&mut self, hwnd: Hwnd) {
+    fn unmanage(&mut self, hwnd: WindowId) {
         let Some(w) = self.windows.remove(&hwnd) else { return };
         log::info!("unmanage {hwnd:#x} '{}'", w.title);
         self.anim.cancel(hwnd, false);
@@ -515,7 +515,7 @@ impl Wm {
     /// Hides a window. Show/hide requests are asynchronous, so whether a window *should* be
     /// hidden is tracked here, never read back from Windows mid-transition: requests reach
     /// the app in order, so the last one wins.
-    fn hide_window(&mut self, hwnd: Hwnd) {
+    fn hide_window(&mut self, hwnd: WindowId) {
         if !self.hidden.contains_key(&hwnd) {
             // Mid-animation it's transparent: it stays so until the hide lands, so it never
             // flashes up where it is.
@@ -529,7 +529,7 @@ impl Wm {
         shared::mark_hidden(hwnd, true);
     }
 
-    fn show_window(&mut self, hwnd: Hwnd) {
+    fn show_window(&mut self, hwnd: WindowId) {
         // A window still sliding away was never really hidden: calling off its hide is enough.
         if self.hidden.remove(&hwnd).is_some() && !self.anim.take_hide(hwnd) {
             *self.pending_show.entry(hwnd).or_default() += 1;
@@ -543,7 +543,7 @@ impl Wm {
     /// `hide_window` after sliding the window's preview `dy` pixels (off its screen). It counts
     /// as hidden from now on; the real hide happens when the slide ends (`after_anim`). The
     /// window itself never moves. One that can't be previewed is hidden at once.
-    fn slide_out(&mut self, hwnd: Hwnd, style: AnimStyle, dy: i32, clip: Option<Rect>) {
+    fn slide_out(&mut self, hwnd: WindowId, style: AnimStyle, dy: i32, clip: Option<Rect>) {
         if self.hidden.contains_key(&hwnd) {
             return;
         }
@@ -561,7 +561,7 @@ impl Wm {
     }
 
     /// Does what a finished animation left to do.
-    fn after_anim(&mut self, hwnd: Hwnd, after: After) {
+    fn after_anim(&mut self, hwnd: WindowId, after: After) {
         if after != After::Hide {
             return;
         }
@@ -594,7 +594,7 @@ impl Wm {
 
     /// Stops a window's animation where it is, still doing what it was going to do at the end
     /// (a window sliding away still gets hidden).
-    fn stop_anim(&mut self, hwnd: Hwnd) {
+    fn stop_anim(&mut self, hwnd: WindowId) {
         let hiding = self.anim.is_hiding(hwnd);
         if let Some(after) = self.anim.cancel(hwnd, hiding) {
             self.after_anim(hwnd, after);
@@ -611,14 +611,14 @@ impl Wm {
 
     /// Where a window is, or where it's headed if it's animating: what layout decisions (focus,
     /// neighbours, drops) should go by.
-    fn rect_of(&self, hwnd: Hwnd) -> Option<Rect> {
+    fn rect_of(&self, hwnd: WindowId) -> Option<Rect> {
         self.anim.target(hwnd).or_else(|| win::frame_rect(hwnd))
     }
 
     /// Puts a window at `r`, in one move. With animations on, its preview glides there from
     /// where it appears to be while the window itself, invisible, waits to be moved when the
     /// preview lands.
-    fn place_tile(&mut self, hwnd: Hwnd, r: Rect) {
+    fn place_tile(&mut self, hwnd: WindowId, r: Rect) {
         if self.anim.target(hwnd) == Some(r) {
             return;
         }
@@ -641,11 +641,11 @@ impl Wm {
 
     /// True once a window lattice hid has been hidden long enough that events about it are
     /// the app's doing, not late echoes of our own hide or an earlier focus change.
-    fn settled(&self, hwnd: Hwnd) -> bool {
+    fn settled(&self, hwnd: WindowId) -> bool {
         self.hidden.get(&hwnd).is_none_or(|t| t.elapsed() > Duration::from_millis(600))
     }
 
-    fn center_floating(&mut self, hwnd: Hwnd) {
+    fn center_floating(&mut self, hwnd: WindowId) {
         let area = self.tiling_area(self.windows[&hwnd].mon);
         let cur = self.rect_of(hwnd).unwrap_or(area);
         // Keep the window's own size if it fits, else 60% of the area.
@@ -672,7 +672,7 @@ impl Wm {
     }
 
     /// Tiled (not floating or minimized) windows of workspace `ws` on monitor `mon`, in order.
-    fn tiled(&self, ws: usize, mon: usize) -> Vec<Hwnd> {
+    fn tiled(&self, ws: usize, mon: usize) -> Vec<WindowId> {
         self.on_monitor(ws, mon).into_iter().filter(|h| self.windows.get(h).is_some_and(|w| !w.floating && !w.minimized)).collect()
     }
 
@@ -700,7 +700,7 @@ impl Wm {
 
     /// Where the tiled windows of workspace `ws` on `mon` go, the one to keep on top
     /// (fullscreen or monocle), and how many windows it tiles.
-    fn layout_monitor(&self, ws_idx: usize, mon: usize) -> (Vec<(Hwnd, Rect)>, Option<Hwnd>, usize) {
+    fn layout_monitor(&self, ws_idx: usize, mon: usize) -> (Vec<(WindowId, Rect)>, Option<WindowId>, usize) {
         let ws = &self.workspaces[ws_idx];
         let area = self.tiling_area(mon);
         let tiled = self.tiled(ws_idx, mon);
@@ -764,7 +764,7 @@ impl Wm {
         // (a lower one, the other way). Vertical, so side-by-side monitors never see each
         // other's windows pass through.
         let down = if ws > old { 1 } else { -1 };
-        let mut targets: HashMap<Hwnd, (Rect, usize)> = HashMap::new();
+        let mut targets: HashMap<WindowId, (Rect, usize)> = HashMap::new();
         for mon in 0..self.monitors.len() {
             for (i, (h, r)) in self.layout_monitor(ws, mon).0.into_iter().enumerate() {
                 targets.insert(h, (r, i));
@@ -820,12 +820,12 @@ impl Wm {
     }
 
     /// Where a window is on screen this moment (mid-animation included).
-    fn rect_of_now(&self, hwnd: Hwnd) -> Option<Rect> {
+    fn rect_of_now(&self, hwnd: WindowId) -> Option<Rect> {
         self.anim.current(hwnd).or_else(|| win::frame_rect(hwnd))
     }
 
     /// Records that `hwnd` has focus (workspace memory, focused monitor).
-    fn note_focus(&mut self, hwnd: Hwnd) {
+    fn note_focus(&mut self, hwnd: WindowId) {
         self.focus_seq += 1;
         let Some(w) = self.windows.get_mut(&hwnd) else { return };
         w.focused_at = self.focus_seq;
@@ -837,7 +837,7 @@ impl Wm {
         }
     }
 
-    fn focus(&mut self, hwnd: Hwnd) {
+    fn focus(&mut self, hwnd: WindowId) {
         win::focus(hwnd);
         self.note_focus(hwnd);
         if let Some(w) = self.windows.get(&hwnd)
@@ -899,7 +899,7 @@ impl Wm {
 
     /// Moves a managed window to workspace `to` (same monitor), appending it to the tiling
     /// order. With `follow`, the caller is about to show `to`, so the window isn't hidden.
-    fn move_window_to_ws(&mut self, hwnd: Hwnd, to: usize, follow: bool) {
+    fn move_window_to_ws(&mut self, hwnd: WindowId, to: usize, follow: bool) {
         let Some(from) = self.windows.get(&hwnd).map(|w| w.ws) else { return };
         if from == to {
             return;
@@ -934,7 +934,7 @@ impl Wm {
     }
 
     /// Moves a window to another monitor within its workspace.
-    fn move_window_to_monitor(&mut self, hwnd: Hwnd, mon: usize) {
+    fn move_window_to_monitor(&mut self, hwnd: WindowId, mon: usize) {
         let Some(w) = self.windows.get_mut(&hwnd) else { return };
         if w.mon == mon {
             return;
@@ -956,7 +956,7 @@ impl Wm {
 
     /// Finds the nearest window (or empty monitor) of the active workspace from `from` in
     /// direction `dir`. `only_mon` restricts the search to tiled windows on one monitor.
-    fn neighbor(&self, from: Rect, exclude: Option<Hwnd>, dir: Dir, only_mon: Option<usize>) -> Option<Target> {
+    fn neighbor(&self, from: Rect, exclude: Option<WindowId>, dir: Dir, only_mon: Option<usize>) -> Option<Target> {
         let ws_idx = self.active;
         let ws = &self.workspaces[ws_idx];
         let mut candidates: Vec<(Target, Rect)> = Vec::new();
@@ -1043,7 +1043,7 @@ impl Wm {
             && !self.windows[&h].floating
         {
             let mon = self.windows[&h].mon;
-            let list: Vec<Hwnd> = self.on_monitor(ws, mon).into_iter().filter(|x| !self.windows[x].minimized && !self.windows[x].floating).collect();
+            let list: Vec<WindowId> = self.on_monitor(ws, mon).into_iter().filter(|x| !self.windows[x].minimized && !self.windows[x].floating).collect();
             if let Some(i) = list.iter().position(|x| *x == h) {
                 let n = list.len();
                 let next = match dir {
@@ -1291,7 +1291,7 @@ impl Wm {
     /// you moved by hand isn't yanked back on every reload.
     fn apply_changed_assignments(&mut self, old_rules: &[config::Rule]) {
         let rules = &self.cfg.rules;
-        let moves: Vec<(Hwnd, usize)> = self
+        let moves: Vec<(WindowId, usize)> = self
             .windows
             .iter()
             .filter_map(|(h, w)| {
@@ -1342,9 +1342,9 @@ impl Wm {
         self.cleanup();
         // Most recently used first: of two open windows of an app, the one you were last in
         // is the one that moves.
-        let mut open: Vec<(Hwnd, &Window)> = self.windows.iter().filter(|(_, w)| !w.floating).map(|(h, w)| (*h, w)).collect();
+        let mut open: Vec<(WindowId, &Window)> = self.windows.iter().filter(|(_, w)| !w.floating).map(|(h, w)| (*h, w)).collect();
         open.sort_by_key(|(_, w)| std::cmp::Reverse(w.focused_at));
-        let place = |h: Hwnd, ws: usize| self.workspaces[ws].windows.iter().position(|x| *x == h).unwrap_or(usize::MAX);
+        let place = |h: WindowId, ws: usize| self.workspaces[ws].windows.iter().position(|x| *x == h).unwrap_or(usize::MAX);
         let open_ref: Vec<setups::OpenWindow> = open
             .iter()
             .map(|(h, w)| setups::OpenWindow { hwnd: *h, exe: w.exe.as_str(), ws: w.ws, mon: w.mon, place: place(*h, w.ws) })
@@ -1452,7 +1452,7 @@ impl Wm {
 
     /// A spot of the setup being restored for a new window of `exe`, which takes it:
     /// returns the spot's workspace and monitor.
-    fn claim_slot(&mut self, hwnd: Hwnd, exe: &str) -> Option<(usize, usize)> {
+    fn claim_slot(&mut self, hwnd: WindowId, exe: &str) -> Option<(usize, usize)> {
         let r = self.restore.as_mut()?;
         if Instant::now() > r.until {
             return None;
@@ -1486,7 +1486,7 @@ impl Wm {
     /// Puts the restored windows first on their workspaces, in the saved order.
     fn arrange_restored(&mut self) {
         let Some(r) = &self.restore else { return };
-        let mut by_ws: HashMap<usize, Vec<(usize, Hwnd)>> = HashMap::new();
+        let mut by_ws: HashMap<usize, Vec<(usize, WindowId)>> = HashMap::new();
         for (s, f) in r.slots.iter().zip(&r.filled) {
             if let Some(h) = f.filter(|h| self.windows.get(h).is_some_and(|w| w.ws == s.ws)) {
                 by_ws.entry(s.ws).or_default().push((s.order, h));
@@ -1499,7 +1499,7 @@ impl Wm {
         }
         for (ws, mut list) in by_ws {
             list.sort_by_key(|(order, _)| *order);
-            let first: Vec<Hwnd> = list.into_iter().map(|(_, h)| h).collect();
+            let first: Vec<WindowId> = list.into_iter().map(|(_, h)| h).collect();
             self.workspaces[ws].windows = setups::arrange(&self.workspaces[ws].windows, &first);
             self.retile(ws);
         }
@@ -1683,7 +1683,7 @@ impl Wm {
 
     /// Forgets windows that died without us noticing.
     fn cleanup(&mut self) {
-        let dead: Vec<Hwnd> = self.windows.keys().copied().filter(|h| !win::is_window(*h)).collect();
+        let dead: Vec<WindowId> = self.windows.keys().copied().filter(|h| !win::is_window(*h)).collect();
         for h in dead {
             self.unmanage(h);
         }
@@ -1811,7 +1811,7 @@ impl Wm {
     }
 
     /// A window on a hidden workspace was shown or activated by its app.
-    fn activated_elsewhere(&mut self, h: Hwnd) {
+    fn activated_elsewhere(&mut self, h: WindowId) {
         let ws = self.windows[&h].ws;
         if ws == self.active {
             return;
@@ -1828,7 +1828,7 @@ impl Wm {
     }
 
     /// The user finished dragging a window: drop it where the cursor is.
-    fn drag_ended(&mut self, h: Hwnd) {
+    fn drag_ended(&mut self, h: WindowId) {
         let Some(w) = self.windows.get(&h) else { return };
         let (ws, mon, floating) = (w.ws, w.mon, w.floating);
         if ws != self.active {
@@ -1921,7 +1921,7 @@ impl Wm {
     }
 
     /// The bar's window, found once (it opens on the main thread, maybe after `Wm::new`).
-    fn bar_hwnd(&mut self) -> Hwnd {
+    fn bar_hwnd(&mut self) -> WindowId {
         if self.bar == 0 || !win::is_window(self.bar) {
             self.bar = win::find_own_window("lattice-bar");
         }
@@ -1984,7 +1984,7 @@ fn overlap(a0: i32, a1: i32, b0: i32, b1: i32) -> i32 {
     a1.min(b1) - a0.max(b0)
 }
 
-fn take_pending(map: &mut HashMap<Hwnd, u32>, h: Hwnd) -> bool {
+fn take_pending(map: &mut HashMap<WindowId, u32>, h: WindowId) -> bool {
     match map.get_mut(&h) {
         Some(n) if *n > 0 => {
             *n -= 1;
@@ -2019,17 +2019,14 @@ fn search_name(exe: &str, short: &str) -> String {
 /// A process started on the user's behalf: no console window of its own, and without our
 /// Rune switch (see `main`) in its environment.
 pub fn background_command(program: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut c = std::process::Command::new(program);
-    c.creation_flags(CREATE_NO_WINDOW).env_remove(crate::CPU_FIRST_ENV);
+    platform::process::no_console(&mut c);
+    c.env_remove(crate::CPU_FIRST_ENV);
     c
 }
 
 fn spawn(line: &str) {
-    use std::os::windows::process::CommandExt;
-    // `start` resolves App Paths (wt.exe, code, ...) and URIs like a Run dialog would.
-    let result = background_command("cmd").raw_arg(format!("/C start \"\" {line}")).spawn();
+    let result = platform::process::shell_start(background_command, line).spawn();
     if let Err(e) = result {
         log::error!("exec '{line}': {e}");
     }
@@ -2040,11 +2037,7 @@ fn spawn(line: &str) {
 fn open_settings() {
     // We just handled the user's key press, so we may hand the foreground on: lets the new
     // window (or the existing one it activates) come to the front instead of flashing.
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
-            windows::Win32::UI::WindowsAndMessaging::ASFW_ANY,
-        );
-    }
+    platform::process::allow_set_foreground();
     match std::env::current_exe() {
         Ok(exe) => {
             if let Err(e) = std::process::Command::new(exe).arg("--settings").env_remove(crate::CPU_FIRST_ENV).spawn() {
@@ -2055,14 +2048,7 @@ fn open_settings() {
     }
 }
 
-/// Opens config.toml with whatever is registered for .toml files, else Notepad.
+/// Opens config.toml with whatever is registered for .toml files (on Windows, else Notepad).
 fn open_config() {
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    use windows::core::{HSTRING, w};
-    let path = config::config_path();
-    let ok = unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(path.as_os_str()), None, None, SW_SHOWNORMAL) }.0 as isize > 32;
-    if !ok && let Err(e) = std::process::Command::new("notepad.exe").arg(&path).spawn() {
-        log::error!("open config: {e}");
-    }
+    platform::process::open_file(&config::config_path());
 }

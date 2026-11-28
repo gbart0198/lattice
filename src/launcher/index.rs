@@ -172,32 +172,11 @@ impl Index {
 
 fn make_entry(path: &Path, dir: bool) -> Option<Entry> {
     let path = path.to_str()?;
-    let name_at = path.rfind('\\').map_or(0, |i| i + 1);
+    let name_at = path.rfind(std::path::MAIN_SEPARATOR).map_or(0, |i| i + 1);
     Some(Entry { path: path.into(), name_at: name_at as u32, dir })
 }
 
-#[cfg(windows)]
-fn hidden(entry: &std::fs::DirEntry) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const HIDDEN: u32 = 0x2;
-    const SYSTEM: u32 = 0x4;
-    // Cheap on Windows: the attributes come with the directory listing.
-    entry.metadata().is_ok_and(|m| m.file_attributes() & (HIDDEN | SYSTEM) != 0)
-}
-
-#[cfg(not(windows))]
-fn hidden(entry: &std::fs::DirEntry) -> bool {
-    entry.file_name().to_string_lossy().starts_with('.')
-}
-
-/// Low CPU and disk priority for the walking thread, so a cold walk doesn't slow the desktop.
-fn background_priority() {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
-        let _ = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
-    }
-}
+use super::platform::files::{background_priority, hidden};
 
 /// The saved index: a header line, then "d<TAB>path" or "f<TAB>path" per entry.
 fn load_cache(path: &Path) -> Option<Vec<Entry>> {

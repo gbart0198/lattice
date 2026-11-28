@@ -26,8 +26,8 @@ use rune::{
 use super::commands::{self, CommandOptions, Entry, Snapshot};
 use super::files::{FileActions, FileHit, Results, Searcher, Source};
 use super::rank::{self, History};
-use super::system::{App, Icon};
-use super::windows::{self, WindowEntry, WindowHit};
+use super::platform::{App, Icon};
+use super::window_search::{self, WindowEntry, WindowHit};
 use super::{Job, SetupEntry, SetupOptions, Style, WindowSearch};
 
 const HEADER: f32 = 60.0;
@@ -420,7 +420,7 @@ impl State {
     }
 
     fn refresh_windows(&mut self) {
-        self.window_hits = windows::rank(self.query.text.trim(), &self.window_list, max_results());
+        self.window_hits = window_search::rank(self.query.text.trim(), &self.window_list, max_results());
         self.selected = 0;
         self.request_icons();
     }
@@ -828,7 +828,7 @@ fn window_body(s: &State, t: &Style) -> El {
         .child(text("Windows").font(TextStyle::new(12.0, 600.0)).color(t.muted))
         .child(spacer())
         .child(text(format!("{n} open")).font(TextStyle::new(11.5, 500.0)).color(t.muted.alpha(0.8)));
-    let monitors = windows::many_monitors(&s.window_list);
+    let monitors = window_search::many_monitors(&s.window_list);
     let list = s
         .window_hits
         .iter()
@@ -849,7 +849,7 @@ fn window_row(s: &State, i: usize, hit: &WindowHit, monitors: bool, t: &Style) -
         .color(t.foreground)
         .truncate();
     // The detail line starts with the app name, so its match offsets apply as they are.
-    let detail = windows::detail(w, monitors);
+    let detail = window_search::detail(w, monitors);
     let app_spans = if untitled { Vec::new() } else { highlight(&detail, &hit.app, t.accent) };
     let detail = text(detail.clone()).spans(app_spans).font(TextStyle::new(11.5, 400.0)).color(t.muted).truncate();
     let kind = if on { "Switch".to_string() } else { format!("Workspace {}", w.workspace) };
@@ -1141,7 +1141,7 @@ fn file_row(s: &State, i: usize, hit: &FileHit, t: &Style) -> El {
 fn display_dir(dir: &str) -> String {
     static HOME: OnceLock<Option<String>> = OnceLock::new();
     let dir = dir.strip_suffix('\\').filter(|d| !d.ends_with(':')).unwrap_or(dir);
-    let home = HOME.get_or_init(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()));
+    let home = HOME.get_or_init(super::platform::files::home);
     if let Some(home) = home
         && dir.len() >= home.len()
         && dir[..home.len()].eq_ignore_ascii_case(home)

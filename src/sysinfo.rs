@@ -1,9 +1,7 @@
-//! CPU, memory, battery and clock readings for the bar.
+//! CPU, memory, battery and clock readings for the bar. The OS reads them
+//! (`platform::sysinfo`); this turns them into what the bar shows.
 
-use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
-use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
-use windows::Win32::System::SystemInformation::{GetLocalTime, GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use windows::Win32::System::Threading::GetSystemTimes;
+use crate::platform::sysinfo as os;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SysInfo {
@@ -18,8 +16,20 @@ pub struct Sampler {
     last: Option<(u64, u64)>, // (idle, total)
 }
 
-fn ft(f: FILETIME) -> u64 {
-    ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64
+/// The local wall-clock time, as the clock and the log show it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: u16,
+    /// 1-12.
+    pub month: u16,
+    /// 0 is Sunday.
+    pub day_of_week: u16,
+    /// 1-31.
+    pub day: u16,
+    pub hour: u16,
+    pub minute: u16,
+    pub second: u16,
+    pub millis: u16,
 }
 
 impl Sampler {
@@ -30,12 +40,7 @@ impl Sampler {
     }
 
     fn cpu(&mut self) -> u32 {
-        let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
-        if unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)) }.is_err() {
-            return 0;
-        }
-        let idle = ft(idle);
-        let total = ft(kernel) + ft(user); // kernel time includes idle time
+        let Some((idle, total)) = os::cpu_times() else { return 0 };
         let pct = match self.last {
             Some((pi, pt)) if total > pt => {
                 let dt = (total - pt) as f64;
@@ -49,15 +54,8 @@ impl Sampler {
     }
 
     pub fn sample(&mut self, clock_format: &str) -> SysInfo {
-        let mut ms = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
-        let mem = if unsafe { GlobalMemoryStatusEx(&mut ms) }.is_ok() { ms.dwMemoryLoad } else { 0 };
-        let mut ps = SYSTEM_POWER_STATUS::default();
-        let battery = if unsafe { GetSystemPowerStatus(&mut ps) }.is_ok() && ps.BatteryFlag & 128 == 0 && ps.BatteryLifePercent <= 100 {
-            Some((ps.BatteryLifePercent as u32, ps.ACLineStatus == 1))
-        } else {
-            None
-        };
-        SysInfo { cpu: self.cpu(), mem, battery, clock: format_time(&unsafe { GetLocalTime() }, clock_format) }
+        let (mem, battery) = (os::memory_load(), os::battery());
+        SysInfo { cpu: self.cpu(), mem, battery, clock: format_time(&os::local_time(), clock_format) }
     }
 }
 
@@ -67,7 +65,7 @@ const MONTHS: [&str; 12] = [
 ];
 
 /// A small strftime subset: %H %M %S %I %p %a %A %b %B %d %e %m %Y %y %%.
-pub fn format_time(t: &SYSTEMTIME, fmt: &str) -> String {
+pub fn format_time(t: &LocalTime, fmt: &str) -> String {
     let mut out = String::new();
     let mut chars = fmt.chars();
     while let Some(c) = chars.next() {
@@ -75,28 +73,28 @@ pub fn format_time(t: &SYSTEMTIME, fmt: &str) -> String {
             out.push(c);
             continue;
         }
-        let day = DAYS[(t.wDayOfWeek as usize) % 7];
-        let month = MONTHS[(t.wMonth as usize).clamp(1, 12) - 1];
-        let h12 = match t.wHour % 12 {
+        let day = DAYS[(t.day_of_week as usize) % 7];
+        let month = MONTHS[(t.month as usize).clamp(1, 12) - 1];
+        let h12 = match t.hour % 12 {
             0 => 12,
             h => h,
         };
         match chars.next() {
-            Some('H') => out.push_str(&format!("{:02}", t.wHour)),
-            Some('M') => out.push_str(&format!("{:02}", t.wMinute)),
-            Some('S') => out.push_str(&format!("{:02}", t.wSecond)),
+            Some('H') => out.push_str(&format!("{:02}", t.hour)),
+            Some('M') => out.push_str(&format!("{:02}", t.minute)),
+            Some('S') => out.push_str(&format!("{:02}", t.second)),
             Some('I') => out.push_str(&format!("{h12:02}")),
             Some('l') => out.push_str(&h12.to_string()),
-            Some('p') => out.push_str(if t.wHour < 12 { "AM" } else { "PM" }),
+            Some('p') => out.push_str(if t.hour < 12 { "AM" } else { "PM" }),
             Some('a') => out.push_str(&day[..3]),
             Some('A') => out.push_str(day),
             Some('b') => out.push_str(&month[..3]),
             Some('B') => out.push_str(month),
-            Some('d') => out.push_str(&format!("{:02}", t.wDay)),
-            Some('e') => out.push_str(&t.wDay.to_string()),
-            Some('m') => out.push_str(&format!("{:02}", t.wMonth)),
-            Some('Y') => out.push_str(&t.wYear.to_string()),
-            Some('y') => out.push_str(&format!("{:02}", t.wYear % 100)),
+            Some('d') => out.push_str(&format!("{:02}", t.day)),
+            Some('e') => out.push_str(&t.day.to_string()),
+            Some('m') => out.push_str(&format!("{:02}", t.month)),
+            Some('Y') => out.push_str(&t.year.to_string()),
+            Some('y') => out.push_str(&format!("{:02}", t.year % 100)),
             Some('%') => out.push('%'),
             Some(other) => {
                 out.push('%');
@@ -114,7 +112,7 @@ mod tests {
 
     #[test]
     fn formats() {
-        let t = SYSTEMTIME { wYear: 2026, wMonth: 11, wDayOfWeek: 2, wDay: 24, wHour: 14, wMinute: 5, wSecond: 9, wMilliseconds: 0 };
+        let t = LocalTime { year: 2026, month: 11, day_of_week: 2, day: 24, hour: 14, minute: 5, second: 9, millis: 0 };
         assert_eq!(format_time(&t, "%a %b %d  %H:%M"), "Tue Nov 24  14:05");
         assert_eq!(format_time(&t, "%I:%M %p"), "02:05 PM");
     }
