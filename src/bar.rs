@@ -114,7 +114,10 @@ fn setup(s: &mut State, wake: rune::Waker) {
                     *slot = Some(info);
                     drop(slot);
                     SYS_GEN.fetch_add(1, Ordering::SeqCst);
-                    wake();
+                    // Not while a fullscreen app hides the bar: it catches up when shown.
+                    if !shared::bar_suppressed() {
+                        wake();
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(1000));
             }

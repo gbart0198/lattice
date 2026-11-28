@@ -375,6 +375,24 @@ pub fn foreground() -> Hwnd {
     unsafe { GetForegroundWindow().0 as isize }
 }
 
+/// Whether `hwnd` is a fullscreen app (a game, a video, a browser in F11) over `mon`: it
+/// covers the whole monitor, taskbar strip included. Not the desktop, which covers it too,
+/// not lattice's own windows, and not a maximized window with a title bar (that covers the
+/// monitor when the taskbar auto-hides, and is an ordinary window).
+pub fn is_fullscreen_on(hwnd: Hwnd, mon: Rect) -> bool {
+    // Cheapest first: this runs after every batch of events.
+    if hwnd == 0 || !window_rect(hwnd).is_some_and(|r| r.covers(&mon)) {
+        return false;
+    }
+    if !is_visible(hwnd) || is_minimized(hwnd) || pid(hwnd) == own_pid() {
+        return false;
+    }
+    if style(hwnd).contains(WS_CAPTION) && is_maximized(hwnd) {
+        return false;
+    }
+    !matches!(class(hwnd).as_str(), "Progman" | "WorkerW")
+}
+
 /// Windows only lets the process that received the last input take the foreground. Lattice
 /// swallowed that input in its keyboard hook, so a no-op mouse event re-establishes it.
 pub fn focus(hwnd: Hwnd) {

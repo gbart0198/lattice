@@ -28,6 +28,10 @@ impl Rect {
     pub fn contains(&self, (px, py): (i32, i32)) -> bool {
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()
     }
+    /// Whether this rect reaches every edge of `other` (a fullscreen window over its monitor).
+    pub fn covers(&self, other: &Rect) -> bool {
+        self.x <= other.x && self.y <= other.y && self.right() >= other.right() && self.bottom() >= other.bottom()
+    }
     pub fn offset(&self, dx: i32, dy: i32) -> Rect {
         Rect::new(self.x + dx, self.y + dy, self.w, self.h)
     }
@@ -252,6 +256,18 @@ mod tests {
     use super::*;
 
     const P: Params<'static> = Params { gaps_inner: 0, gaps_outer: 0, ratio: 0.5, splits: &[] };
+
+    #[test]
+    fn covers_monitor() {
+        let mon = Rect::new(0, 0, 1920, 1080);
+        assert!(Rect::new(0, 0, 1920, 1080).covers(&mon));
+        // Exclusive-fullscreen and some borderless games overshoot by the frame.
+        assert!(Rect::new(-8, -8, 1936, 1096).covers(&mon));
+        // A maximized window under a visible taskbar stops short of the bottom.
+        assert!(!Rect::new(-8, -8, 1936, 1048).covers(&mon));
+        // A fullscreen window on the monitor to the right.
+        assert!(!Rect::new(1920, 0, 1920, 1080).covers(&mon));
+    }
 
     #[test]
     fn dwindle_three() {

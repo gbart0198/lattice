@@ -95,9 +95,29 @@ pub fn set_bar_waker(w: rune::Waker) {
     let _ = BAR_WAKER.set(w);
 }
 
+/// Wakes the bar to redraw, unless it's hidden behind a fullscreen app.
 pub fn wake_bar() {
+    if bar_suppressed() {
+        return;
+    }
     if let Some(w) = BAR_WAKER.get() {
         w();
+    }
+}
+
+/// Set by the WM thread while a fullscreen app covers the bar's monitor and the bar is hidden:
+/// nothing wakes the bar to redraw then (its model and readings still update, unseen). Clearing
+/// it wakes the bar once to catch up.
+static BAR_SUPPRESSED: AtomicBool = AtomicBool::new(false);
+
+pub fn bar_suppressed() -> bool {
+    BAR_SUPPRESSED.load(Ordering::SeqCst)
+}
+
+pub fn set_bar_suppressed(on: bool) {
+    BAR_SUPPRESSED.store(on, Ordering::SeqCst);
+    if !on {
+        wake_bar();
     }
 }
 

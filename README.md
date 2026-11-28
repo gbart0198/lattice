@@ -298,6 +298,10 @@ The bar shows your workspaces with the icons of the apps on each. Set `app_displ
 to it, and click the layout icon next to the CPU reading to cycle the layout. Choose its font
 with `font` (any installed family; empty means the built-in Inter) and its size with `font_size`.
 
+While a fullscreen app (a game, a video, a browser in F11) is in front on the primary monitor,
+the bar hides and stops redrawing, so it costs the game nothing. It comes back when you switch
+to another window.
+
 ### Focus border
 
 The focused window gets a glowing rounded frame, drawn by Rune on a transparent, click-through
