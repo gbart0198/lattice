@@ -1941,20 +1941,19 @@ impl Wm {
             return;
         }
         let Some(r) = self.bar_rect() else { return };
-        let bar = self.bar_hwnd();
-        if bar == 0 {
+        if !crate::bar::set_hidden(hide) {
             return;
         }
         self.bar_hidden = hide;
         if hide {
-            shared::set_bar_suppressed(true);
-            win::hide(bar);
             log::info!("fullscreen app in front: bar hidden");
         } else {
-            // Back on top of everything (the fullscreen app may be topmost too), then the
-            // redraws it skipped.
-            win::place_overlay(bar, r);
-            shared::set_bar_suppressed(false);
+            // Back on top of everything (the fullscreen app may be topmost too), where the
+            // monitors say it goes now.
+            let bar = self.bar_hwnd();
+            if bar != 0 {
+                win::place_overlay(bar, r);
+            }
             log::info!("bar shown");
         }
     }
