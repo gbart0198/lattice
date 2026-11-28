@@ -9,31 +9,40 @@ don't read it whole. Every module opens with a `//!` comment saying what it owns
 state and the WinEvent hooks. A third thread runs only the low-level keyboard hook.
 `shared.rs` carries state and commands between them.
 
+**Platforms.** Everything OS-specific is in `platform/` (and `launcher/platform/`, kept apart
+so the launcher imports nothing from the rest of lattice): one back end per OS with the same
+modules and functions, picked at compile time. `platform/windows/` is the real one;
+`platform/macos/` is stubs that log what isn't written yet. Win32 (`windows::`,
+`std::os::windows`) only goes under a `platform/windows/` folder: `scripts/check-platforms.sh`
+fails otherwise. A new OS call needs a function in both back ends.
+
 | To change... | Look at |
 |---|---|
 | A command (keybind, `lattice msg`, launcher) | parsed in `config.rs` `parse_command`, run in `wm.rs` `Wm::command` |
-| Keybinds and chords | `config.rs` `build_keymap`, `parse_chord`; the hook itself in `hooks.rs` |
-| What happens when a window opens, closes, hides or gains focus | `wm.rs` `Wm::event`, `try_manage`, `unmanage` |
+| Keybinds and chords | `config.rs` `build_keymap`, `parse_chord`; lookup in `hooks.rs` `key_down`; the hook itself in `platform/windows/hooks.rs` |
+| What happens when a window opens, closes, hides or gains focus | `wm.rs` `Wm::event`, `try_manage`, `unmanage`; the events come from `platform/windows/hooks.rs` |
 | Startup and windows already open | `main.rs` `main` → `hooks.rs` `run` → `Wm::new` → `restore_saved_state` (when `state.json` exists) or `adopt_existing` |
 | Tiling | `layout.rs` (pure math: `tile`, `resize_target`); `wm.rs` `retile`, `layout_monitor`, `place_tile` |
 | Workspace switching, focus | `wm.rs` `show_workspace`, `switch_to_workspace`, `focus`, `focus_dir`, `neighbor` |
-| Animations | `anim/` (`mod.rs` timing and glides, `dwm.rs` the DWM-thumbnail overlay that does the drawing, `preview.rs` the `--animation-preview` demo) |
-| `lattice msg/query/subscribe` | `ipc.rs` (wire format, CLI side, `State` JSON); requests are queued and answered in `hooks.rs` `run` |
+| Animations | `anim/mod.rs` timing and glides; `platform/windows/anim/` (`dwm.rs` the DWM-thumbnail overlay that does the drawing, `preview.rs` the `--animation-preview` demo) |
+| `lattice msg/query/subscribe` | `ipc.rs` (wire format, CLI side, `State` JSON); the transport in `platform/windows/ipc.rs`; requests are queued and answered in `hooks.rs` `run` |
 | Query output | `wm.rs` `Wm::state` builds `ipc::State`; `ipc.rs` `query_json` |
 | `[[hook]]` and subscribe events | `events.rs` (`Tracker::update` diffs state once per batch; `emit`) |
 | Setups (`[[setup]]`, `restore-setup`) | `setups.rs`; placement as windows appear in `wm.rs` (`Restore`, `try_manage`, `claim_slot`); when a restore is done, `check_restore` (`setup-restored`, `events.rs` `Event::setup_restored`); `msg restore-setup --wait` in `ipc.rs` (`take_wait`, `wait_restored`), matched by the id `hooks.rs` replies with |
 | Placement kept across restarts (`state.json`) | `persist.rs` (file format, `load`/`save`, `assign` matches live windows to saved ones, `remap_monitors`); `wm.rs` `restore_saved_state`, `snapshot`, `save_state` (called once per batch in `hooks.rs` `run`, and in `shutdown`) |
 | Config fields and defaults | `config.rs` structs; `default_config.toml` (the commented file users get) |
-| Win32 calls | `win.rs` (`Hwnd` is an `isize`); hidden-window recovery in `shared.rs` (`hidden.txt`) |
+| OS calls | `platform/mod.rs` lists the modules; windows and monitors in `platform/windows/win.rs` (`WindowId`, `Hwnd` there, is an `isize`); hidden-window recovery in `shared.rs` (`hidden.txt`) |
 | The bar | `bar.rs`, fed by `Wm::publish` |
-| Launcher | `launcher/`: `mod.rs` entry, `ui.rs` view, `system.rs` app catalog and launching, `rank.rs` scoring, `files.rs` + `everything.rs` + `index.rs` file search, `windows.rs` window search, `commands.rs` + `control.rs` command mode |
+| Launcher | `launcher/`: `mod.rs` entry, `ui.rs` view, `platform/windows/system.rs` app catalog and launching, `rank.rs` scoring, `files.rs` + `everything.rs` + `index.rs` file search, `window_search.rs` window search, `commands.rs` + `platform/windows/control.rs` command mode |
 | Settings window | `settings/` (separate process, `--settings`; edits config.toml with `toml_edit`); the Setups tab in `settings/setups/` (`model.rs` state, `canvas.rs` canvas and drags, `view.rs` pages, `catalog.rs` the add picker's programs, `io.rs` save/capture/restore, `samples.rs` `--scene setups*` data) |
-| Tour, focus border, updates | `tour/`, `border.rs`, `update.rs` + `update_toast.rs` |
+| Tour, focus border, updates | `tour/` (asks lattice through `platform/windows/control.rs`), `border.rs` + `platform/windows/border.rs`, `update.rs` + `update_toast.rs` |
 | CLI entry for terminals | `bin/lattice-console.rs` (builds `lattice.com`) |
 | User docs | `README.md`: command table under "Scripting", hook events table, "How workspaces work" |
 
 Unit tests sit in each module's `mod tests`; `ipc.rs` `tests::sample()` is a ready-made
-`State` for event and query tests.
+`State` for event and query tests. `bash scripts/check-platforms.sh` runs them on the host and
+also `cargo check`s Windows from macOS or Linux (no MSVC needed: `scripts/msvc-stub.sh` stands
+in for the C tools, nothing links); CI runs it on Windows and macOS.
 
 ## Testing changes in a real lattice
 

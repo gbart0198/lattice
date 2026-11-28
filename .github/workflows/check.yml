@@ -1,0 +1,28 @@
+# Every push and pull request: lattice builds and passes its tests on Windows and macOS, and
+# Win32 stays inside the platform/windows/ folders (scripts/check-platforms.sh).
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Windows target (cross-check from macOS)
+        if: runner.os == 'macOS'
+        # rustup reads rust-toolchain.toml and installs the pinned toolchain on first use.
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Check
+        shell: bash
+        run: bash scripts/check-platforms.sh
