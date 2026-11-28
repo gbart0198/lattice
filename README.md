@@ -307,8 +307,8 @@ and `glow_opacity`.
 
 ### Animations
 
-Turn on **Animate windows** in the settings window (or `enabled = true` under `[animations]`)
-and windows glide instead of jumping: when you move or swap them, go fullscreen and back, and
+Set **Animations** to fancy or fast in the settings window (or `enabled = true` under
+`[animations]`) and windows glide instead of jumping: when you move or swap them, go fullscreen and back, and
 when the others close up around a window you minimize (or make room when it comes back).
 Switching workspaces slides the old one off the top of every screen and the new one up from
 below; going to a lower workspace runs the other way. Two styles:

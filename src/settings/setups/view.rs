@@ -26,7 +26,7 @@ pub(super) static PLUS: Icon = Icon {
     view: 16.0,
     body: r#"<path d="M8 3.5V12.5M3.5 8H12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
 };
-pub(super) static TRASH: Icon = Icon {
+pub(crate) static TRASH: Icon = Icon {
     name: "setups-trash",
     view: 16.0,
     body: r#"<path d="M3 4.5H13M6.5 4.5V3H9.5V4.5M4.5 4.5L5.2 13H10.8L11.5 4.5M7 7V11M9 7V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
@@ -41,7 +41,7 @@ static NEXT: Icon = Icon {
     view: 16.0,
     body: r#"<path d="M6 3.5L10.5 8L6 12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
-static INFO: Icon = Icon {
+pub(crate) static INFO: Icon = Icon {
     name: "setups-info",
     view: 16.0,
     body: r#"<circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M8 7.2V11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="5" r="0.8" fill="currentColor"/>"#,
@@ -63,20 +63,15 @@ pub(crate) fn tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
     if let Some(i) = s.ed.sel.filter(|i| *i < s.ed.list.len()) {
         return editor_page(s, p, i, overlays);
     }
-    vec![
-        col().key("setups-help").gap(4.0).mx(space::S3).w_full().child(
-            small(
-                "Save a set of apps with their workspaces and layout. Restoring one starts what isn't running and moves everything into place: with its shortcut, by typing \u{201c}workspaces\u{201d} in the launcher, or `lattice msg restore-setup NAME`.",
-                p.t.text_secondary,
-            )
-            .w_full()
-            .wrap(),
-        ),
-        list_section(s, p),
-    ]
+    vec![list_section(s, p, overlays)]
 }
 
-fn list_section(s: &S, p: &P) -> El {
+const SETUPS_HELP: [&str; 2] = [
+    "A setup is a set of apps with their workspaces and layout. Applying one starts what isn't running and moves everything into place.",
+    "Apply one with its shortcut, by typing \u{201c}workspaces\u{201d} in the launcher, or with `lattice msg restore-setup NAME`.",
+];
+
+fn list_section(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
     let k = kit(p);
     let mut rows = Vec::new();
     for (i, setup) in s.ed.list.iter().enumerate() {
@@ -142,8 +137,11 @@ fn list_section(s: &S, p: &P) -> El {
         s.ed.capturing = true;
         capture();
     });
-    rows.push(row().key("setups-add").px(space::S3).py(space::S2).gap(space::S2).child(new.build(&k)).child(cap.build(&k)));
-    section(p, "setups-list", &format!("Setups ({})", s.ed.list.len()), rows)
+    let info = crate::settings::help(s, p, "setups-help", "Setups", &SETUPS_HELP, rune_kit::Placement::TopEnd, overlays);
+    rows.push(
+        row().key("setups-add").px(space::S3).py(space::S2).gap(space::S2).center_y().child(new.build(&k)).child(cap.build(&k)).child(el().grow(1.0)).child(info),
+    );
+    section(p, "setups-list", "", rows)
 }
 
 /// One setup, on a page of its own.

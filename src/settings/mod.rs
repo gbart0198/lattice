@@ -6,7 +6,7 @@
 
 use rune::tok::{radius, space, type_};
 use rune::{App, AppSpec, Color, ColorScheme, Cx, El, ScrollSpec, TextEdit, TextStyle, Tx, WindowOptions, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, Slider, Switch, TextInput};
+use rune_kit::{Button, ButtonVariant, Checkbox, IconButton, IconButtonVariant, Kit, Placement, Popover, SegmentedControl, Slider, Switch, TextInput};
 use toml_edit::DocumentMut;
 
 use crate::config::{self, Config};
@@ -21,6 +21,8 @@ const LAYOUTS: [&str; 3] = ["dwindle", "master", "monocle"];
 const NEW_WINDOW: [&str; 2] = ["after_focused", "end"];
 const APP_DISPLAY: [&str; 3] = ["icons", "names", "both"];
 const ANIM_STYLES: [&str; 2] = ["fancy", "fast"];
+/// The animation picker: off, or one of `ANIM_STYLES`.
+const ANIMATIONS: [&str; 3] = ["off", "fancy", "fast"];
 
 struct Bind {
     id: u64,
@@ -99,6 +101,8 @@ struct S {
     // [[setup]]: setups
     ed: setups::Editor,
     // UI
+    /// The help popover that's open (its id), if any.
+    help: Option<&'static str>,
     update: update::Status,
     update_gen: u64,
     status: String,
@@ -191,6 +195,7 @@ fn init() -> S {
             .collect(),
         next_id: n,
         ed: setups::Editor::load(&cfg),
+        help: None,
         update: update::Status::Unknown,
         update_gen: 0,
         status: String::new(),
@@ -613,33 +618,76 @@ fn count(v: f32) -> String {
 fn general_tab(s: &S, p: &P) -> Vec<El> {
     vec![
         section(p, "layout-sec", "Tiling", vec![
-            choice(p, "layout", "Default layout", Some("Win+\\ cycles it per workspace"), &LAYOUTS, s.layout, |s| &mut s.layout),
+            choice(p, "layout", "Layout", None, &LAYOUTS, s.layout, |s| &mut s.layout),
             choice(p, "new-window", "New windows go", None, &["after focused", "at the end"], s.new_window, |s| &mut s.new_window),
             slider(p, "split", "Dwindle split", s.split_ratio, 0.1, 0.9, 0.05, pct, |s| &mut s.split_ratio),
             slider(p, "master", "Master width", s.master_ratio, 0.1, 0.9, 0.05, pct, |s| &mut s.master_ratio),
-        ]),
-        section(p, "gaps-sec", "Spacing", vec![
             slider(p, "gaps-inner", "Gap between windows", s.gaps_inner, 0.0, 40.0, 1.0, px, |s| &mut s.gaps_inner),
             slider(p, "gaps-outer", "Gap at screen edges", s.gaps_outer, 0.0, 60.0, 1.0, px, |s| &mut s.gaps_outer),
         ]),
-        section(p, "ws-sec", "Workspaces", vec![
-            slider(p, "workspaces", "Number of workspaces", s.workspaces, 1.0, 10.0, 1.0, count, |s| &mut s.workspaces),
-            toggle(p, "follow", "Follow app activation", Some("Jump to apps that ask for attention"), s.follow_activation, |s| &mut s.follow_activation),
+        section(p, "behavior-sec", "Windows", vec![
+            slider(p, "workspaces", "Workspaces", s.workspaces, 1.0, 10.0, 1.0, count, |s| &mut s.workspaces),
+            animations_row(s, p),
+            toggle(p, "follow", "Switch to apps that ask for attention", None, s.follow_activation, |s| &mut s.follow_activation),
+            toggle(p, "float-unres", "Float dialogs and fixed-size windows", None, s.float_unresizable, |s| &mut s.float_unresizable),
+            toggle(p, "mouse-follow", "Mouse follows focus", None, s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
         ]),
-        section(p, "anim-sec", "Animations", vec![
-            toggle(p, "anim-on", "Animate windows", Some("Moves, swaps and workspace switches"), s.anim_enabled, |s| &mut s.anim_enabled),
-            choice(p, "anim-style", "Style", Some(if s.anim_style == 0 { "Smooth, slight overshoot" } else { "Quick and plain" }), &ANIM_STYLES, s.anim_style, |s| &mut s.anim_style),
-        ]),
-        section(p, "behavior-sec", "Behaviour", vec![
-            toggle(p, "float-unres", "Float fixed-size windows", Some("Dialogs and other non-resizable windows"), s.float_unresizable, |s| &mut s.float_unresizable),
-            toggle(p, "mouse-follow", "Mouse follows focus", Some("Cursor moves with keyboard focus"), s.mouse_follows_focus, |s| &mut s.mouse_follows_focus),
-            setting_row(p, "rules", &format!("Other window rules ({})", s.other_rules), Some("Float or ignore apps in config.toml"), open_config_button(p)),
-        ]),
-        section(p, "update-sec", "Updates", vec![
-            toggle(p, "check-updates", "Check for updates", Some("Daily; never installs on its own"), s.check_updates, |s| &mut s.check_updates),
+        section(p, "update-sec", "", vec![
             update_row(s, p),
+            toggle(p, "check-updates", "Check for updates daily", None, s.check_updates, |s| &mut s.check_updates),
         ]),
     ]
+}
+
+/// Off, or a style: one picker for `animations.enabled` and `animations.style`.
+fn animations_row(s: &S, p: &P) -> El {
+    let current = if s.anim_enabled { s.anim_style + 1 } else { 0 };
+    let seg = SegmentedControl::new(&ANIMATIONS, Some(current)).label("Animations").fit().on_pick(|s: &mut S, i, _| {
+        s.anim_enabled = i > 0;
+        if i > 0 {
+            s.anim_style = i - 1;
+        }
+    });
+    setting_row(p, "anim", "Animations", None, seg.build(&kit(p)))
+}
+
+/// An (i) button that opens `lines` of help in a popover, as the setup editor's does.
+fn help(s: &S, p: &P, id: &'static str, title: &str, lines: &[&str], placement: Placement, overlays: &mut Vec<El>) -> El {
+    let k = kit(p);
+    let trigger = IconButton::new(&setups::INFO)
+        .variant(IconButtonVariant::GhostMuted)
+        .label(title.to_string())
+        .on_press(move |s: &mut S| s.help = if s.help == Some(id) { None } else { Some(id) })
+        .build(&k);
+    let body = lines.iter().fold(col().gap(6.0).w(300.0), |c, l| {
+        c.child(text(l.to_string()).font(TextStyle::new(11.5, 400.0)).color(p.t.text_secondary).w_full().wrap())
+    });
+    Popover::new(id)
+        .trigger(trigger)
+        .title(title.to_string())
+        .open(s.help == Some(id))
+        .placement(placement)
+        .on_close(|s: &mut S| s.help = None)
+        .child(body)
+        .build(&k, overlays)
+}
+
+/// Small grey captions over a list's columns (`(text, width)`, `None` to fill), with
+/// `trailing` at the right end.
+fn captions(p: &P, cols: &[(&str, Option<f32>)], trailing: El) -> El {
+    let mut r = row().key("captions").px(space::S3).pt(space::S1).gap(space::S2).center_y();
+    for (c, w) in cols {
+        let t = text(c.to_string()).font(TextStyle::new(11.5, 400.0)).color(p.t.text_secondary);
+        r = r.child(match w {
+            Some(w) => t.w(*w),
+            None => t.grow(1.0),
+        });
+    }
+    r.child(trailing)
+}
+
+fn remove_button(p: &P, label: &str, f: impl Fn(&mut S) + 'static) -> El {
+    IconButton::new(&setups::TRASH).variant(IconButtonVariant::GhostMuted).label(label.to_string()).help(label.to_string()).on_press(f).build(&kit(p))
 }
 
 /// "lattice x.y.z" with what the last check found, and the button for the next step.
@@ -689,40 +737,110 @@ fn poll(s: &mut S, _t: f64, _tx: &mut Tx) -> bool {
     true
 }
 
+/// Where a switch or checkbox keeps its value.
+type BoolField = fn(&mut S) -> &mut bool;
+
 fn bar_tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
+    let k = kit(p);
+    let shown: [(&str, bool, BoolField); 5] = [
+        ("Window title", s.show_title, |s| &mut s.show_title),
+        ("CPU", s.show_cpu, |s| &mut s.show_cpu),
+        ("Memory", s.show_memory, |s| &mut s.show_memory),
+        ("Battery", s.show_battery, |s| &mut s.show_battery),
+        ("Empty workspaces", s.show_empty, |s| &mut s.show_empty),
+    ];
+    let show = shown.into_iter().fold(row().key("show").px(space::S3).py(space::S3).gap(space::S6).flex_wrap().center_y(), |r, (label, on, acc)| {
+        r.child(
+            Checkbox::new(on)
+                .label(label)
+                .on_toggle(move |s: &mut S| {
+                    let v = acc(s);
+                    *v = !*v;
+                })
+                .build(&k),
+        )
+    });
+    let colors = [
+        ("c-bg", "Background", &s.background, (|s| &mut s.background) as fn(&mut S) -> &mut TextEdit),
+        ("c-fg", "Text", &s.foreground, |s| &mut s.foreground),
+        ("c-muted", "Muted text", &s.muted, |s| &mut s.muted),
+        ("c-accent", "Active workspace", &s.accent, |s| &mut s.accent),
+        ("c-occ", "Other workspaces", &s.occupied, |s| &mut s.occupied),
+    ];
+    let mut color_rows = Vec::new();
+    for pair in colors.chunks(2) {
+        let r = pair.iter().fold(row().key(format!("colors-{}", pair[0].0)), |r, (key, label, edit, acc)| {
+            r.child(color_field(p, key, label, edit, *acc).w_frac(0.5))
+        });
+        color_rows.push(r);
+    }
     vec![
-        section(p, "bar-sec", "Top bar", vec![
+        section(p, "bar-sec", "", vec![
+            bar_preview(s, p),
             toggle(p, "bar-on", "Show the bar", None, s.bar_enabled, |s| &mut s.bar_enabled),
             slider(p, "bar-h", "Height", s.bar_height, 16.0, 60.0, 1.0, px, |s| &mut s.bar_height),
             slider(p, "font", "Font size", s.font_size, 9.0, 20.0, 1.0, px, |s| &mut s.font_size),
             font_row(s, p, overlays),
-            font_preview(s, p),
             choice(p, "app-display", "Apps on workspaces", None, &APP_DISPLAY, s.app_display, |s| &mut s.app_display),
             text_field(p, "clock", "Clock format", Some("%H %M %S %I %p %a %b %d %m %Y"), &s.clock_format, 200.0, false, |s| &mut s.clock_format),
         ]),
-        section(p, "bar-show-sec", "Show", vec![
-            toggle(p, "show-title", "Window title", None, s.show_title, |s| &mut s.show_title),
-            toggle(p, "show-cpu", "CPU", None, s.show_cpu, |s| &mut s.show_cpu),
-            toggle(p, "show-mem", "Memory", None, s.show_memory, |s| &mut s.show_memory),
-            toggle(p, "show-bat", "Battery", None, s.show_battery, |s| &mut s.show_battery),
-            toggle(p, "show-empty", "Empty workspaces", None, s.show_empty, |s| &mut s.show_empty),
-        ]),
-        section(p, "bar-colors", "Colours", vec![
-            color_field(p, "c-bg", "Background", &s.background, |s| &mut s.background),
-            color_field(p, "c-fg", "Text", &s.foreground, |s| &mut s.foreground),
-            color_field(p, "c-muted", "Muted text", &s.muted, |s| &mut s.muted),
-            color_field(p, "c-accent", "Accent (active workspace)", &s.accent, |s| &mut s.accent),
-            color_field(p, "c-occ", "Workspace pills", &s.occupied, |s| &mut s.occupied),
-        ]),
+        section(p, "bar-show-sec", "Show", vec![show]),
+        section(p, "bar-colors", "Colours", color_rows),
     ]
+}
+
+/// The bar drawn small with the settings on this tab: its colours, height, font, and what it
+/// shows.
+fn bar_preview(s: &S, p: &P) -> El {
+    let c = |e: &TextEdit, fallback: Color| if valid_hex(&e.text) { crate::bar::color(e.text.trim(), fallback) } else { fallback };
+    let (bg, fg, muted) = (c(&s.background, Color::BLACK), c(&s.foreground, Color::WHITE), c(&s.muted, p.t.text_secondary));
+    let (accent, occupied) = (c(&s.accent, p.accent), c(&s.occupied, p.t.card));
+    let family = if s.font.is_empty() { rune::Family::Sans } else { rune::Family::Named(crate::bar::font_list(&s.font)) };
+    let size = s.font_size.round().clamp(9.0, 20.0);
+    let font = |weight: f32| TextStyle::new(size, weight).family(family);
+    let h = s.bar_height.round().clamp(16.0, 60.0);
+    let pill_h = (h - 8.0).max(14.0);
+    let pill = |n: usize, fill: Color, num: Color| {
+        row().h(pill_h).px(9.0).center_y().radius(pill_h / 2.0).fill(fill).child(text(n.to_string()).font(font(700.0)).color(num))
+    };
+    let mut spaces = row().gap(6.0).center_y().child(pill(1, accent, bg)).child(pill(2, occupied, fg));
+    if s.show_empty {
+        spaces = spaces.child(pill(3, occupied, fg));
+    }
+    let title = if s.show_title { "lattice settings" } else { "" };
+    let stat = |label: &str, v: &str| row().gap(4.0).child(text(label.to_string()).font(font(500.0)).color(muted)).child(text(v.to_string()).font(font(600.0)).color(fg));
+    let mut stats = row().gap(14.0).center_y();
+    if s.show_cpu {
+        stats = stats.child(stat("CPU", "12%"));
+    }
+    if s.show_memory {
+        stats = stats.child(stat("MEM", "42%"));
+    }
+    if s.show_battery {
+        stats = stats.child(stat("BAT", "80%"));
+    }
+    stats = stats.child(text("16:20").font(font(650.0)).color(fg));
+    let bar = row()
+        .w_full()
+        .h(h)
+        .px(8.0)
+        .gap(8.0)
+        .center_y()
+        .radius(radius::MD)
+        .fill(bg)
+        .opacity(if s.bar_enabled { 1.0 } else { 0.4 })
+        .child(spaces)
+        .child(text(title).grow(1.0).shrink().truncate().align(rune::Align::Center).font(font(500.0)).color(fg))
+        .child(stats);
+    row().key("bar-preview").px(space::S3).py(space::S3).child(bar)
 }
 
 fn border_tab(s: &S, p: &P) -> Vec<El> {
     // Live preview of the glow, drawn the same way the overlay draws it.
     let color = crate::bar::color(s.border_color.text.trim(), p.accent);
-    let (w, h) = (260.0, 120.0);
+    let (w, h) = (260.0, 100.0);
     let m = s.glow.max(4.0) * 1.5;
-    let mut preview = el().size(w + 2.0 * m, h + 2.0 * m).child(el().absolute(m, m).size(w, h).radius(s.border_radius).fill(p.t.card));
+    let mut preview = el().size(w + 2.0 * m, h + 2.0 * m).child(el().absolute(m, m).size(w, h).radius(s.border_radius).fill(p.t.bg));
     if s.border_enabled {
         if s.glow > 0.0 && s.glow_opacity > 0.0 {
             let n = s.glow.ceil() as i32;
@@ -737,22 +855,34 @@ fn border_tab(s: &S, p: &P) -> Vec<El> {
             preview = preview.child(el().absolute(m, m).size(w, h).radius(s.border_radius).border(s.border_width, color));
         }
     }
-    vec![
-        section(p, "border-preview", "Preview", vec![row().key("pv").py(space::S3).center().w_full().child(preview)]),
-        section(p, "border-sec", "Focus border", vec![
-            toggle(p, "border-on", "Glow around the focused window", None, s.border_enabled, |s| &mut s.border_enabled),
-            color_field(p, "border-color", "Colour", &s.border_color, |s| &mut s.border_color),
-            slider(p, "border-w", "Line width", s.border_width, 0.0, 8.0, 1.0, px, |s| &mut s.border_width),
-            slider(p, "border-r", "Corner radius", s.border_radius, 0.0, 20.0, 1.0, px, |s| &mut s.border_radius),
-            slider(p, "glow", "Glow size", s.glow, 0.0, 40.0, 1.0, px, |s| &mut s.glow),
-            slider(p, "glow-op", "Glow strength", s.glow_opacity, 0.0, 1.0, 0.05, pct, |s| &mut s.glow_opacity),
-        ]),
-    ]
+    vec![section(p, "border-sec", "", vec![
+        row().key("pv").center().w_full().child(preview),
+        toggle(p, "border-on", "Show the focus border", None, s.border_enabled, |s| &mut s.border_enabled),
+        color_field(p, "border-color", "Colour", &s.border_color, |s| &mut s.border_color),
+        slider(p, "border-w", "Line width", s.border_width, 0.0, 8.0, 1.0, px, |s| &mut s.border_width),
+        slider(p, "border-r", "Corner radius", s.border_radius, 0.0, 20.0, 1.0, px, |s| &mut s.border_radius),
+        slider(p, "glow", "Glow size", s.glow, 0.0, 40.0, 1.0, px, |s| &mut s.glow),
+        slider(p, "glow-op", "Glow strength", s.glow_opacity, 0.0, 1.0, 0.05, pct, |s| &mut s.glow_opacity),
+    ])]
 }
 
-fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
+const KEYBIND_HELP: [&str; 6] = [
+    "Keys: modifiers (super, shift, ctrl, alt) and a key, joined with +, like super+shift+t.",
+    "Focus and move: focus left|right|up|down, move-window left|right|up|down.",
+    "Workspaces: workspace N|next|prev, move-to-workspace N.",
+    "Windows: layout next, resize left|right|up|down [amount], toggle-float, toggle-fullscreen, close.",
+    "lattice: launcher, window-search, setup-picker, restore-setup NAME, settings, open-config, reload, quit.",
+    "Programs: exec PROGRAM.",
+];
+
+fn error_line(e: String) -> El {
+    text(e).font(TextStyle::new(11.5, 500.0)).color(crate::bar::color("#f38ba8", Color::WHITE))
+}
+
+fn keybinds_tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
     let k = kit(p);
-    let mut rows = Vec::new();
+    let info = help(s, p, "keybinds-help", "Keybinds", &KEYBIND_HELP, Placement::BottomEnd, overlays);
+    let mut rows = vec![captions(p, &[("Keys", Some(190.0)), ("Command", None)], info)];
     for (i, b) in s.binds.iter().enumerate() {
         let err = bind_errors(b);
         let chord = TextInput::new(&b.chord)
@@ -765,20 +895,20 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
         let command = TextInput::new(&b.command)
             .label("Command")
             .placeholder("workspace 1")
-            .width(Some(250.0))
+            .width(None)
             .invalid(err.is_some() && config::parse_chord(b.chord.text.trim()).is_ok())
             .on_edit(move |s: &mut S| &mut s.binds[i].command)
             .build(&k);
-        let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| {
+        let remove = remove_button(p, "Remove keybind", move |s: &mut S| {
             if i < s.binds.len() {
                 s.binds.remove(i);
             }
         });
         let mut line = col().key(format!("bind-{}", b.id)).px(space::S3).py(space::S1).gap(2.0).child(
-            row().gap(space::S2).center_y().child(chord).child(command).child(remove.build(&k)),
+            row().gap(space::S2).center_y().child(chord).child(command.grow(1.0).shrink()).child(remove),
         );
         if let Some(e) = err {
-            line = line.child(text(e).font(TextStyle::new(11.5, 500.0)).color(crate::bar::color("#f38ba8", Color::WHITE)));
+            line = line.child(error_line(e));
         }
         rows.push(line);
     }
@@ -787,22 +917,26 @@ fn keybinds_tab(s: &S, p: &P) -> Vec<El> {
         s.next_id += 1;
     });
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
-    vec![
-        col().key("kb-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Modifiers: super, shift, ctrl, alt.  Commands: focus / move-window left|right|up|down, workspace N|next|prev, move-to-workspace N, layout next, resize left|right|up|down [amount], toggle-float, toggle-fullscreen, close, launcher, window-search, setup-picker, restore-setup <name>, settings, open-config, reload, quit, exec <program>.".to_string())
-                .w_full()
-                .wrap()
-                .font(TextStyle::new(11.5, 400.0))
-                .color(p.t.text_secondary),
-        ),
-        section(p, "kb-sec", &format!("Keybinds ({})", s.binds.len()), rows),
-    ]
+    vec![section(p, "kb-sec", "", rows)]
 }
 
-fn apps_tab(s: &S, p: &P) -> Vec<El> {
+fn apps_tab(s: &S, p: &P, overlays: &mut Vec<El>) -> Vec<El> {
     let k = kit(p);
     let workspaces = s.workspaces.round() as usize;
-    let mut rows = Vec::new();
+    let others = match s.other_rules {
+        0 => String::new(),
+        1 => "Your 1 other window rule (float, ignore and the like) is in config.toml.".into(),
+        n => format!("Your {n} other window rules (float, ignore and the like) are in config.toml."),
+    };
+    let mut lines = vec![
+        "Sends an app's windows to a workspace when they open. Saving moves the ones already open.",
+        "Program is the file name, like Discord.exe (lattice --list shows them). Add title text to match only some of its windows.",
+    ];
+    if !others.is_empty() {
+        lines.push(&others);
+    }
+    let info = help(s, p, "apps-help", "App workspaces", &lines, Placement::BottomEnd, overlays);
+    let mut rows = vec![captions(p, &[("Program", Some(200.0)), ("Window title", None), ("Workspace", Some(92.0))], info)];
     for (i, a) in s.apps.iter().enumerate() {
         let err = assign_error(a, workspaces);
         let exe = TextInput::new(&a.exe)
@@ -813,9 +947,9 @@ fn apps_tab(s: &S, p: &P) -> Vec<El> {
             .on_edit(move |s: &mut S| &mut s.apps[i].exe)
             .build(&k);
         let title = TextInput::new(&a.title)
-            .label("Title contains")
-            .placeholder("title contains (optional)")
-            .width(Some(170.0))
+            .label("Window title")
+            .placeholder("Any")
+            .width(None)
             .on_edit(move |s: &mut S| &mut s.apps[i].title)
             .build(&k);
         let step = |label: &str, d: isize, disabled: bool| {
@@ -831,22 +965,21 @@ fn apps_tab(s: &S, p: &P) -> Vec<El> {
                 .build(&k)
         };
         let ws = row()
-            .gap(2.0)
+            .w(92.0)
             .center_y()
-            .child(text("Workspace").font(TextStyle::new(11.5, 400.0)).color(p.t.text_secondary).mr(space::S1))
-            .child(step("-", -1, a.ws <= 1))
-            .child(text(a.ws.to_string()).w(20.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
-            .child(step("+", 1, a.ws >= workspaces));
-        let remove = Button::new("Remove").variant(ButtonVariant::GhostMuted).on_press(move |s: &mut S| {
+            .child(step("\u{2039}", -1, a.ws <= 1))
+            .child(text(a.ws.to_string()).w(18.0).align(rune::Align::Center).font(type_::BODY).color(p.t.text))
+            .child(step("\u{203a}", 1, a.ws >= workspaces));
+        let remove = remove_button(p, "Remove app", move |s: &mut S| {
             if i < s.apps.len() {
                 s.apps.remove(i);
             }
         });
         let mut line = col().key(format!("app-{}", a.id)).px(space::S3).py(space::S1).gap(2.0).child(
-            row().gap(space::S2).center_y().child(exe).child(title).child(ws).child(remove.build(&k)),
+            row().gap(space::S2).center_y().child(exe).child(title.grow(1.0).shrink()).child(ws).child(remove),
         );
         if let Some(e) = err {
-            line = line.child(text(e).font(TextStyle::new(11.5, 500.0)).color(crate::bar::color("#f38ba8", Color::WHITE)));
+            line = line.child(error_line(e));
         }
         rows.push(line);
     }
@@ -856,16 +989,7 @@ fn apps_tab(s: &S, p: &P) -> Vec<El> {
         s.next_id += 1;
     });
     rows.push(row().key("add").px(space::S3).py(space::S2).child(add.build(&k)));
-    vec![
-        col().key("apps-help").gap(4.0).mx(space::S3).w_full().child(
-            text("Send an app's windows to a workspace, matched by program file name (see lattice --list) and optional title text. Saving also moves its open windows.".to_string())
-                .w_full()
-                .wrap()
-                .font(TextStyle::new(11.5, 400.0))
-                .color(p.t.text_secondary),
-        ),
-        section(p, "apps-sec", &format!("App workspaces ({})", s.apps.len()), rows),
-    ]
+    vec![section(p, "apps-sec", "", rows)]
 }
 
 const DEFAULT_FONT_ID: &str = "__default__";
@@ -901,23 +1025,7 @@ fn font_row(s: &S, p: &P, overlays: &mut Vec<El>) -> El {
             s.font_picker.close();
         })
         .build(&k, overlays);
-    setting_row(p, "font-family", "Font", Some("Any installed font"), picker)
-}
-
-/// A line of bar-like text drawn in the chosen font and size.
-fn font_preview(s: &S, p: &P) -> El {
-    let family = if s.font.is_empty() { rune::Family::Sans } else { rune::Family::Named(crate::bar::font_list(&s.font)) };
-    let size = s.font_size.round().clamp(9.0, 20.0);
-    let sample = text("1  2  3      Tue Nov 24  16:20      CPU 12%  MEM 42%")
-        .font(TextStyle::new(size, 600.0).family(family))
-        .color(p.t.text);
-    setting_row(
-        p,
-        "font-preview",
-        "Preview",
-        None,
-        el().px(space::S3).py(space::S2).radius(radius::MD).fill(crate::bar::color("#1e1e2e", Color::BLACK)).child(sample),
-    )
+    setting_row(p, "font-family", "Font", None, picker)
 }
 
 fn open_config_button(p: &P) -> El {
@@ -949,11 +1057,11 @@ fn view(s: &S, cx: &mut Cx<S>) -> El {
     let mut overlays: Vec<El> = Vec::new();
     let body = match s.tab {
         0 => general_tab(s, &p),
-        1 => apps_tab(s, &p),
+        1 => apps_tab(s, &p, &mut overlays),
         2 => setups::tab(s, &p, &mut overlays),
         3 => bar_tab(s, &p, &mut overlays),
         4 => border_tab(s, &p),
-        _ => keybinds_tab(s, &p),
+        _ => keybinds_tab(s, &p, &mut overlays),
     };
     let content = col()
         .key(format!("content-{}", s.tab))
@@ -1126,6 +1234,14 @@ pub fn run() {
             ("bar", |s: &mut S| s.tab = 3),
             ("border", |s: &mut S| s.tab = 4),
             ("keybinds", |s: &mut S| s.tab = 5),
+            ("keybinds-help", |s: &mut S| {
+                s.tab = 5;
+                s.help = Some("keybinds-help");
+            }),
+            ("apps-help", |s: &mut S| {
+                s.tab = 1;
+                s.help = Some("apps-help");
+            }),
             ("fonts", |s: &mut S| {
                 s.tab = 3;
                 s.font_picker.step(rune_kit::ComboboxEvent::Toggle { current: Some(DEFAULT_FONT_ID) });
